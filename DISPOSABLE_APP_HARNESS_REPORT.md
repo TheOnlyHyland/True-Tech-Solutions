@@ -206,6 +206,59 @@ configuration directory.
   Zigbee action, Scheduler change, dashboard change, automation change, or
   heating action occurred in this source-only gate.
 
+## Coordinated 0.2.1 Release Evidence
+
+The source-only distribution work was followed by a coordinated integration and
+journal App patch release from commit
+`83c2826c5e55ae353ec52cfe38431b7bbc8f77f1`.
+
+- Release-branch HACS, Hassfest, and 733-test validation passed in workflow
+  `30587501734`; its non-publishing arm64 and amd64 image build passed in
+  workflow `30587514391`.
+- The same commit passed the main-branch validation in workflow `30587747004`.
+  Guarded publication workflow `30587861324` then published signed generic,
+  aarch64, and amd64 `0.2.1` images without publishing `latest`.
+- The anonymous generic image resolves to manifest digest
+  `sha256:3ea34326eca4f218c0587173eecae299a18fe087cf1be0ab97d90ef210991587`.
+  Image platforms, labels, source revision, and in-toto provenance all bind to
+  the release commit and publication workflow.
+- A separately downloaded, checksum-verified Cosign `v3.0.6` verified all three
+  image signatures, the exact workflow certificate identity and OIDC issuer,
+  and their transparency-log inclusion proofs.
+- GitHub Releases now expose `0.2.0` at publication commit `32f9f8482e22eddd934e9d66806fc1ed5a829fb2`
+  and latest release `0.2.1` at `83c2826c5e55ae353ec52cfe38431b7bbc8f77f1`.
+  Post-publication workflow `30588325757` again passed HACS, Hassfest, and all
+  733 tests.
+
+## Disposable HACS 2.0.5 Evidence
+
+A network-enabled, in-process Home Assistant `2026.7.4` harness exercised the
+installed HACS `2.0.5` source against the public repository. The disposable
+harness added Core's exact `home-assistant-frontend==20260624.6` requirement in
+an external overlay and used a current-loop DNS resolver because the ordinary
+unit-test fixtures intentionally disable Internet access. Neither adaptation
+changed HACS repository or installation logic.
+
+- An administrator HACS WebSocket command registered
+  `TheOnlyHyland/True-Tech-Solutions` as an integration custom repository.
+- HACS reported `0.2.1` as the available version and downloaded that exact
+  release into the disposable `custom_components/true_family` path.
+- The installed manifest reported `0.2.1`. A second WebSocket download replaced
+  the integration tree atomically; a local sentinel placed between downloads did
+  not survive.
+- HACS safely rejected an explicit `0.2.0` download before changing the installed
+  tree because that historical tag predates `hacs.json`. The installed `0.2.1`
+  manifest remained intact.
+- The custom repository was uninstalled and unregistered through HACS before
+  unload. The temporary test, copied HACS source, integration files, and
+  credential environment were removed. No household Home Assistant state was
+  used or changed.
+
+This proves first install and replacement through the real HACS release path. It
+does not claim a `0.2.0` to `0.2.1` HACS upgrade: repairing or replacing the
+already-published historical predecessor would change release history and
+requires a separate decision.
+
 ## Remaining Supervisor Gate
 
 - Inspect real Supervisor-applied process capability sets and `NoNewPrivs`, and
@@ -213,11 +266,14 @@ configuration directory.
 - Deliberately issue one stale signed request against the permanent App identity;
   automatic rekey recovery passed, but explicit stale-request rejection was not
   exercised in this live gate.
-- Publish a coordinated patch release and exercise its HACS custom-repository
-  install and upgrade path in a disposable environment before customer use.
+- Decide whether to preserve the original `0.2.0` release unchanged or publish a
+  separately identified HACS-compatible predecessor, then exercise a true
+  version-to-version HACS upgrade. `0.2.1` first install and replacement already
+  pass.
 - Repeat the combined App and integration lifecycle in a disposable environment
   when one becomes available.
-- Add amd64 build/runtime evidence if that architecture remains supported.
+- Add amd64 runtime evidence if that architecture remains supported; the amd64
+  build, provenance, labels, and signature already pass.
 
 This evidence remains process-crash-only. It does not certify arbitrary hardware
 power loss and cannot authorize live host mutation.
