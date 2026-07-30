@@ -1,0 +1,67 @@
+name: "Validate True Family"
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  hacs:
+    name: "HACS"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: "Validate HACS repository"
+        uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa
+        with:
+          category: integration
+          comment: "false"
+          ignore: license
+
+  hassfest:
+    name: "Hassfest"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: "Check out source"
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          persist-credentials: false
+
+      - name: "Validate integration metadata"
+        uses: home-assistant/actions/hassfest@ab22029681aa532bfe7de5774a9972d67bfbd2c0
+
+  tests:
+    name: "Locked tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: "Check out source"
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          persist-credentials: false
+
+      - name: "Set up Python"
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548
+        with:
+          python-version: "3.14.6"
+
+      - name: "Set up locked uv"
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+          version: "0.11.33"
+
+      - name: "Install locked test environment"
+        run: uv sync --locked
+
+      - name: "Run Home Assistant integration tests"
+        run: uv run --frozen pytest -q tests/ha
+
+      - name: "Run pure safety contracts"
+        run: uv run --frozen python -m unittest discover -s tests -p "test_*.py"

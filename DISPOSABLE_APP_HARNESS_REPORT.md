@@ -47,9 +47,9 @@ removed from the OCI layout.
 
 ## Frozen Project Gate
 
-- 568 pytest cases passed in the pinned Home Assistant 2026.7.4 harness.
-- 160 pure unittest cases passed.
-- 728 total tests passed, plus lock, Python, JSON, YAML, JavaScript, and shell
+- 571 pytest cases passed in the pinned Home Assistant 2026.7.4 harness.
+- 161 pure unittest cases passed.
+- 732 total tests passed, plus lock, Python, JSON, YAML, JavaScript, and shell
   checks.
 
 ## Real Supervisor App-Only Evidence

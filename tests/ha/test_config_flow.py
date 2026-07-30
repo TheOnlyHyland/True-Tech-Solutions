@@ -216,13 +216,17 @@ async def test_hassio_discovery_rejects_noncanonical_or_untrusted_data(
 
 @pytest.mark.parametrize(
     "state",
-    (ConfigEntryState.NOT_LOADED, ConfigEntryState.SETUP_RETRY),
+    (
+        ConfigEntryState.NOT_LOADED,
+        ConfigEntryState.SETUP_ERROR,
+        ConfigEntryState.SETUP_RETRY,
+    ),
 )
 async def test_discovery_explicitly_wakes_retryable_existing_entry(
     hass: HomeAssistant,
     state: ConfigEntryState,
 ) -> None:
-    """Kick setup immediately without persisting the discovered HMAC key."""
+    """Kick recoverable setup immediately without persisting the HMAC key."""
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -318,6 +322,41 @@ async def test_rekey_during_setup_schedules_one_reload_after_runtime_registratio
     hass.data[DOMAIN].pop(entry.entry_id)
     await journal.async_close()
     entry.mock_state(hass, ConfigEntryState.NOT_LOADED)
+
+
+async def test_rekey_during_failed_setup_reloads_after_state_transition(
+    hass: HomeAssistant,
+) -> None:
+    """Do not lose restored discovery while the old setup is unwinding."""
+
+    discovery.cache_reference_journal_endpoint(
+        hass,
+        discovery.endpoint_from_hassio_service_info(hassio_discovery_info()),
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        state=ConfigEntryState.SETUP_IN_PROGRESS,
+        data={"sentinel": "unchanged"},
+    )
+    entry.add_to_hass(hass)
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as schedule:
+        rekey = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_HASSIO},
+            data=hassio_discovery_info(
+                config_updates={"boot_id": "c" * 32, "key": "d" * 64}
+            ),
+        )
+        assert rekey["reason"] == "journal_app_discovered"
+        assert discovery.reference_journal_reload_is_pending(hass, entry.entry_id)
+        schedule.assert_not_called()
+
+        discovery.clear_reference_journal_reload_pending(hass, entry.entry_id)
+        entry.mock_state(hass, ConfigEntryState.SETUP_ERROR)
+
+    schedule.assert_called_once_with(entry.entry_id)
+    assert not discovery.reference_journal_reload_is_pending(hass, entry.entry_id)
 
 
 async def test_discovery_defers_loaded_reload_until_journal_completion(

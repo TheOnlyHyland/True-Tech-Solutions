@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import struct
 import unittest
 
 
@@ -19,6 +20,44 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertEqual(manifest["iot_class"], "local_push")
         self.assertEqual(manifest["dependencies"], ["mqtt"])
         self.assertTrue(manifest["config_flow"])
+        self.assertNotIn("single_config_entry", manifest)
+
+    def test_hacs_and_app_distribution_contract_is_complete(self) -> None:
+        manifest = json.loads((INTEGRATION / "manifest.json").read_text())
+        hacs = json.loads((ROOT / "hacs.json").read_text())
+        self.assertEqual(hacs, {"name": "True Family", "homeassistant": "2026.7.4"})
+        self.assertEqual(manifest["codeowners"], ["@TheOnlyHyland"])
+        self.assertEqual(
+            manifest["issue_tracker"],
+            "https://github.com/TheOnlyHyland/True-Tech-Solutions/issues",
+        )
+        self.assertEqual(
+            manifest["documentation"],
+            "https://github.com/TheOnlyHyland/True-Tech-Solutions#supported-installation",
+        )
+        app_config = (ROOT / "true_family_journal" / "config.yaml").read_text()
+        self.assertIn(f'version: "{manifest["version"]}"', app_config)
+        self.assertIn('homeassistant: "2026.7.4"', app_config)
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("## Supported Installation", readme)
+        self.assertIn("HACS", readme)
+        self.assertIn("integration-first", readme.lower())
+        self.assertIn("customers or testers with prior written authorization", readme)
+
+        icon = (INTEGRATION / "brand" / "icon.png").read_bytes()
+        self.assertEqual(icon[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(struct.unpack(">II", icon[16:24]), (256, 256))
+
+        workflow = (
+            ROOT / ".github" / "workflows" / "validate-integration.yaml"
+        ).read_text()
+        self.assertIn("hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa", workflow)
+        self.assertIn(
+            "home-assistant/actions/hassfest@ab22029681aa532bfe7de5774a9972d67bfbd2c0",
+            workflow,
+        )
+        self.assertIn("ignore: license", workflow)
+        self.assertIn("pytest -q tests/ha", workflow)
 
     def test_every_websocket_command_requires_admin(self) -> None:
         source = (INTEGRATION / "websocket.py").read_text()

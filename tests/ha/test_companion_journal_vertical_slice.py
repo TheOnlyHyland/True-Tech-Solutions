@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import importlib.util
 import logging
 from pathlib import Path
+import shutil
 import socket
 import sys
 import threading
@@ -596,6 +597,91 @@ async def test_discovery_kicks_existing_not_loaded_entry(
         if entry is not None and entry.state is ConfigEntryState.LOADED:
             await hass.config_entries.async_unload(entry.entry_id)
         await running.async_stop()
+        await session.close()
+
+
+async def test_restored_app_wakes_setup_error_and_preserves_exact_journal(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    mqtt_mock,
+    tmp_path: Path,
+    production_reference_journal_backend: None,
+) -> None:
+    """Recover a failed entry only after its exact App data is restored."""
+
+    data_dir = tmp_path / "app-data"
+    backup_dir = tmp_path / "cold-backup"
+    data_dir.mkdir()
+    backup_dir.mkdir()
+    database_name = journal_app.DATABASE_NAME
+    running: RunningJournalApp | None = await start_journal_app(data_dir)
+    session = new_shared_session()
+    monkeypatch.setattr(remote, "async_get_clientsession", lambda _hass: session)
+    entry = None
+    try:
+        await discover(hass, running.state)
+        journal_id = "restored-setup-error-journal"
+        await journal_ha.async_provision_reference_journal(
+            hass,
+            journal_id=journal_id,
+        )
+        adapter = await journal_ha.HomeAssistantReferenceJournal.async_create(
+            hass,
+            journal_id=journal_id,
+        )
+        await adapter.async_run(
+            adapter.set_state,
+            PLAN_ONE,
+            migration.MigrationState.PLANNED,
+        )
+        await adapter.async_close()
+        expected = await running.state.store.async_load(journal_id)
+        assert expected is not None
+        assert expected.generation == 1
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={
+                CONF_BASE_TOPIC: DEFAULT_BASE_TOPIC,
+                CONF_REFERENCE_JOURNAL_ID: journal_id,
+                CONF_ROOMS: rooms_as_dict(default_rooms()),
+            },
+        )
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+        await running.async_stop()
+        running = None
+        shutil.copy2(data_dir / database_name, backup_dir / database_name)
+        for path in data_dir.iterdir():
+            path.unlink()
+
+        running = await start_journal_app(data_dir)
+        await discover(hass, running.state)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.SETUP_ERROR
+        assert await running.state.store.async_load(journal_id) is None
+
+        await running.async_stop()
+        running = None
+        for path in data_dir.iterdir():
+            path.unlink()
+        shutil.copy2(backup_dir / database_name, data_dir / database_name)
+
+        running = await start_journal_app(data_dir)
+        await discover(hass, running.state)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        assert await running.state.store.async_load(journal_id) == expected
+        assert entry.runtime_data.reference_journal._root == expected.root
+        assert running.state.key_hex not in repr(entry.data)
+    finally:
+        if entry is not None and entry.state is ConfigEntryState.LOADED:
+            await hass.config_entries.async_unload(entry.entry_id)
+        if running is not None:
+            await running.async_stop()
         await session.close()
 
 

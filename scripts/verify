@@ -43,10 +43,12 @@ jq empty \
   "$PROJECT/custom_components/true_family/manifest.json" \
   "$PROJECT/custom_components/true_family/strings.json" \
   "$PROJECT/custom_components/true_family/translations/en.json" \
+  "$PROJECT/hacs.json" \
   "$PROJECT/release/identity.json"
 
 yq '.' \
   "$PROJECT/.github/workflows/release-app.yaml" \
+  "$PROJECT/.github/workflows/validate-integration.yaml" \
   "$PROJECT/repository.yaml" \
   "$PROJECT/true_family_journal/config.yaml" \
   >/dev/null

@@ -7,6 +7,7 @@ from typing import Any
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState, ConfigFlowResult
+from homeassistant.core import callback
 from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 import voluptuous as vol
 
@@ -70,6 +71,7 @@ class TrueFamilyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             endpoint_changed = previous_endpoint != endpoint
             reload_needed = entry.state in {
                 ConfigEntryState.NOT_LOADED,
+                ConfigEntryState.SETUP_ERROR,
                 ConfigEntryState.SETUP_RETRY,
             } or (
                 entry.state is ConfigEntryState.LOADED
@@ -80,10 +82,43 @@ class TrueFamilyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 and endpoint_changed
                 and entry.disabled_by is None
             ):
-                mark_reference_journal_setup_reload_pending(
+                marked = mark_reference_journal_setup_reload_pending(
                     self.hass,
                     entry.entry_id,
                 )
+                if marked:
+                    remove_listener = None
+
+                    @callback
+                    def async_setup_state_changed() -> None:
+                        if entry.state is ConfigEntryState.SETUP_IN_PROGRESS:
+                            return
+                        if remove_listener is not None:
+                            remove_listener()
+                        if (
+                            entry.state
+                            in {
+                                ConfigEntryState.NOT_LOADED,
+                                ConfigEntryState.SETUP_ERROR,
+                                ConfigEntryState.SETUP_RETRY,
+                            }
+                            and entry.disabled_by is None
+                            and self.hass.config_entries.async_get_entry(
+                                entry.entry_id
+                            )
+                            is entry
+                        ):
+                            clear_reference_journal_reload_pending(
+                                self.hass,
+                                entry.entry_id,
+                            )
+                            self.hass.config_entries.async_schedule_reload(
+                                entry.entry_id
+                            )
+
+                    remove_listener = entry.async_on_state_change(
+                        async_setup_state_changed
+                    )
             elif reload_needed and entry.disabled_by is None:
                 if not reference_journal_reload_is_safe(self.hass, entry):
                     try:

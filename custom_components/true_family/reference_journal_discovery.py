@@ -133,14 +133,22 @@ def mark_reference_journal_reload_pending(
 def mark_reference_journal_setup_reload_pending(
     hass: HomeAssistant,
     entry_id: str,
-) -> None:
+) -> bool:
     """Defer an App-generation reload until setup registers its journal owner."""
 
     if type(entry_id) is not str or not entry_id:
         raise TypeError("A reference journal reload entry ID is required.")
+    pending = hass.data.get(DATA_REFERENCE_JOURNAL_RELOAD_PENDING)
+    if (
+        type(pending) is _PendingReferenceJournalReload
+        and pending.entry_id == entry_id
+        and pending.journal is None
+    ):
+        return False
     hass.data[DATA_REFERENCE_JOURNAL_RELOAD_PENDING] = (
         _PendingReferenceJournalReload(entry_id=entry_id, journal=None)
     )
+    return True
 
 
 def clear_reference_journal_reload_pending(

@@ -653,6 +653,7 @@ def test_app_package_is_explicit_and_has_no_elevated_surface() -> None:
             "tree/main/true_family_journal"
         ),
         "arch": ["aarch64", "amd64"],
+        "homeassistant": "2026.7.4",
         "startup": "services",
         "boot": "auto",
         "stage": "experimental",

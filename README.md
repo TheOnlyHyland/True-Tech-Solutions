@@ -40,9 +40,63 @@ configured.
   and Cosign identity contract.
 - `.github/workflows/release-app.yaml`: manually triggered immutable-version,
   multi-architecture, keyless-signed image release.
+- `.github/workflows/validate-integration.yaml`: HACS custom-repository,
+  Hassfest, and locked integration validation.
 - `LICENSE`: proprietary True Tech Solutions source terms.
 - `tests/`: pure and disposable Home Assistant runtime tests.
 - `scripts/verify`: complete offline verification gate.
+
+## Supported Installation
+
+True Family `0.2.0` is an experimental Home Assistant `2026.7.4` integration and
+companion App. It creates seven unbound logical climates but does not migrate an
+existing heating system. Do not bind production radiators until the remaining
+physical-valve gates are complete.
+
+The integration is distributed from this True Tech Solutions GitHub repository
+as a HACS **custom repository**. HACS acts only as the downloader and update
+manager; this project is not submitted to the default HACS catalogue.
+
+Requirements:
+
+- Home Assistant OS with Home Assistant `2026.7.4` or newer.
+- MQTT configured in Home Assistant.
+- HACS installed.
+- A current full Home Assistant backup.
+
+[![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=TheOnlyHyland&repository=True-Tech-Solutions&category=integration)
+
+Use this integration-first order:
+
+1. In HACS, add
+   `https://github.com/TheOnlyHyland/True-Tech-Solutions` as a custom
+   **Integration** repository and download **True Family**.
+2. Restart Home Assistant Core so the integration is available before App
+   discovery begins.
+3. In **Settings > Apps > App Store > Repositories**, add the exact same URL.
+   Do not add `.git`, a trailing slash, a branch, query, or fragment because
+   Supervisor derives a different untrusted identity from every alias.
+4. Install and start **True Family Journal**. Keep protection mode enabled.
+5. In **Settings > Devices & services**, add **True Family** and enter the exact
+   Zigbee2MQTT base topic. The default is `zigbee2mqtt`.
+
+If the App was installed first, install the integration through HACS, restart
+Core, then restart the App once so Supervisor sends fresh discovery. If setup is
+retrying because the App is stopped, start or restart the App; the entry reloads
+from fresh in-memory discovery without storing its HMAC key.
+
+The journal lives only in the App's private `/data`. Create a partial backup that
+includes **True Family Journal** before an App reinstall. Uninstalling the App
+deletes that private data. Restore the App backup rather than deleting or
+recreating the True Family config entry: missing journal data fails closed, and
+fresh discovery reloads the existing entry only after its exact journal returns.
+
+## Licensing
+
+This repository remains proprietary to True Tech Solutions. Public GitHub
+availability and HACS custom-repository support do not grant permission to copy,
+deploy, modify, or redistribute it. The installation instructions are for True
+Tech Solutions and customers or testers with prior written authorization.
 
 ## Run Tests
 
@@ -54,8 +108,8 @@ scripts/verify
 
 The verification script uses the pinned disposable Home Assistant 2026.7.4
 harness. Set `TRUE_FAMILY_HA_HARNESS_ROOT` when the harness is elsewhere. The
-current gate passes 567 Home Assistant runtime tests and 160 pure, protocol,
-persistence, release, and static contract tests, for 727 total.
+current gate passes 571 Home Assistant runtime tests and 161 pure, protocol,
+persistence, release, and static contract tests, for 732 total.
 
 ## Preview Frontend
 

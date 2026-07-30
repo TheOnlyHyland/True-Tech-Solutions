@@ -6,6 +6,7 @@ url: "https://github.com/TheOnlyHyland/True-Tech-Solutions/tree/main/true_family
 arch:
   - aarch64
   - amd64
+homeassistant: "2026.7.4"
 startup: services
 boot: auto
 stage: experimental

@@ -26,6 +26,14 @@ SIGTERM and SIGINT handlers are installed immediately after the listener starts
 and before discovery begins. A stop during stalled discovery cancels that
 request, drains the listener, and closes/checkpoints SQLite.
 
+Install the True Family integration through HACS and restart Home Assistant Core
+before adding the exact public repository URL to the App Store and starting this
+App. App-first installation is recoverable by installing the integration,
+restarting Core, and restarting the App once, but it produces an avoidable
+missing-integration discovery error. Uninstalling this App deletes its private
+`/data`; restore an App-inclusive backup instead of recreating the integration
+entry or silently provisioning a replacement journal.
+
 ## Release Identity
 
 The only trusted production repository URL is

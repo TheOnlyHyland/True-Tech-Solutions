@@ -29,4 +29,11 @@ The advertised durability capability is process-crash-only. This remains
 prototype evidence, not a hardware power-loss certification, and cannot be used
 as authorization for live host mutations.
 
+Install the True Family integration through HACS and restart Home Assistant Core
+before installing this App. The complete installation, recovery, and exact
+repository-identity procedure is documented in the project
+[README](../README.md#supported-installation).
+
+This App requires Home Assistant OS with Home Assistant `2026.7.4` or newer.
+
 See [DOCS.md](DOCS.md) for the wire protocol and storage contract.

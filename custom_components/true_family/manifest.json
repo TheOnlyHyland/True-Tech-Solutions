@@ -1,12 +1,13 @@
 {
   "domain": "true_family",
   "name": "True Family",
-  "codeowners": [],
+  "after_dependencies": ["hassio"],
+  "codeowners": ["@TheOnlyHyland"],
   "config_flow": true,
   "dependencies": ["mqtt"],
-  "after_dependencies": ["hassio"],
-  "documentation": "https://github.com/TheOnlyHyland/True-Tech-Solutions/tree/main/custom_components/true_family",
+  "documentation": "https://github.com/TheOnlyHyland/True-Tech-Solutions#supported-installation",
   "integration_type": "helper",
   "iot_class": "local_push",
+  "issue_tracker": "https://github.com/TheOnlyHyland/True-Tech-Solutions/issues",
   "version": "0.2.0"
 }
