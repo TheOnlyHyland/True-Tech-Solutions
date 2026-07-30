@@ -255,9 +255,10 @@ changed HACS repository or installation logic.
   used or changed.
 
 This proves first install and replacement through the real HACS release path. It
-does not claim a `0.2.0` to `0.2.1` HACS upgrade: repairing or replacing the
-already-published historical predecessor would change release history and
-requires a separate decision.
+does not claim a `0.2.0` to `0.2.1` HACS upgrade. The published `0.2.0` source
+and image provenance will remain unchanged, and `0.2.1` is the first
+HACS-supported release. A true version-to-version upgrade will be exercised from
+`0.2.1` to the next release instead.
 
 ## Remaining Supervisor Gate
 
@@ -266,10 +267,9 @@ requires a separate decision.
 - Deliberately issue one stale signed request against the permanent App identity;
   automatic rekey recovery passed, but explicit stale-request rejection was not
   exercised in this live gate.
-- Decide whether to preserve the original `0.2.0` release unchanged or publish a
-  separately identified HACS-compatible predecessor, then exercise a true
-  version-to-version HACS upgrade. `0.2.1` first install and replacement already
-  pass.
+- Exercise a true version-to-version HACS upgrade from `0.2.1` to the next
+  release. `0.2.1` first install and replacement already pass, and historical
+  `0.2.0` remains preserved as published.
 - Repeat the combined App and integration lifecycle in a disposable environment
   when one becomes available.
 - Add amd64 runtime evidence if that architecture remains supported; the amd64

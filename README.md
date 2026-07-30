@@ -55,7 +55,9 @@ physical-valve gates are complete.
 
 The integration is distributed from this True Tech Solutions GitHub repository
 as a HACS **custom repository**. HACS acts only as the downloader and update
-manager; this project is not submitted to the default HACS catalogue.
+manager; this project is not submitted to the default HACS catalogue. Version
+`0.2.1` is the first HACS-supported release. Earlier tags predate the required
+HACS metadata and are not valid HACS installation targets.
 
 Requirements:
 

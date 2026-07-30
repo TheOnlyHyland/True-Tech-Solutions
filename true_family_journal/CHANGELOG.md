@@ -2,6 +2,8 @@
 
 ## 0.2.1
 
+- Establish `0.2.1` as the first HACS-supported release; earlier tags remain
+  preserved but are not HACS installation targets.
 - Add the proprietary GitHub/HACS custom-repository installation path and local
   integration branding.
 - Fix Home Assistant form serialization while preserving strict MQTT topic
