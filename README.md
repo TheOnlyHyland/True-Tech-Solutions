@@ -131,11 +131,15 @@ keyless Cosign for every architecture and the final manifest. Supervisor does
 not currently enforce Cosign signatures, so external verification remains part
 of the release gate.
 
-This source-only release package is prepared locally but not yet published. The
-public GitHub repository remains empty, no GHCR image or signature exists, and no
-release workflow has run. The first publication must preserve the exact
-repository URL above, make the resulting GHCR package public, run the workflow
-once without publishing, and then publish immutable version `0.2.0`.
+Release `0.2.0` is public and linked to the source repository. Its immutable
+multi-architecture manifest is
+`sha256:6e97c25c54d08e0bdde35978444553d657622666758e51f5d67781be0ce59f1a`
+and contains the expected arm64 and amd64 images plus in-toto provenance. The
+guarded workflow passed in non-publishing mode before publication, then signed
+and verified the published manifest. A separate checksum-verified Cosign `v3.0.6`
+run reproduced the exact workflow-identity, certificate-authority, claims, and
+transparency-log verification. The release has not been installed in Home
+Assistant.
 
 The remote journal is the only production default; the earlier raw-file backend
 is retained as isolated reference/test code and is never a fallback. SQLite's
