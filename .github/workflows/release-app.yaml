@@ -160,6 +160,7 @@ jobs:
           image: "${{ matrix.image }}"
           image-tags: "${{ needs.prepare.outputs.version }}"
           labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
             io.hass.type=app
             io.hass.name=${{ needs.prepare.outputs.name }}
             io.hass.description=${{ needs.prepare.outputs.description }}
