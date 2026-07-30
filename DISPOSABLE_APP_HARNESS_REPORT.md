@@ -168,6 +168,44 @@ published under the household `zigbee2mqtt` root.
   bridge connectivity returned on, permit join remained off, and Heating Mode
   remained Off.
 
+## GitHub Custom-Repository Distribution Evidence
+
+The public True Tech Solutions repository now provides the supported source
+distribution path without granting the journal App access to Home Assistant's
+configuration directory.
+
+- The integration is installable directly from
+  `https://github.com/TheOnlyHyland/True-Tech-Solutions` as a HACS custom
+  repository. HACS is only the downloader and update manager; the proprietary
+  project is not submitted to the default HACS catalogue.
+- `hacs.json`, exact code ownership, support and documentation links, a local
+  256-by-256 brand icon, repository description, issues, and Home Assistant/HACS
+  topics are present. Both the integration and App require Home Assistant OS
+  `2026.7.4` or newer.
+- The documented order is integration download, Core restart, exact repository
+  addition to the App Store, App start, then config-entry creation. App-first,
+  stopped-App, uninstall, and restored-private-data recovery are documented
+  without adding a privileged installer or persisting discovery credentials.
+- A new generation-one recovery test proves empty App data fails closed with no
+  replacement journal, then exact database restoration plus fresh discovery
+  returns the same entry to `loaded`. A setup-state listener also prevents
+  restored discovery being lost while an older setup attempt is unwinding.
+- Manifest-level `single_config_entry` was deliberately rejected because Home
+  Assistant applies it before Hass.io discovery and would block rekey/recovery.
+  The existing unique-ID singleton remains in force while maintenance discovery
+  can still reach `async_step_hassio`.
+- Commit `a801ad8d2f9aefab02c421d98057d72038fd8bdd` added the distribution path.
+  Commit `7a736954e8a0aef9c3734fc6fab10ec0d231584d` added Home Assistant's standard
+  config-entry-only schema after Hassfest identified the missing declaration.
+- Final workflow run `30586222948` passed HACS custom-repository validation,
+  Hassfest without annotations, 572 Home Assistant tests, and 161 pure tests, 733
+  total. The proprietary licence check is intentionally excluded from HACS Action
+  because custom-repository installation is restricted to True Tech Solutions
+  and customers or testers with written authorization.
+- No GitHub release, App image, Home Assistant installation, MQTT connection,
+  Zigbee action, Scheduler change, dashboard change, automation change, or
+  heating action occurred in this source-only gate.
+
 ## Remaining Supervisor Gate
 
 - Inspect real Supervisor-applied process capability sets and `NoNewPrivs`, and
@@ -175,8 +213,8 @@ published under the household `zigbee2mqtt` root.
 - Deliberately issue one stale signed request against the permanent App identity;
   automatic rekey recovery passed, but explicit stale-request rejection was not
   exercised in this live gate.
-- Define and verify the supported integration distribution and install order so
-  App discovery never precedes component availability.
+- Publish a coordinated patch release and exercise its HACS custom-repository
+  install and upgrade path in a disposable environment before customer use.
 - Repeat the combined App and integration lifecycle in a disposable environment
   when one becomes available.
 - Add amd64 build/runtime evidence if that architecture remains supported.
