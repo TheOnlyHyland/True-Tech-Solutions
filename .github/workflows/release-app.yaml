@@ -97,8 +97,33 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       packages: read
     steps:
+      - name: "Require an unused Git tag"
+        if: inputs.publish
+        env:
+          VERSION: "${{ needs.prepare.outputs.version }}"
+        run: |
+          set +e
+          inspection="$(git ls-remote --exit-code --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/tags/${VERSION}" 2>&1)"
+          status=$?
+          set -e
+          case "${status}" in
+            0)
+              echo "Git tag ${VERSION} already exists" >&2
+              exit 1
+              ;;
+            2) ;;
+            *)
+              echo "Unable to prove Git tag ${VERSION} is unused" >&2
+              echo "${inspection}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: "Log in to GHCR"
         if: inputs.publish
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee

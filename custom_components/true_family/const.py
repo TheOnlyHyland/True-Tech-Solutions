@@ -4,7 +4,7 @@ from __future__ import annotations
 
 DOMAIN = "true_family"
 NAME = "True Family"
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 CONF_BASE_TOPIC = "base_topic"
 CONF_BOOTSTRAP = "bootstrap"

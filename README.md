@@ -48,7 +48,7 @@ configured.
 
 ## Supported Installation
 
-True Family `0.2.0` is an experimental Home Assistant `2026.7.4` integration and
+True Family `0.2.1` is an experimental Home Assistant `2026.7.4` integration and
 companion App. It creates seven unbound logical climates but does not migrate an
 existing heating system. Do not bind production radiators until the remaining
 physical-valve gates are complete.

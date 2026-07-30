@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1
+
+- Add the proprietary GitHub/HACS custom-repository installation path and local
+  integration branding.
+- Fix Home Assistant form serialization while preserving strict MQTT topic
+  validation.
+- Recover exact restored journals when discovery arrives during retry, error, or
+  an older setup attempt.
+- Require Home Assistant OS `2026.7.4` or newer for both integration and App.
+- Run the complete Home Assistant suite in release CI and reject reused Git and
+  container version tags.
+
 ## 0.2.0
 
 - Bind the App and integration to the permanent public repository identity.

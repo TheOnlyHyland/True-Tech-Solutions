@@ -212,6 +212,8 @@ def validate_project(
         "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9",
         'version: "0.11.33"',
         "uv sync --locked",
+        "git ls-remote --exit-code --tags",
+        '"refs/tags/${VERSION}"',
         'case "${inspection,,}" in',
         "python -m unittest discover -s tests -p \"test_*.py\"",
     ):

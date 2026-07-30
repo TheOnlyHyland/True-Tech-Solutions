@@ -25,7 +25,14 @@ class IntegrationContractTests(unittest.TestCase):
     def test_hacs_and_app_distribution_contract_is_complete(self) -> None:
         manifest = json.loads((INTEGRATION / "manifest.json").read_text())
         hacs = json.loads((ROOT / "hacs.json").read_text())
-        self.assertEqual(hacs, {"name": "True Family", "homeassistant": "2026.7.4"})
+        self.assertEqual(
+            hacs,
+            {
+                "name": "True Family",
+                "homeassistant": "2026.7.4",
+                "hide_default_branch": True,
+            },
+        )
         self.assertEqual(manifest["codeowners"], ["@TheOnlyHyland"])
         self.assertEqual(
             manifest["issue_tracker"],

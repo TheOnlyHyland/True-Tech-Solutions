@@ -85,6 +85,8 @@ class ReleaseIdentityTests(unittest.TestCase):
         self.assertIn("uv run --frozen python -m unittest discover", workflow)
         self.assertIn("uv sync --locked", workflow)
         self.assertIn('version: "0.11.33"', workflow)
+        self.assertIn("git ls-remote --exit-code --tags", workflow)
+        self.assertIn('"refs/tags/${VERSION}"', workflow)
         self.assertIn('case "${inspection,,}" in', workflow)
         self.assertIn("Unable to prove version tag", workflow)
         self.assertIn('cosign: "true"', workflow)

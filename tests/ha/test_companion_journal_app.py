@@ -645,7 +645,7 @@ def test_app_package_is_explicit_and_has_no_elevated_surface() -> None:
 
     assert config == {
         "name": "True Family Journal",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "slug": "true_family_journal",
         "description": "Durable journal companion for True Family radiator valve replacement",
         "url": (

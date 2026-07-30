@@ -2,7 +2,7 @@
 
 ## Scope
 
-Version `0.2.0` is a minimal companion App vertical slice. It listens only on
+Version `0.2.1` is a minimal companion App vertical slice. It listens only on
 the Home Assistant internal App network at port `8765`; `config.yaml` publishes
 no host port and enables no ingress. The App does not import or modify the True
 Family integration. It treats a journal root as opaque canonical JSON apart
