@@ -47,9 +47,9 @@ removed from the OCI layout.
 
 ## Frozen Project Gate
 
-- 567 pytest cases passed in the pinned Home Assistant 2026.7.4 harness.
+- 568 pytest cases passed in the pinned Home Assistant 2026.7.4 harness.
 - 160 pure unittest cases passed.
-- 727 total tests passed, plus lock, Python, JSON, YAML, JavaScript, and shell
+- 728 total tests passed, plus lock, Python, JSON, YAML, JavaScript, and shell
   checks.
 
 ## Real Supervisor App-Only Evidence
@@ -125,15 +125,58 @@ automation, or heating path was connected.
   repository entry were deleted, private health became unreachable, and the App,
   repository, backup, and `true_family` integration were all verified absent.
 
+## Permanent Release Controlled Integration Evidence
+
+The user then approved a controlled integration gate on the same backed-up
+household Supervisor. The component was installed before the App, and the config
+entry used isolated MQTT root `true_family_gate`; it never subscribed or
+published under the household `zigbee2mqtt` root.
+
+- The first real REST config flow exposed an HTTP 500 caused by placing custom
+  `valid_base_topic` validation directly in the frontend-serialized Voluptuous
+  schema. No entry or journal existed at failure time.
+- The minimal fix uses serializable string fields, validates and normalizes after
+  submission, and returns a translated field error. A regression test exercises
+  Home Assistant's real serializer and wildcard rejection. The corrected project
+  passes 568 Home Assistant tests plus 160 pure tests, 728 total.
+- Corrected setup created one loaded config entry, exactly seven unbound revision
+  zero climates, and no bootstrap or migration plan. Sanitized admin status
+  reported no executor, no recovery token, and no writable provider path.
+- Zigbee permit join remained off, Heating Mode remained Off, and no pairing,
+  bootstrap, migration, Scheduler, dashboard, automation, or heating action was
+  invoked.
+- Explicit App restart and every cold-backup restart replaced discovery while the
+  integration returned to `loaded`, proving automatic permanent-identity rekey
+  and journal reopen behavior without persisting the discovery key.
+- Pre-restore backup `ae3b2705` and post-restore backup `31444538` each contained
+  one schema-v4 generation-zero journal, one durable provisioning receipt, and a
+  SQLite database with `quick_check` equal to `ok`. In both copies, the stored
+  revision matched canonical root digest
+  `3538a8d3e1111a09cbb360078f8cd9c71e04c6b1d640684ffc14eeaf59cf8d79`.
+- Supervisor backup job `1231f362fcce4b3a93afaa6363a809dc`, restore job
+  `ae934438a0424a25a0aad0c84817ca0a`, and post-restore backup job
+  `4002d6dc47cb4f7e82516eacbe30d256` all completed at 100 percent with empty error
+  lists. Restore reinstalled the deliberately uninstalled App, restored private
+  data, restarted it protected, and returned the entry to `loaded`.
+- Restore emitted one harmless frontend warning while removing the prior unknown
+  non-ingress App panel. No True Family setup, reload, journal, MQTT, or cleanup
+  error occurred.
+- Cleanup removed the config entry and seven climates before stopping the App,
+  then removed App/private data, both backups, repository, live component, and
+  downloaded backup material. Final Core restart reported the integration
+  unloaded; climate count returned from 20 to 13, MQTT radiator states rehydrated,
+  bridge connectivity returned on, permit join remained off, and Heating Mode
+  remained Off.
+
 ## Remaining Supervisor Gate
 
 - Inspect real Supervisor-applied process capability sets and `NoNewPrivs`, and
   verify watchdog recovery explicitly.
-- Install the integration in a separately approved controlled phase, exercise
-  signed journal provisioning and stale-key rejection, and verify config-entry
-  discovery, reload, and recovery.
-- Repeat cold backup and restore with a provisioned journal and verify the exact
-  pre-backup root after restore.
+- Deliberately issue one stale signed request against the permanent App identity;
+  automatic rekey recovery passed, but explicit stale-request rejection was not
+  exercised in this live gate.
+- Define and verify the supported integration distribution and install order so
+  App discovery never precedes component availability.
 - Repeat the combined App and integration lifecycle in a disposable environment
   when one becomes available.
 - Add amd64 build/runtime evidence if that architecture remains supported.

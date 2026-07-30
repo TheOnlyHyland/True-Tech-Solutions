@@ -129,6 +129,26 @@ class TrueFamilyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
         if user_input is not None:
+            raw_base_topic = user_input.get(CONF_BASE_TOPIC)
+            try:
+                base_topic = valid_base_topic(raw_base_topic)
+            except vol.Invalid:
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=vol.Schema(
+                        {
+                            vol.Required(
+                                CONF_BASE_TOPIC,
+                                default=(
+                                    raw_base_topic
+                                    if isinstance(raw_base_topic, str)
+                                    else DEFAULT_BASE_TOPIC
+                                ),
+                            ): str
+                        }
+                    ),
+                    errors={CONF_BASE_TOPIC: "invalid_base_topic"},
+                )
             journal_id = getattr(self, "_reference_journal_id", None)
             if journal_id is None:
                 journal_id = secrets.token_hex(16)
@@ -148,8 +168,8 @@ class TrueFamilyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         {
                             vol.Required(
                                 CONF_BASE_TOPIC,
-                                default=user_input[CONF_BASE_TOPIC],
-                            ): valid_base_topic
+                                default=base_topic,
+                            ): str
                         }
                     ),
                     errors={"base": "journal_corrupt_or_unsafe"},
@@ -161,8 +181,8 @@ class TrueFamilyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         {
                             vol.Required(
                                 CONF_BASE_TOPIC,
-                                default=user_input[CONF_BASE_TOPIC],
-                            ): valid_base_topic
+                                default=base_topic,
+                            ): str
                         }
                     ),
                     errors={"base": "journal_durability_unavailable"},
@@ -170,7 +190,7 @@ class TrueFamilyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_create_entry(
                 title=NAME,
                 data={
-                    CONF_BASE_TOPIC: user_input[CONF_BASE_TOPIC],
+                    CONF_BASE_TOPIC: base_topic,
                     CONF_REFERENCE_JOURNAL_ID: journal_id,
                     CONF_ROOMS: rooms_as_dict(default_rooms()),
                 },
@@ -182,7 +202,7 @@ class TrueFamilyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_BASE_TOPIC,
                         default=DEFAULT_BASE_TOPIC,
-                    ): valid_base_topic
+                    ): str
                 }
             ),
         )

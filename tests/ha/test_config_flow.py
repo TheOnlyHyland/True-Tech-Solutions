@@ -8,9 +8,11 @@ from unittest.mock import AsyncMock, patch
 
 from homeassistant.config_entries import ConfigEntryState, SOURCE_HASSIO, SOURCE_USER
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+import voluptuous_serialize
 
 from custom_components import true_family as true_family_integration
 from custom_components.true_family.config_flow import valid_base_topic
@@ -125,6 +127,32 @@ async def test_config_flow_without_discovered_app_is_retryable_before_mutation(
 
     assert result["type"] == "form"
     assert result["errors"] == {"base": "journal_durability_unavailable"}
+    assert hass.config_entries.async_entries(DOMAIN) == []
+
+
+async def test_config_flow_form_serializes_and_rejects_invalid_topic(
+    hass: HomeAssistant,
+) -> None:
+    """Keep custom validation out of the frontend-serialized form schema."""
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_USER},
+    )
+    serialized = voluptuous_serialize.convert(
+        result["data_schema"],
+        custom_serializer=cv.custom_serializer,
+    )
+    assert serialized[0]["name"] == CONF_BASE_TOPIC
+    assert serialized[0]["type"] == "string"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_BASE_TOPIC: "true_family_gate/#"},
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {CONF_BASE_TOPIC: "invalid_base_topic"}
     assert hass.config_entries.async_entries(DOMAIN) == []
 
 

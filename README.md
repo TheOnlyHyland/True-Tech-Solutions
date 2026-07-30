@@ -153,6 +153,22 @@ crash recovery, actual process capabilities, and `NoNewPrivs` remain open. The
 App, private data, test backup, and repository were removed, and the release is
 not currently installed.
 
+A later controlled integration gate installed the component before the App and
+used isolated MQTT root `true_family_gate`. The first real REST flow exposed a
+Home Assistant `2026.7.4` form-serialization defect; the source now keeps custom
+topic validation outside the serializable form schema and has a regression test
+for both serialization and wildcard rejection. The complete gate passes 568 Home
+Assistant tests and 160 pure tests, 728 total. Live setup created exactly seven
+unbound, unavailable logical climates and a signed schema-v4 generation-zero
+journal without opening Zigbee joining or changing heating. App restart, cold
+backup, full App uninstall, Supervisor restore, automatic config-entry reload,
+and post-restore backup all retained exact journal digest
+`3538a8d3e1111a09cbb360078f8cd9c71e04c6b1d640684ffc14eeaf59cf8d79`
+and its durable provisioning receipt. The entry, climates, App, private data,
+backups, repository, component, and temporary downloads were removed afterward;
+Core, MQTT, Zigbee, climate count, and heating returned to their original
+baseline.
+
 The remote journal is the only production default; the earlier raw-file backend
 is retained as isolated reference/test code and is never a fallback. SQLite's
 signed capability is explicitly process-crash-only. It can persist and reload

@@ -6,6 +6,7 @@
       "journal_app_discovery_invalid": "The discovered True Family Journal service was invalid."
     },
     "error": {
+      "invalid_base_topic": "Enter a concrete MQTT topic without wildcards.",
       "journal_corrupt_or_unsafe": "The reference journal failed its integrity or security checks.",
       "journal_durability_unavailable": "Crash-durable reference storage is unavailable."
     },
