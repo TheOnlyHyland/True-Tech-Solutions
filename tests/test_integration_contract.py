@@ -1,0 +1,89 @@
+"""Static safety contract for the non-installed custom integration."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import unittest
+
+
+ROOT = Path(__file__).parents[1]
+INTEGRATION = ROOT / "custom_components" / "true_family"
+
+
+class IntegrationContractTests(unittest.TestCase):
+    def test_manifest_declares_local_mqtt_helper(self) -> None:
+        manifest = json.loads((INTEGRATION / "manifest.json").read_text())
+        self.assertEqual(manifest["domain"], "true_family")
+        self.assertEqual(manifest["integration_type"], "helper")
+        self.assertEqual(manifest["iot_class"], "local_push")
+        self.assertEqual(manifest["dependencies"], ["mqtt"])
+        self.assertTrue(manifest["config_flow"])
+
+    def test_every_websocket_command_requires_admin(self) -> None:
+        source = (INTEGRATION / "websocket.py").read_text()
+        self.assertEqual(source.count("@websocket_api.websocket_command"), 12)
+        self.assertEqual(source.count("@websocket_api.require_admin"), 12)
+
+    def test_forbidden_internal_and_destructive_paths_are_absent(self) -> None:
+        source = "\n".join(
+            path.read_text()
+            for path in INTEGRATION.rglob("*")
+            if path.suffix in {".py", ".json"}
+        )
+        for forbidden in (
+            ".storage",
+            "device/remove",
+            "force_remove",
+            "homeassistant_rename",
+            "permit_join(254",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_mqtt_publish_is_confined_to_the_bridge_adapter(self) -> None:
+        publishers = []
+        for path in INTEGRATION.glob("*.py"):
+            if "mqtt.async_publish" in path.read_text():
+                publishers.append(path.name)
+        self.assertEqual(publishers, ["mqtt.py"])
+
+    def test_ha_2026_registry_and_websocket_context_apis_are_used(self) -> None:
+        replacement = (INTEGRATION / "replacement.py").read_text()
+        websocket = (INTEGRATION / "websocket.py").read_text()
+        self.assertNotIn("async_get_entry(", replacement)
+        self.assertIn(".async_get(binding.registry_entry_id)", replacement)
+        self.assertEqual(websocket.count("connection.context(msg)"), 4)
+
+    def test_permit_join_requires_ack_and_fresh_readback_before_persistence(self) -> None:
+        mqtt_source = (INTEGRATION / "mqtt.py").read_text()
+        replacement = (INTEGRATION / "replacement.py").read_text()
+        self.assertIn("bridge/response/permit_join", mqtt_source)
+        self.assertIn("await asyncio.wait_for(future", mqtt_source)
+        self.assertIn("state.last_updated > command_started", replacement)
+        self.assertLess(
+            replacement.index("await self._async_test_binding("),
+            replacement.index("room.binding = binding"),
+        )
+
+    def test_runtime_tasks_are_owned_by_the_config_entry(self) -> None:
+        source = (INTEGRATION / "replacement.py").read_text()
+        self.assertIn("self.entry.async_create_task", source)
+        self.assertNotIn("self.hass.async_create_task", source)
+
+    def test_unconfirmed_join_lease_blocks_new_pairing(self) -> None:
+        source = (INTEGRATION / "replacement.py").read_text()
+        self.assertIn("self._join_owner_session_id is not None", source)
+        self.assertIn("self._timeout_tasks: dict[str, asyncio.Task]", source)
+        self.assertIn("self._join_owner_session_id = None", source)
+
+    def test_repair_and_replacement_are_explicit_operations(self) -> None:
+        source = (INTEGRATION / "websocket.py").read_text()
+        self.assertIn('vol.Required("operation")', source)
+        self.assertIn('vol.In(["replace", "repair"])', source)
+
+    def test_live_workspace_integration_was_not_created(self) -> None:
+        self.assertFalse(Path("/homeassistant/custom_components/true_family").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

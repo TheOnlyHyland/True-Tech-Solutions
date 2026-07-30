@@ -1,0 +1,12 @@
+{
+  "domain": "true_family",
+  "name": "True Family",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["mqtt"],
+  "after_dependencies": ["hassio"],
+  "documentation": "https://github.com/TheOnlyHyland/True-Tech-Solutions/tree/main/custom_components/true_family",
+  "integration_type": "helper",
+  "iot_class": "local_push",
+  "version": "0.2.0"
+}

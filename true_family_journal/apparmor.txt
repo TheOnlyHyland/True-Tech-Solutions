@@ -1,0 +1,28 @@
+#include <tunables/global>
+
+profile true_family_journal flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix stream,
+  signal (receive),
+  signal (send) set=(kill,term,int,hup,cont),
+
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/lib/bashio/** ix,
+  /run/{,**} rwk,
+  /tmp/{,**} rwk,
+
+  /app/run.sh rix,
+  /app/server.py r,
+  /usr/lib/python3*/** mr,
+  /usr/lib/** mr,
+  /lib/** mr,
+  /etc/{,**} r,
+  /proc/{,**} r,
+  /data/{,**} rwk,
+}

@@ -1,0 +1,22 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "True Family is already configured.",
+      "journal_app_discovered": "True Family Journal was discovered and is ready for setup.",
+      "journal_app_discovery_invalid": "The discovered True Family Journal service was invalid."
+    },
+    "error": {
+      "journal_corrupt_or_unsafe": "The reference journal failed its integrity or security checks.",
+      "journal_durability_unavailable": "Crash-durable reference storage is unavailable."
+    },
+    "step": {
+      "user": {
+        "title": "Set up True Family",
+        "description": "Create the permanent logical room layer. No devices are changed during setup.",
+        "data": {
+          "base_topic": "Zigbee2MQTT base topic"
+        }
+      }
+    }
+  }
+}

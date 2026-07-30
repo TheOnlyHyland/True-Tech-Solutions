@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT="$(dirname -- "$SCRIPT_DIR")"
+ROOT="${TRUE_FAMILY_HA_HARNESS_ROOT:-/data/.cache/opencode-tmp/opencode/true-family-ha-2026.7.4}"
+UV="$ROOT/bin/uv"
+
+if [ ! -x "$UV" ]; then
+  printf '%s\n' "Harness uv binary is missing: $UV" >&2
+  exit 1
+fi
+
+exec env -i \
+  PATH="/usr/bin:/bin" \
+  HOME="$ROOT/home" \
+  USER="opencode-test" \
+  LOGNAME="opencode-test" \
+  LANG="C.UTF-8" \
+  LC_ALL="C.UTF-8" \
+  TZ="UTC" \
+  TMPDIR="$ROOT/tmp" \
+  XDG_BIN_HOME="$ROOT/bin" \
+  XDG_CACHE_HOME="$ROOT/xdg/cache" \
+  XDG_CONFIG_HOME="$ROOT/xdg/config" \
+  XDG_CONFIG_DIRS="$ROOT/xdg/config-dirs" \
+  XDG_DATA_HOME="$ROOT/xdg/data" \
+  XDG_STATE_HOME="$ROOT/xdg/state" \
+  UV_CACHE_DIR="$ROOT/cache/uv" \
+  UV_CREDENTIALS_DIR="$ROOT/xdg/data/uv/credentials" \
+  UV_KEYRING_PROVIDER="disabled" \
+  UV_LINK_MODE="hardlink" \
+  UV_MANAGED_PYTHON="1" \
+  UV_MALWARE_CHECK="0" \
+  UV_NO_ENV_FILE="1" \
+  UV_NO_MODIFY_PATH="1" \
+  UV_NO_SYSTEM_CONFIG="1" \
+  UV_PROJECT_ENVIRONMENT="$ROOT/venv" \
+  UV_PYTHON_BIN_DIR="$ROOT/bin" \
+  UV_PYTHON_CACHE_DIR="$ROOT/cache/python" \
+  UV_PYTHON_INSTALL_DIR="$ROOT/python" \
+  UV_TOOL_BIN_DIR="$ROOT/bin" \
+  UV_TOOL_DIR="$ROOT/tools" \
+  UV_UNMANAGED_INSTALL="$ROOT/bin" \
+  PYTHONHASHSEED="0" \
+  PYTHONNOUSERSITE="1" \
+  PYTHONPYCACHEPREFIX="$ROOT/cache/pycache" \
+  COVERAGE_FILE="$ROOT/state/.coverage" \
+  NO_PROXY="127.0.0.1,localhost,::1" \
+    "$UV" run \
+    --directory "$PROJECT" \
+    --frozen \
+    --offline \
+    -- pytest \
+    --basetemp="$ROOT/tmp/pytest" \
+    -o "cache_dir=$ROOT/cache/pytest" \
+    "$@"

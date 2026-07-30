@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "state": "bound",
+  "canonical_repository_url": "https://github.com/TheOnlyHyland/True-Tech-Solutions",
+  "repository_slug": "8c9c720e",
+  "app_slug": "true_family_journal",
+  "full_app_slug": "8c9c720e_true_family_journal",
+  "hostname": "8c9c720e-true-family-journal",
+  "image": "ghcr.io/theonlyhyland/true-family-journal",
+  "cosign_oidc_issuer": "https://token.actions.githubusercontent.com",
+  "cosign_certificate_identity": "https://github.com/TheOnlyHyland/True-Tech-Solutions/.github/workflows/release-app.yaml@refs/heads/main"
+}

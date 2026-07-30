@@ -1,0 +1,52 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT="$(dirname -- "$SCRIPT_DIR")"
+ROOT="${TRUE_FAMILY_HA_HARNESS_ROOT:-/data/.cache/opencode-tmp/opencode/true-family-ha-2026.7.4}"
+PYTHON="$ROOT/venv/bin/python"
+UV="$ROOT/bin/uv"
+
+env -i \
+  PATH="/usr/bin:/bin" \
+  HOME="$ROOT/home" \
+  LANG="C.UTF-8" \
+  LC_ALL="C.UTF-8" \
+  XDG_CACHE_HOME="$ROOT/xdg/cache" \
+  UV_CACHE_DIR="$ROOT/cache/uv" \
+  UV_MANAGED_PYTHON="1" \
+  UV_NO_ENV_FILE="1" \
+  UV_NO_SYSTEM_CONFIG="1" \
+  UV_PROJECT_ENVIRONMENT="$ROOT/venv" \
+  UV_PYTHON_INSTALL_DIR="$ROOT/python" \
+  "$UV" lock --check --offline --directory "$PROJECT"
+
+"$PROJECT/scripts/ha-test-harness" -q
+
+"$PYTHON" "$PROJECT/scripts/release_identity.py" check --require-bound
+
+env PYTHONPYCACHEPREFIX="$ROOT/cache/pycache" \
+  "$PYTHON" -m unittest discover \
+  -s "$PROJECT/tests" \
+  -p "test_*.py"
+
+env PYTHONPYCACHEPREFIX="$ROOT/cache/pycache" \
+  "$PYTHON" -m compileall -q \
+  "$PROJECT/custom_components/true_family" \
+  "$PROJECT/scripts/release_identity.py" \
+  "$PROJECT/true_family_journal/server.py" \
+  "$PROJECT/tests"
+
+node --check "$PROJECT/frontend/replacement-wizard.js"
+
+jq empty \
+  "$PROJECT/custom_components/true_family/manifest.json" \
+  "$PROJECT/custom_components/true_family/strings.json" \
+  "$PROJECT/custom_components/true_family/translations/en.json" \
+  "$PROJECT/release/identity.json"
+
+yq '.' \
+  "$PROJECT/.github/workflows/release-app.yaml" \
+  "$PROJECT/repository.yaml" \
+  "$PROJECT/true_family_journal/config.yaml" \
+  >/dev/null
