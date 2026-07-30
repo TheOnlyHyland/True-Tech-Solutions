@@ -108,8 +108,8 @@ scripts/verify
 
 The verification script uses the pinned disposable Home Assistant 2026.7.4
 harness. Set `TRUE_FAMILY_HA_HARNESS_ROOT` when the harness is elsewhere. The
-current gate passes 571 Home Assistant runtime tests and 161 pure, protocol,
-persistence, release, and static contract tests, for 732 total.
+current gate passes 572 Home Assistant runtime tests and 161 pure, protocol,
+persistence, release, and static contract tests, for 733 total.
 
 ## Preview Frontend
 

@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 import pytest
 
+from custom_components import true_family as true_family_integration
 from custom_components.true_family.const import CONF_BASE_TOPIC, CONF_ROOMS, DOMAIN
 from custom_components.true_family.models import default_rooms, rooms_as_dict
 from custom_components.true_family.mqtt import JoinRequestError
@@ -24,6 +25,12 @@ from helpers import (
     async_wait_for_publish,
     create_physical_climate,
 )
+
+
+def test_yaml_configuration_is_explicitly_config_entry_only() -> None:
+    """Expose the standard schema required for config-entry-only setup."""
+
+    assert true_family_integration.CONFIG_SCHEMA({}) == {}
 
 
 async def test_setup_creates_seven_unavailable_logical_valves_and_unloads(

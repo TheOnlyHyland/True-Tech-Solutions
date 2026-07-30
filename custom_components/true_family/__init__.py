@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 
 from .bootstrap import BootstrapError, BootstrapRecord
 from .bootstrap_ha import validate_bootstrap_rooms
@@ -42,6 +43,7 @@ from .reference_providers_ha import (
 )
 from .replacement import ReplacementError, TrueFamilyRuntime
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 PLATFORMS = [Platform.CLIMATE]
 _LOGGER = logging.getLogger(__name__)
 
