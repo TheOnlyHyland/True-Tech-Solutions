@@ -138,8 +138,20 @@ and contains the expected arm64 and amd64 images plus in-toto provenance. The
 guarded workflow passed in non-publishing mode before publication, then signed
 and verified the published manifest. A separate checksum-verified Cosign `v3.0.6`
 run reproduced the exact workflow-identity, certificate-authority, claims, and
-transparency-log verification. The release has not been installed in Home
-Assistant.
+transparency-log verification.
+
+The permanent `0.2.0` release also passed a tightly scoped App-only test on a
+real aarch64 household Supervisor after the user chose that backed-up environment
+because no disposable HAOS target was available. Supervisor derived exact slug
+`8c9c720e_true_family_journal`, pulled the public image, and ran it protected
+under its custom AppArmor profile with every privileged API and host surface
+disabled. Private DNS, health, restart, discovery replacement, cold partial
+backup, and partial restore passed. The integration remained absent, so the
+signed journal protocol and config-entry reload could not be exercised; Core
+logged the expected missing-integration error when discovery fired. Watchdog
+crash recovery, actual process capabilities, and `NoNewPrivs` remain open. The
+App, private data, test backup, and repository were removed, and the release is
+not currently installed.
 
 The remote journal is the only production default; the earlier raw-file backend
 is retained as isolated reference/test code and is never a fallback. SQLite's

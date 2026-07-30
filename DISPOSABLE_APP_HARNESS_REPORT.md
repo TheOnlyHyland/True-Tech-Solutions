@@ -47,9 +47,10 @@ removed from the OCI layout.
 
 ## Frozen Project Gate
 
-- 563 pytest cases passed in the pinned Home Assistant 2026.7.4 harness.
-- 151 pure unittest cases passed.
-- 714 total tests passed, plus lock, Python, JSON, JavaScript, and shell checks.
+- 567 pytest cases passed in the pinned Home Assistant 2026.7.4 harness.
+- 160 pure unittest cases passed.
+- 727 total tests passed, plus lock, Python, JSON, YAML, JavaScript, and shell
+  checks.
 
 ## Real Supervisor App-Only Evidence
 
@@ -85,14 +86,56 @@ not relax the then-local integration trust boundary. A later source-only release
 gate bound version `0.2.0` to permanent repository prefix `8c9c720e`; that change
 was not installed during this test.
 
+## Permanent Release App-Only Evidence
+
+After public release, the user chose a tightly scoped App-only test on the
+backed-up household Supervisor because no disposable HAOS instance was available.
+The integration remained absent, and no MQTT, Zigbee, Scheduler, dashboard,
+automation, or heating path was connected.
+
+- Supervisor derived repository prefix `8c9c720e`, installed exact App slug
+  `8c9c720e_true_family_journal`, and pulled public version `0.2.0` without a
+  local build.
+- Supervisor reported protection mode and the custom AppArmor profile active.
+  Host networking, host PID, full access, devices, privileged capabilities,
+  Docker API, Supervisor API, Home Assistant API, ingress, and published network
+  mappings were all absent.
+- Private hostname `8c9c720e-true-family-journal` resolved internally and
+  `/healthz` returned the exact `true-family-journal-v1` response.
+- Initial startup, explicit restart, cold backup restart, and partial restore
+  restart each replaced discovery and returned to healthy steady state without
+  logging the discovery credential.
+- Cold partial backup `f418fd7f` contained only App version `0.2.0` and repository
+  metadata. Authoritative Supervisor backup job
+  `8409fea9f3f04f3c8d7d310e2fbe8fde` and restore job
+  `1c76471d0a6a4168a37af1d75507cb00` both completed at 100 percent with empty
+  error lists. The restored App retained its exact protected runtime metadata and
+  health response.
+- The App-only boundary prevented the external client from reading the
+  Core-restricted discovery secret, so no signed journal payload or stale-key
+  rejection was claimed for this release test. The backup therefore proved the
+  Supervisor cold lifecycle, not provisioned journal-content preservation.
+- Home Assistant Core logged `Integration 'true_family' not found` whenever App
+  discovery fired because the integration was deliberately not installed. This
+  is expected for the isolated test but is a real installation-order behavior.
+- Supervisor installed the watchdog URL disabled. No watchdog-induced crash was
+  attempted, and protected OpenCode access could not inspect actual process
+  capability sets or `NoNewPrivs`.
+- Uninstall removed the App and private data. The test backup and permanent
+  repository entry were deleted, private health became unreachable, and the App,
+  repository, backup, and `true_family` integration were all verified absent.
+
 ## Remaining Supervisor Gate
 
-- Publish and independently verify signed version `0.2.0`, then install and
-  verify the already-bound `8c9c720e_true_family_journal` identity.
 - Inspect real Supervisor-applied process capability sets and `NoNewPrivs`, and
   verify watchdog recovery explicitly.
-- Exercise Supervisor-managed restore and Home Assistant config-entry discovery,
-  reload, and recovery in a disposable environment.
+- Install the integration in a separately approved controlled phase, exercise
+  signed journal provisioning and stale-key rejection, and verify config-entry
+  discovery, reload, and recovery.
+- Repeat cold backup and restore with a provisioned journal and verify the exact
+  pre-backup root after restore.
+- Repeat the combined App and integration lifecycle in a disposable environment
+  when one becomes available.
 - Add amd64 build/runtime evidence if that architecture remains supported.
 
 This evidence remains process-crash-only. It does not certify arbitrary hardware
