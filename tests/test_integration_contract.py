@@ -127,8 +127,13 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertIn('vol.Required("operation")', source)
         self.assertIn('vol.In(["replace", "repair"])', source)
 
-    def test_live_workspace_integration_was_not_created(self) -> None:
-        self.assertFalse(Path("/homeassistant/custom_components/true_family").exists())
+    def test_config_entry_snapshot_reader_remains_unwired(self) -> None:
+        readers = [
+            path.name
+            for path in INTEGRATION.glob("*.py")
+            if "async_read_config_entry_reference_snapshot" in path.read_text()
+        ]
+        self.assertEqual(readers, ["reference_providers_ha.py"])
 
 
 if __name__ == "__main__":

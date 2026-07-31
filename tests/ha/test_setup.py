@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
@@ -11,9 +12,12 @@ from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
 from homeassistant.core import Context
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import storage
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import true_family as true_family_integration
+from custom_components.true_family import reference_providers_ha as providers
 from custom_components.true_family.const import CONF_BASE_TOPIC, CONF_ROOMS, DOMAIN
 from custom_components.true_family.models import default_rooms, rooms_as_dict
 from custom_components.true_family.mqtt import JoinRequestError
@@ -31,6 +35,104 @@ def test_yaml_configuration_is_explicitly_config_entry_only() -> None:
     """Expose the standard schema required for config-entry-only setup."""
 
     assert true_family_integration.CONFIG_SCHEMA({}) == {}
+
+
+def test_harness_imports_true_family_from_canonical_project_source() -> None:
+    """Never let the disposable harness resolve the installed live integration."""
+
+    project_source = Path(__file__).resolve().parents[2]
+    canonical_source = Path(
+        "/homeassistant/projects/true-family-trv-replacement"
+    ).resolve()
+    integration_file = Path(true_family_integration.__file__).resolve()
+    expected_file = (
+        project_source / "custom_components" / "true_family" / "__init__.py"
+    )
+
+    assert integration_file == expected_file
+    if canonical_source.is_dir():
+        assert project_source == canonical_source
+        assert integration_file.is_relative_to(
+            canonical_source / "custom_components" / "true_family"
+        )
+
+
+async def test_config_entry_reference_snapshot_reader_has_no_mutation_surface(
+    hass: HomeAssistant,
+) -> None:
+    """Prove the snapshot read cannot mutate or schedule Home Assistant work."""
+
+    generic = MockConfigEntry(
+        domain="generic_thermostat",
+        version=1,
+        minor_version=3,
+        data={},
+        options={
+            "name": "Read-only generic thermostat",
+            "heater": "switch.read_only_heater",
+            "target_sensor": "sensor.read_only_temperature",
+            "ac_mode": False,
+            "cold_tolerance": 0.3,
+            "hot_tolerance": 0.3,
+        },
+    )
+    template = MockConfigEntry(
+        domain="template",
+        version=1,
+        minor_version=2,
+        data={},
+        options={
+            "name": "Read-only template",
+            "template_type": "sensor",
+            "state": "{{ states('climate.read_only_source') }}",
+            "advanced_options": {
+                "availability": "{{ has_value('sensor.read_only_temperature') }}"
+            },
+        },
+    )
+    generic.add_to_hass(hass)
+    template.add_to_hass(hass)
+    policy = tuple(
+        sorted(
+            (
+                providers.ConfigEntryReferenceObjectPolicy(
+                    generic.entry_id,
+                    "generic_thermostat",
+                ),
+                providers.ConfigEntryReferenceObjectPolicy(
+                    template.entry_id,
+                    "template",
+                ),
+            ),
+            key=lambda item: item.entry_id,
+        )
+    )
+    service_call = AsyncMock()
+    store_save = AsyncMock()
+
+    with (
+        patch.object(hass.config_entries, "async_update_entry") as update_entry,
+        patch.object(hass.config_entries, "async_schedule_reload") as schedule_reload,
+        patch.object(type(hass.services), "async_call", service_call),
+        patch.object(storage.Store, "async_save", store_save),
+        patch.object(storage.Store, "async_delay_save") as store_save_delay,
+        patch.object(type(hass.bus), "async_fire") as fire_event,
+    ):
+        snapshots = await providers.async_read_config_entry_reference_snapshot(
+            hass,
+            policy,
+        )
+
+    assert tuple(snapshot.object_id for snapshot in snapshots) == tuple(
+        item.entry_id for item in policy
+    )
+    assert all(snapshot.writable is False for snapshot in snapshots)
+    update_entry.assert_not_called()
+    schedule_reload.assert_not_called()
+    service_call.assert_not_awaited()
+    store_save.assert_not_awaited()
+    store_save_delay.assert_not_called()
+    fire_event.assert_not_called()
 
 
 async def test_setup_creates_seven_unavailable_logical_valves_and_unloads(

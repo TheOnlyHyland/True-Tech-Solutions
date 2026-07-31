@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, fields, replace
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -33,13 +34,74 @@ def load_reference_providers():
 
 
 providers = load_reference_providers()
+migration = importlib.import_module(f"{PACKAGE_NAME}.reference_migration")
+projection = importlib.import_module(f"{PACKAGE_NAME}.reference_projection")
 transaction = importlib.import_module(f"{PACKAGE_NAME}.reference_transaction")
 NOW = datetime(2026, 7, 28, 12, tzinfo=UTC)
 RAW_FENCE_TOKEN = "private-raw-fence-capability-sentinel"
+COMPLETE_CONFIG_ENTRY_PAYLOAD = "complete-config-entry-payload-sentinel"
 
 
 def fence_token_digest(token: str):
     return transaction.derive_fence_token_digest(token)
+
+
+def canonical_digest(value) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+class FakeConfigEntries:
+    def __init__(self, entries) -> None:
+        self.entries = tuple(entries)
+        self.calls = []
+
+    def async_entries(self, domain):
+        self.calls.append(domain)
+        return [entry for entry in self.entries if entry.domain == domain]
+
+
+def config_entry(
+    entry_id: str,
+    domain: str,
+    options,
+    *,
+    data=None,
+    subentries=None,
+    version: int = 1,
+    minor_version: int | None = None,
+    modified_at: datetime = NOW,
+):
+    if minor_version is None:
+        minor_version = 3 if domain == "generic_thermostat" else 2
+    if domain == "template" and "template_type" not in options:
+        options = {"template_type": "sensor", **options}
+    return types.SimpleNamespace(
+        entry_id=entry_id,
+        domain=domain,
+        version=version,
+        minor_version=minor_version,
+        modified_at=modified_at,
+        data={} if data is None else data,
+        options=options,
+        subentries={} if subentries is None else subentries,
+    )
+
+
+def read_config_entry_snapshot(entries, policy):
+    manager = FakeConfigEntries(entries)
+    hass = types.SimpleNamespace(config_entries=manager)
+    snapshots = asyncio.run(
+        providers.async_read_config_entry_reference_snapshot(hass, policy)
+    )
+    return snapshots, manager
 
 
 def expected_manifest():
@@ -125,6 +187,429 @@ class Verifier:
     def verify(self, attestation, canonical_payload):
         self.calls.append((attestation, canonical_payload))
         return self.result
+
+
+class ConfigEntryReferenceSnapshotTests(unittest.TestCase):
+    def test_exact_projection_is_immutable_sorted_and_revision_bound(self) -> None:
+        state = "{{ states('climate.source_valve') }}"
+        availability = "{{ has_value('sensor.room_temperature') }}"
+        generic = config_entry(
+            "01-generic",
+            "generic_thermostat",
+            {
+                "name": COMPLETE_CONFIG_ENTRY_PAYLOAD,
+                "heater": "switch.radiator_relay",
+                "target_sensor": "sensor.room_temperature",
+                "ac_mode": False,
+                "cold_tolerance": 0.3,
+                "hot_tolerance": 0.3,
+            },
+        )
+        template = config_entry(
+            "02-template",
+            "template",
+            {
+                "name": COMPLETE_CONFIG_ENTRY_PAYLOAD,
+                "template_type": "sensor",
+                "state": state,
+                "advanced_options": {"availability": availability},
+            },
+        )
+        policy = (
+            providers.ConfigEntryReferenceObjectPolicy(
+                "01-generic", "generic_thermostat"
+            ),
+            providers.ConfigEntryReferenceObjectPolicy("02-template", "template"),
+        )
+
+        snapshots, manager = read_config_entry_snapshot(
+            (template, generic),
+            policy,
+        )
+
+        self.assertEqual(manager.calls, ["generic_thermostat", "template"])
+        self.assertEqual(
+            tuple(snapshot.object_id for snapshot in snapshots),
+            ("01-generic", "02-template"),
+        )
+        self.assertEqual(
+            snapshots[0].payload,
+            {
+                "heater": "switch.radiator_relay",
+                "target_sensor": "sensor.room_temperature",
+            },
+        )
+        self.assertEqual(
+            snapshots[1].payload,
+            {
+                "state": state,
+                "availability_template": availability,
+            },
+        )
+        self.assertTrue(all(snapshot.writable is False for snapshot in snapshots))
+        self.assertEqual(
+            snapshots[1].fingerprint,
+            canonical_digest(
+                {
+                    "state": state,
+                    "availability_template": availability,
+                }
+            ),
+        )
+        self.assertEqual(
+            snapshots[1].revision,
+            canonical_digest(
+                {
+                    "modified_at": NOW.isoformat(),
+                    "version": 1,
+                    "minor_version": 2,
+                    "projected_fingerprint": snapshots[1].fingerprint,
+                }
+            ),
+        )
+
+        template.options["state"] = "changed after snapshot"
+        template.options["advanced_options"]["availability"] = "changed"
+        self.assertEqual(snapshots[1].payload["state"], state)
+        self.assertEqual(
+            snapshots[1].payload["availability_template"],
+            availability,
+        )
+        with self.assertRaises(TypeError):
+            snapshots[1].payload["state"] = "mutation"  # type: ignore[index]
+
+        reference_document = snapshots[1].as_reference_document()
+        self.assertEqual(
+            migration.canonical_document_fingerprint(reference_document),
+            snapshots[1].fingerprint,
+        )
+        availability_scan = projection.scan_semantic_references(
+            reference_document.payload,
+            "sensor.room_temperature",
+            provider="config_entry",
+        )
+        self.assertEqual(
+            availability_scan.replaceable_paths,
+            (("availability_template",),),
+        )
+        self.assertEqual(availability_scan.blocked, ())
+        replaced, count = projection.replace_semantic_references(
+            reference_document.payload,
+            "sensor.room_temperature",
+            "sensor.logical_room_temperature",
+            provider="config_entry",
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            replaced["availability_template"],
+            "{{ has_value('sensor.logical_room_temperature') }}",
+        )
+
+        rendered = repr(snapshots) + json.dumps(
+            [snapshot.as_public_summary() for snapshot in snapshots],
+            sort_keys=True,
+        )
+        self.assertNotIn(COMPLETE_CONFIG_ENTRY_PAYLOAD, rendered)
+        self.assertNotIn(state, rendered)
+        self.assertNotIn(availability, rendered)
+        self.assertNotIn("01-generic", rendered)
+        self.assertNotIn("02-template", rendered)
+        self.assertNotIn("data", {item.name for item in fields(snapshots[0])})
+        self.assertNotIn("options", {item.name for item in fields(snapshots[0])})
+
+    def test_template_projection_omits_absent_availability(self) -> None:
+        entry = config_entry(
+            "template-only",
+            "template",
+            {
+                "template_type": "sensor",
+                "state": "{{ is_state('binary_sensor.window', 'on') }}",
+                "advanced_options": {},
+            },
+        )
+        policy = (
+            providers.ConfigEntryReferenceObjectPolicy("template-only", "template"),
+        )
+
+        snapshots, _manager = read_config_entry_snapshot((entry,), policy)
+
+        self.assertEqual(
+            snapshots[0].payload,
+            {"state": "{{ is_state('binary_sensor.window', 'on') }}"},
+        )
+
+    def test_revision_changes_for_projected_or_modified_at_drift(self) -> None:
+        policy = (
+            providers.ConfigEntryReferenceObjectPolicy("template-only", "template"),
+        )
+        first = config_entry(
+            "template-only",
+            "template",
+            {"state": "{{ states('sensor.first') }}"},
+        )
+        projected_drift = config_entry(
+            "template-only",
+            "template",
+            {"state": "{{ states('sensor.second') }}"},
+        )
+        timestamp_drift = config_entry(
+            "template-only",
+            "template",
+            {"state": "{{ states('sensor.first') }}"},
+            modified_at=NOW + timedelta(microseconds=1),
+        )
+
+        first_snapshot = read_config_entry_snapshot((first,), policy)[0][0]
+        projected_snapshot = read_config_entry_snapshot(
+            (projected_drift,), policy
+        )[0][0]
+        timestamp_snapshot = read_config_entry_snapshot(
+            (timestamp_drift,), policy
+        )[0][0]
+
+        self.assertNotEqual(first_snapshot.fingerprint, projected_snapshot.fingerprint)
+        self.assertNotEqual(first_snapshot.revision, projected_snapshot.revision)
+        self.assertEqual(first_snapshot.fingerprint, timestamp_snapshot.fingerprint)
+        self.assertNotEqual(first_snapshot.revision, timestamp_snapshot.revision)
+
+    def test_policy_is_exact_unique_and_canonically_ordered(self) -> None:
+        first = config_entry("entry-a", "template", {"state": "ready"})
+        second = config_entry("entry-b", "template", {"state": "ready"})
+        duplicate = config_entry("entry-a", "template", {"state": "ready"})
+
+        with self.assertRaises(providers.ConfigEntryReferenceSnapshotError):
+            providers.ConfigEntryReferenceObjectPolicy("entry", "unknown")
+        for malformed in (
+            (
+                providers.ConfigEntryReferenceObjectPolicy("entry-b", "template"),
+                providers.ConfigEntryReferenceObjectPolicy("entry-a", "template"),
+            ),
+            (
+                providers.ConfigEntryReferenceObjectPolicy("entry-a", "template"),
+                providers.ConfigEntryReferenceObjectPolicy("entry-a", "template"),
+            ),
+            [providers.ConfigEntryReferenceObjectPolicy("entry-a", "template")],
+        ):
+            with self.subTest(policy=malformed):
+                with self.assertRaises(providers.ConfigEntryReferenceSnapshotError):
+                    read_config_entry_snapshot((first, second), malformed)
+
+        policy = (
+            providers.ConfigEntryReferenceObjectPolicy("entry-a", "template"),
+        )
+        with self.assertRaises(providers.ConfigEntryReferenceSnapshotError):
+            read_config_entry_snapshot((), policy)
+        with self.assertRaises(providers.ConfigEntryReferenceSnapshotError):
+            read_config_entry_snapshot((first, duplicate), policy)
+
+        snapshots, _manager = read_config_entry_snapshot((first, second), policy)
+        self.assertEqual(
+            tuple(snapshot.object_id for snapshot in snapshots),
+            ("entry-a",),
+        )
+
+    def test_exact_policy_selects_four_of_five_thermostats_and_three_templates(
+        self,
+    ) -> None:
+        generic_ids = tuple(f"0{index}-generic" for index in range(1, 5))
+        template_ids = tuple(f"0{index}-template" for index in range(5, 8))
+        selected = tuple(
+            config_entry(
+                entry_id,
+                "generic_thermostat",
+                {
+                    "heater": f"switch.heater_{index}",
+                    "target_sensor": f"sensor.temperature_{index}",
+                },
+            )
+            for index, entry_id in enumerate(generic_ids, start=1)
+        ) + tuple(
+            config_entry(
+                entry_id,
+                "template",
+                {"state": f"{{{{ states('climate.source_{index}') }}}}"},
+            )
+            for index, entry_id in enumerate(template_ids, start=5)
+        )
+        cinema = config_entry(
+            "99-cinema",
+            "generic_thermostat",
+            {
+                "heater": "switch.cinema_heater",
+                "target_sensor": "sensor.cinema_temperature",
+            },
+        )
+        policy = tuple(
+            sorted(
+                (
+                    *(
+                        providers.ConfigEntryReferenceObjectPolicy(
+                            entry_id,
+                            "generic_thermostat",
+                        )
+                        for entry_id in generic_ids
+                    ),
+                    *(
+                        providers.ConfigEntryReferenceObjectPolicy(
+                            entry_id,
+                            "template",
+                        )
+                        for entry_id in template_ids
+                    ),
+                ),
+                key=lambda item: item.entry_id,
+            )
+        )
+
+        snapshots, _manager = read_config_entry_snapshot(
+            tuple(reversed((*selected, cinema))),
+            policy,
+        )
+
+        self.assertEqual(
+            tuple(snapshot.object_id for snapshot in snapshots),
+            tuple(item.entry_id for item in policy),
+        )
+        self.assertNotIn(
+            "99-cinema",
+            {snapshot.object_id for snapshot in snapshots},
+        )
+
+    def test_schema_versions_and_projected_shapes_fail_closed(self) -> None:
+        secret = COMPLETE_CONFIG_ENTRY_PAYLOAD
+        template_policy = (
+            providers.ConfigEntryReferenceObjectPolicy("entry", "template"),
+        )
+        malformed_entries = (
+            config_entry(
+                "entry",
+                "template",
+                {"state": "ready"},
+                version=2,
+            ),
+            config_entry(
+                "entry",
+                "template",
+                {"state": "ready"},
+                minor_version=1,
+            ),
+            config_entry(
+                "entry",
+                "template",
+                {"state": "ready"},
+                data={"private": secret},
+            ),
+            config_entry(
+                "entry",
+                "template",
+                {"state": "ready", "unexpected": secret},
+            ),
+            config_entry("entry", "template", {"name": secret}),
+            config_entry(
+                "entry",
+                "template",
+                {
+                    "state": "ready",
+                    "advanced_options": {"availability": "true", "extra": secret},
+                },
+            ),
+            config_entry(
+                "entry",
+                "template",
+                {"template_type": "switch", "state": "ready"},
+            ),
+        )
+        for entry in malformed_entries:
+            with self.subTest(entry=entry):
+                with self.assertRaises(
+                    providers.ConfigEntryReferenceSnapshotError
+                ) as caught:
+                    read_config_entry_snapshot((entry,), template_policy)
+                rendered = str(caught.exception) + repr(caught.exception)
+                self.assertNotIn(secret, rendered)
+                self.assertNotIn(repr(entry.options), rendered)
+
+        generic_policy = (
+            providers.ConfigEntryReferenceObjectPolicy(
+                "entry", "generic_thermostat"
+            ),
+        )
+        bad_generic = config_entry(
+            "entry",
+            "generic_thermostat",
+            {
+                "heater": "climate.not_a_heater",
+                "target_sensor": "sensor.temperature",
+            },
+        )
+        with self.assertRaises(providers.ConfigEntryReferenceSnapshotError):
+            read_config_entry_snapshot((bad_generic,), generic_policy)
+
+    def test_dynamic_and_ambiguous_jinja_is_rejected_without_leakage(self) -> None:
+        policy = (
+            providers.ConfigEntryReferenceObjectPolicy("entry", "template"),
+        )
+        unsafe_templates = (
+            "{{ states(entity_id) }}",
+            "{{ states('sensor.private') ~ states('sensor.private') }}",
+            "{{ states.sensor.private.state }}",
+            "{{ expand('group.private') | list }}",
+            "{{ states('sensor.private')",
+        )
+        for template in unsafe_templates:
+            with self.subTest(template=template):
+                entry = config_entry("entry", "template", {"state": template})
+                with self.assertRaises(
+                    providers.ConfigEntryReferenceSnapshotError
+                ) as caught:
+                    read_config_entry_snapshot((entry,), policy)
+                rendered = str(caught.exception) + repr(caught.exception)
+                self.assertNotIn(template, rendered)
+                self.assertNotIn(repr(entry.options), rendered)
+
+        oversized = "{{ states('sensor.private') }}" + (
+            "x" * providers._CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_BYTES
+        )
+        with self.assertRaises(providers.ConfigEntryReferenceSnapshotError):
+            read_config_entry_snapshot(
+                (config_entry("entry", "template", {"state": oversized}),),
+                policy,
+            )
+
+    def test_template_entity_count_boundary_is_exact(self) -> None:
+        policy = (
+            providers.ConfigEntryReferenceObjectPolicy("entry", "template"),
+        )
+
+        def template(entity_count: int) -> str:
+            return " ".join(
+                f"{{{{ states('sensor.source_{index}') }}}}"
+                for index in range(entity_count)
+            )
+
+        accepted = config_entry(
+            "entry",
+            "template",
+            {
+                "state": template(
+                    providers._CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_ENTITIES
+                )
+            },
+        )
+        snapshots, _manager = read_config_entry_snapshot((accepted,), policy)
+        self.assertEqual(snapshots[0].payload["state"], accepted.options["state"])
+
+        rejected = config_entry(
+            "entry",
+            "template",
+            {
+                "state": template(
+                    providers._CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_ENTITIES + 1
+                )
+            },
+        )
+        with self.assertRaises(providers.ConfigEntryReferenceSnapshotError):
+            read_config_entry_snapshot((rejected,), policy)
 
 
 class ReferenceProviderValidationTests(unittest.TestCase):

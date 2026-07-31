@@ -9,9 +9,15 @@ from enum import StrEnum
 import hashlib
 import json
 import re
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from .reference_migration import Revision, TRUE_FAMILY_PROVIDER_MANIFEST
+from .reference_migration import (
+    ReferenceDocument,
+    Revision,
+    TRUE_FAMILY_PROVIDER_MANIFEST,
+)
+from .reference_projection import scan_semantic_references
 from .reference_transaction import (
     BridgeDispatchAuthorization,
     BridgeObjectObservation,
@@ -46,6 +52,53 @@ _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SCHEDULER_SERVICES = ("add", "edit", "remove")
 _SCHEDULER_ATTRIBUTES = ("actions", "entities", "timeslots", "weekdays")
 _HOST_AUTHORITATIVE_PROVIDERS = frozenset({"active_yaml", "lovelace"})
+_CONFIG_ENTRY_REFERENCE_VERSIONS = {
+    "generic_thermostat": (1, 3),
+    "template": (1, 2),
+}
+_CONFIG_ENTRY_REFERENCE_ENTITY_PATTERN = re.compile(
+    r"(?<![a-z0-9_])(?P<entity>[a-z0-9_]+\.[a-z0-9_]+)(?![a-z0-9_])"
+)
+_CONFIG_ENTRY_REFERENCE_VALIDATION_ENTITY = (
+    "sensor.true_family_reference_validation_sentinel"
+)
+_CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_BYTES = 16_384
+_CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_ENTITIES = 64
+_GENERIC_THERMOSTAT_OPTION_FIELDS = frozenset(
+    {
+        "ac_mode",
+        "activity_temp",
+        "away_temp",
+        "cold_tolerance",
+        "comfort_temp",
+        "cycle_cooldown",
+        "eco_temp",
+        "heater",
+        "home_temp",
+        "hot_tolerance",
+        "keep_alive",
+        "max_cycle_duration",
+        "max_temp",
+        "min_cycle_duration",
+        "min_temp",
+        "name",
+        "sleep_temp",
+        "target_sensor",
+    }
+)
+_TEMPLATE_OPTION_FIELDS = frozenset(
+    {
+        "advanced_options",
+        "device_class",
+        "device_id",
+        "name",
+        "state",
+        "state_class",
+        "template_type",
+        "unit_of_measurement",
+    }
+)
+_TEMPLATE_REFERENCE_TYPE = "sensor"
 
 
 class InventoryStatus(StrEnum):
@@ -83,6 +136,36 @@ class BridgeRecoveryCapability(StrEnum):
 
 class ExternalAttestationError(ValueError):
     """Raised when external-writer evidence cannot be trusted."""
+
+
+class ConfigEntryReferenceSnapshotError(ValueError):
+    """Raised when an exact config-entry reference snapshot cannot be trusted."""
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigEntryReferenceObjectPolicy:
+    """Server-owned identity for one supported config-entry reference object."""
+
+    entry_id: str
+    domain: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.entry_id) is not str
+            or not self.entry_id
+            or self.entry_id != self.entry_id.strip()
+            or "\x00" in self.entry_id
+        ):
+            raise ConfigEntryReferenceSnapshotError(
+                "Config-entry reference policy contains an invalid identity."
+            )
+        if (
+            type(self.domain) is not str
+            or self.domain not in _CONFIG_ENTRY_REFERENCE_VERSIONS
+        ):
+            raise ConfigEntryReferenceSnapshotError(
+                "Config-entry reference policy contains an unsupported domain."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +339,55 @@ class InventoryObject:
             self.annotation, SourceAnnotation
         ):
             raise TypeError("Inventory object annotation is malformed.")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderDocumentSnapshot:
+    """Immutable projected provider document with its payload hidden from repr."""
+
+    provider: str
+    object_id: str = field(repr=False)
+    revision: str = field(repr=False)
+    payload: Mapping[str, Any] = field(repr=False)
+    writable: bool = field(default=False, init=False)
+    fingerprint: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_provider(self.provider)
+        _validate_nonempty_string(self.object_id, "Provider document object ID")
+        _validate_digest(self.revision, "Provider document revision")
+        canonical_payload = _copy_projected_payload(self.payload)
+        try:
+            fingerprint = _digest_json(canonical_payload)
+        except (TypeError, ValueError):
+            raise ConfigEntryReferenceSnapshotError(
+                "Projected provider document payload is not canonical."
+            ) from None
+        object.__setattr__(
+            self,
+            "payload",
+            _freeze_projected_payload(canonical_payload),
+        )
+        object.__setattr__(self, "fingerprint", fingerprint)
+
+    def as_public_summary(self) -> dict[str, str | bool]:
+        """Return payload-free metadata suitable for a public status surface."""
+
+        return {
+            "provider": self.provider,
+            "writable": self.writable,
+        }
+
+    def as_reference_document(self) -> ReferenceDocument:
+        """Return a canonical mutable copy for the existing planner boundary."""
+
+        return ReferenceDocument(
+            provider=self.provider,
+            object_id=self.object_id,
+            revision=self.revision,
+            payload=_copy_projected_payload(self.payload),
+            writable=False,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -883,6 +1015,95 @@ async def async_probe_active_yaml(
     return ProviderInventory.unavailable(provider)
 
 
+async def async_read_config_entry_reference_snapshot(
+    hass: HomeAssistant,
+    policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
+) -> tuple[ProviderDocumentSnapshot, ...]:
+    """Read an exact, projected config-entry snapshot without host mutations."""
+
+    _validate_config_entry_reference_policy(policy)
+    try:
+        expected_ids = tuple(item.entry_id for item in policy)
+        expected_id_set = frozenset(expected_ids)
+        selected_entries = tuple(
+            entry
+            for domain in sorted({item.domain for item in policy})
+            for entry in hass.config_entries.async_entries(domain)
+            if getattr(entry, "entry_id", None) in expected_id_set
+        )
+        entries_by_id: dict[str, Any] = {}
+        for entry in selected_entries:
+            entry_id = getattr(entry, "entry_id", None)
+            domain = getattr(entry, "domain", None)
+            if type(entry_id) is not str or type(domain) is not str:
+                raise ConfigEntryReferenceSnapshotError(
+                    "Selected config-entry reference object has an invalid shape."
+                )
+            if entry_id in entries_by_id:
+                raise ConfigEntryReferenceSnapshotError(
+                    "Selected config-entry references do not match the exact policy."
+                )
+            entries_by_id[entry_id] = entry
+
+        if tuple(sorted(entries_by_id)) != expected_ids:
+            raise ConfigEntryReferenceSnapshotError(
+                "Selected config-entry references do not match the exact policy."
+            )
+
+        snapshots: list[ProviderDocumentSnapshot] = []
+        for item in policy:
+            entry = entries_by_id[item.entry_id]
+            if entry.domain != item.domain:
+                raise ConfigEntryReferenceSnapshotError(
+                    "Selected config-entry references do not match the exact policy."
+                )
+            expected_version = _CONFIG_ENTRY_REFERENCE_VERSIONS[item.domain]
+            version = getattr(entry, "version", None)
+            minor_version = getattr(entry, "minor_version", None)
+            if (
+                type(version) is not int
+                or type(minor_version) is not int
+                or (version, minor_version) != expected_version
+            ):
+                raise ConfigEntryReferenceSnapshotError(
+                    "Selected config-entry reference schema version is unsupported."
+                )
+            modified_at = getattr(entry, "modified_at", None)
+            if (
+                not isinstance(modified_at, datetime)
+                or modified_at.utcoffset() != timedelta(0)
+            ):
+                raise ConfigEntryReferenceSnapshotError(
+                    "Selected config-entry reference object has an invalid shape."
+                )
+
+            projected = _project_config_entry_reference(entry, item.domain)
+            fingerprint = _digest_json(projected)
+            revision = _digest_json(
+                {
+                    "modified_at": modified_at.isoformat(),
+                    "version": version,
+                    "minor_version": minor_version,
+                    "projected_fingerprint": fingerprint,
+                }
+            )
+            snapshots.append(
+                ProviderDocumentSnapshot(
+                    provider="config_entry",
+                    object_id=item.entry_id,
+                    revision=revision,
+                    payload=projected,
+                )
+            )
+        return tuple(snapshots)
+    except ConfigEntryReferenceSnapshotError:
+        raise
+    except Exception:
+        raise ConfigEntryReferenceSnapshotError(
+            "Config-entry reference snapshot could not be read safely."
+        ) from None
+
+
 async def async_probe_config_entries(
     hass: HomeAssistant,
     *,
@@ -1183,6 +1404,199 @@ def _index_provider_items(
         else:
             indexed[item.provider] = item
     return indexed, duplicates
+
+
+def _validate_config_entry_reference_policy(
+    policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
+) -> None:
+    if type(policy) is not tuple:
+        raise ConfigEntryReferenceSnapshotError(
+            "Config-entry reference policy must be an immutable tuple."
+        )
+    if any(not isinstance(item, ConfigEntryReferenceObjectPolicy) for item in policy):
+        raise ConfigEntryReferenceSnapshotError(
+            "Config-entry reference policy is malformed."
+        )
+    entry_ids = tuple(item.entry_id for item in policy)
+    if entry_ids != tuple(sorted(entry_ids)) or len(entry_ids) != len(set(entry_ids)):
+        raise ConfigEntryReferenceSnapshotError(
+            "Config-entry reference policy must contain unique entry IDs in sorted order."
+        )
+
+
+def _project_config_entry_reference(
+    entry: Any,
+    domain: str,
+) -> dict[str, Any]:
+    data = getattr(entry, "data", None)
+    options = getattr(entry, "options", None)
+    subentries = getattr(entry, "subentries", None)
+    if (
+        not isinstance(data, Mapping)
+        or data
+        or not isinstance(options, Mapping)
+        or not isinstance(subentries, Mapping)
+        or subentries
+    ):
+        raise ConfigEntryReferenceSnapshotError(
+            "Selected config-entry reference object has an invalid shape."
+        )
+    option_fields = tuple(options)
+    if any(type(name) is not str for name in option_fields):
+        raise ConfigEntryReferenceSnapshotError(
+            "Selected config-entry reference object has an invalid shape."
+        )
+
+    projected: dict[str, Any]
+    if domain == "generic_thermostat":
+        if (
+            not set(option_fields) <= _GENERIC_THERMOSTAT_OPTION_FIELDS
+            or "heater" not in options
+            or "target_sensor" not in options
+            or not _is_projected_entity_id(options["heater"], {"fan", "switch"})
+            or not _is_projected_entity_id(options["target_sensor"], {"sensor"})
+        ):
+            raise ConfigEntryReferenceSnapshotError(
+                "Selected config-entry reference object has an invalid shape."
+            )
+        projected = {
+            "heater": options["heater"],
+            "target_sensor": options["target_sensor"],
+        }
+    elif domain == "template":
+        if (
+            not set(option_fields) <= _TEMPLATE_OPTION_FIELDS
+            or "state" not in options
+        ):
+            raise ConfigEntryReferenceSnapshotError(
+                "Selected config-entry reference object has an invalid shape."
+            )
+        if options.get("template_type") != _TEMPLATE_REFERENCE_TYPE:
+            raise ConfigEntryReferenceSnapshotError(
+                "Selected config-entry reference object has an invalid shape."
+            )
+        state = _validate_config_entry_reference_template(options["state"])
+        projected = {"state": state}
+        if "advanced_options" in options:
+            advanced_options = options["advanced_options"]
+            if not isinstance(advanced_options, Mapping) or any(
+                type(name) is not str for name in advanced_options
+            ):
+                raise ConfigEntryReferenceSnapshotError(
+                    "Selected config-entry reference object has an invalid shape."
+                )
+            if set(advanced_options) - {"availability"}:
+                raise ConfigEntryReferenceSnapshotError(
+                    "Selected config-entry reference object has an invalid shape."
+                )
+            if "availability" in advanced_options:
+                projected["availability_template"] = (
+                    _validate_config_entry_reference_template(
+                        advanced_options["availability"],
+                        field="availability_template",
+                    )
+                )
+    else:
+        raise ConfigEntryReferenceSnapshotError(
+            "Selected config-entry reference object has an unsupported domain."
+        )
+    _validate_projected_config_entry_reference(domain, projected)
+    return projected
+
+
+def _validate_projected_config_entry_reference(
+    domain: str,
+    projected: Mapping[str, Any],
+) -> None:
+    fields = set(projected)
+    if domain == "generic_thermostat":
+        valid = fields == {"heater", "target_sensor"}
+    else:
+        valid = fields in ({"state"}, {"availability_template", "state"})
+    if not valid:
+        raise ConfigEntryReferenceSnapshotError(
+            "Projected config-entry reference schema contains unexpected fields."
+        )
+
+
+def _validate_config_entry_reference_template(
+    value: Any,
+    *,
+    field: str = "state",
+) -> str:
+    if (
+        field not in {"availability_template", "state"}
+        or type(value) is not str
+        or not value
+        or "\x00" in value
+        or len(value) > _CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_BYTES
+        or len(value.encode("utf-8")) > _CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_BYTES
+    ):
+        raise ConfigEntryReferenceSnapshotError(
+            "Selected config-entry reference object has an invalid shape."
+        )
+    entity_ids = {
+        match.group("entity")
+        for match in _CONFIG_ENTRY_REFERENCE_ENTITY_PATTERN.finditer(value)
+    }
+    if len(entity_ids) > _CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_ENTITIES:
+        raise ConfigEntryReferenceSnapshotError(
+            "Config-entry reference template is too complex."
+        )
+    entity_ids.add(_CONFIG_ENTRY_REFERENCE_VALIDATION_ENTITY)
+    for entity_id in sorted(entity_ids):
+        scan = scan_semantic_references(
+            {field: value},
+            entity_id,
+            provider="config_entry",
+        )
+        if scan.blocked:
+            raise ConfigEntryReferenceSnapshotError(
+                "Config-entry reference template is dynamic or ambiguous."
+            )
+    return value
+
+
+def _is_projected_entity_id(value: Any, domains: set[str]) -> bool:
+    return bool(
+        type(value) is str
+        and _CONFIG_ENTRY_REFERENCE_ENTITY_PATTERN.fullmatch(value) is not None
+        and value.split(".", 1)[0] in domains
+    )
+
+
+def _copy_projected_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise ConfigEntryReferenceSnapshotError(
+            "Projected provider document payload must be a mapping."
+        )
+
+    def copy_value(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            if any(type(key) is not str for key in value):
+                raise ConfigEntryReferenceSnapshotError(
+                    "Projected provider document payload is not canonical."
+                )
+            return {key: copy_value(value[key]) for key in sorted(value)}
+        if type(value) in (list, tuple):
+            return [copy_value(item) for item in value]
+        if value is None or type(value) in (bool, int, float, str):
+            return value
+        raise ConfigEntryReferenceSnapshotError(
+            "Projected provider document payload is not canonical."
+        )
+
+    return copy_value(payload)
+
+
+def _freeze_projected_payload(value: Any) -> Any:
+    if type(value) is dict:
+        return MappingProxyType(
+            {key: _freeze_projected_payload(item) for key, item in value.items()}
+        )
+    if type(value) is list:
+        return tuple(_freeze_projected_payload(item) for item in value)
+    return value
 
 
 def _config_entry_key(domain: str, entry_id: str) -> str:
