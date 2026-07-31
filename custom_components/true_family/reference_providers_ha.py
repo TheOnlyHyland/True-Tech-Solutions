@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 import hashlib
 import json
+import math
 import re
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from .reference_migration import (
     ReferenceDocument,
@@ -64,6 +66,30 @@ _CONFIG_ENTRY_REFERENCE_VALIDATION_ENTITY = (
 )
 _CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_BYTES = 16_384
 _CONFIG_ENTRY_REFERENCE_TEMPLATE_MAX_ENTITIES = 64
+_EXACT_REFERENCE_INVENTORY_TIMEOUT_SECONDS = 30.0
+_CANCELLATION_CLEANUP_TIMEOUT_SECONDS = 0.25
+_REFERENCE_SNAPSHOT_MAX_DOCUMENTS_PER_PROVIDER = 512
+_REFERENCE_SNAPSHOT_MAX_DOCUMENTS = 1_024
+_REFERENCE_SNAPSHOT_MAX_OBJECT_KEY_BYTES = 512
+_REFERENCE_SNAPSHOT_MAX_DOCUMENT_BYTES = 1_048_576
+_REFERENCE_SNAPSHOT_MAX_AGGREGATE_BYTES = 16_777_216
+_REFERENCE_SNAPSHOT_MAX_INVENTORY_DIGEST_BYTES = 17_825_792
+_REFERENCE_SNAPSHOT_MAX_PAYLOAD_DEPTH = 100
+_REFERENCE_SNAPSHOT_MAX_PAYLOAD_NODES = 100_000
+_REFERENCE_SNAPSHOT_MAX_AGGREGATE_NODES = 100_000
+_REFERENCE_SNAPSHOT_MAX_INTEGER_BITS = 13_500
+_REFERENCE_SNAPSHOT_JSON_CHUNK_BYTES = 4_096
+_CONFIG_ENTRY_OPAQUE_KEY_PREFIX = "tf-reference-object-sha256-v1:"
+_PREPARED_PAYLOAD_FAILED = object()
+_RECOMPUTED_DOCUMENT_FAILED = object()
+_RAW_CONFIG_ENTRY_SNAPSHOT_FAILED = object()
+_CONFIG_ENTRY_SOURCE_FAILED = object()
+_SOURCE_STREAM_FAILED = object()
+_SOURCE_STREAM_END = object()
+_CLEANUP_MISSING = object()
+_COLLECTION_FAILED = object()
+_COLLECTION_TIMED_OUT = object()
+_EXACT_REFERENCE_INVENTORY_TOKEN = object()
 _GENERIC_THERMOSTAT_OPTION_FIELDS = frozenset(
     {
         "ac_mode",
@@ -142,11 +168,19 @@ class ConfigEntryReferenceSnapshotError(ValueError):
     """Raised when an exact config-entry reference snapshot cannot be trusted."""
 
 
+class ExactReferenceInventorySnapshotError(ValueError):
+    """Raised when an exact five-provider snapshot cannot be trusted."""
+
+
+class _SnapshotDeadlineExceeded(TimeoutError):
+    """Internal marker for synchronous metadata returning after the deadline."""
+
+
 @dataclass(frozen=True, slots=True)
 class ConfigEntryReferenceObjectPolicy:
     """Server-owned identity for one supported config-entry reference object."""
 
-    entry_id: str
+    entry_id: str = field(repr=False)
     domain: str
 
     def __post_init__(self) -> None:
@@ -218,7 +252,7 @@ class ExpectedProviderObjects:
     """Canonical expected object keys for one provider."""
 
     provider: str
-    object_keys: tuple[str, ...]
+    object_keys: tuple[str, ...] = field(repr=False)
 
     def __post_init__(self) -> None:
         _validate_provider(self.provider)
@@ -247,13 +281,17 @@ class ExpectedObjectManifest:
     """Exactly one expected-object set for every production provider."""
 
     revision: str
-    providers: tuple[ExpectedProviderObjects, ...]
+    providers: tuple[ExpectedProviderObjects, ...] = field(repr=False)
 
     def __post_init__(self) -> None:
+        if (
+            type(self.revision) is not str
+            or len(self.revision) > _REFERENCE_SNAPSHOT_MAX_DOCUMENT_BYTES
+        ):
+            raise ValueError("Expected manifest revision is malformed.")
         _validate_nonempty_string(self.revision, "Expected manifest revision")
-        if type(self.providers) is not tuple:
-            raise TypeError("Expected manifest providers must be a tuple.")
-        names = tuple(item.provider for item in self.providers)
+        providers = self._typed_providers()
+        names = tuple(item.provider for item in providers)
         if names != PROVIDER_NAMES:
             raise ValueError(
                 "Expected manifest providers must contain the five canonical names "
@@ -286,12 +324,13 @@ class ExpectedObjectManifest:
         """Return one provider's expected objects."""
 
         _validate_provider(provider)
-        return self.providers[PROVIDER_NAMES.index(provider)]
+        return self._typed_providers()[PROVIDER_NAMES.index(provider)]
 
     @property
     def digest(self) -> str:
         """Return a stable digest of the complete expected manifest."""
 
+        providers = self._typed_providers()
         return _digest_json(
             {
                 "revision": self.revision,
@@ -300,10 +339,23 @@ class ExpectedObjectManifest:
                         "provider": item.provider,
                         "objects": list(item.object_keys),
                     }
-                    for item in self.providers
+                    for item in providers
                 ],
             }
         )
+
+    def _typed_providers(self) -> tuple[ExpectedProviderObjects, ...]:
+        providers = self.providers
+        if type(providers) is not tuple or any(
+            type(item) is not ExpectedProviderObjects for item in providers
+        ):
+            raise TypeError(
+                "Expected manifest providers must be exact typed records."
+            )
+        for item in providers:
+            _validate_provider(item.provider)
+            _validate_object_keys(item.object_keys)
+        return providers
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,33 +394,72 @@ class InventoryObject:
 
 
 @dataclass(frozen=True, slots=True)
+class _PreparedProviderDocument:
+    payload: Any = field(repr=False)
+    fingerprint: str = field(repr=False)
+    payload_size: int
+    document_size: int
+    node_count: int
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class ProviderDocumentSnapshot:
     """Immutable projected provider document with its payload hidden from repr."""
 
     provider: str
     object_id: str = field(repr=False)
-    revision: str = field(repr=False)
-    payload: Mapping[str, Any] = field(repr=False)
+    revision: Revision = field(repr=False)
+    payload: Any = field(repr=False)
     writable: bool = field(default=False, init=False)
     fingerprint: str = field(init=False, repr=False)
+    _canonical_payload_size: int = field(init=False, repr=False, compare=False)
+    _canonical_document_size: int = field(init=False, repr=False, compare=False)
+    _canonical_node_count: int = field(init=False, repr=False, compare=False)
 
-    def __post_init__(self) -> None:
-        _validate_provider(self.provider)
-        _validate_nonempty_string(self.object_id, "Provider document object ID")
-        _validate_digest(self.revision, "Provider document revision")
-        canonical_payload = _copy_projected_payload(self.payload)
-        try:
-            fingerprint = _digest_json(canonical_payload)
-        except (TypeError, ValueError):
+    def __init__(
+        self,
+        provider: str,
+        object_id: str,
+        revision: Revision,
+        payload: Any,
+    ) -> None:
+        prepared = _prepare_provider_document_snapshot(
+            provider,
+            object_id,
+            revision,
+            payload,
+        )
+        if type(prepared) is not _PreparedProviderDocument:
+            object.__setattr__(self, "provider", "active_yaml")
+            object.__setattr__(self, "object_id", "")
+            object.__setattr__(self, "revision", 0)
+            object.__setattr__(self, "payload", MappingProxyType({}))
+            object.__setattr__(self, "writable", False)
+            del object_id, payload, provider, revision
             raise ConfigEntryReferenceSnapshotError(
-                "Projected provider document payload is not canonical."
-            ) from None
+                "Projected provider document is not canonical."
+            )
+        object.__setattr__(self, "provider", provider)
+        object.__setattr__(self, "object_id", object_id)
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "payload", prepared.payload)
+        object.__setattr__(self, "writable", False)
+        object.__setattr__(self, "fingerprint", prepared.fingerprint)
         object.__setattr__(
             self,
-            "payload",
-            _freeze_projected_payload(canonical_payload),
+            "_canonical_payload_size",
+            prepared.payload_size,
         )
-        object.__setattr__(self, "fingerprint", fingerprint)
+        object.__setattr__(
+            self,
+            "_canonical_document_size",
+            prepared.document_size,
+        )
+        object.__setattr__(
+            self,
+            "_canonical_node_count",
+            prepared.node_count,
+        )
 
     def as_public_summary(self) -> dict[str, str | bool]:
         """Return payload-free metadata suitable for a public status surface."""
@@ -388,6 +479,661 @@ class ProviderDocumentSnapshot:
             payload=_copy_projected_payload(self.payload),
             writable=False,
         )
+
+
+@runtime_checkable
+class ReadOnlyProviderSnapshotSource(Protocol):
+    """Read-only source for one exact provider document set."""
+
+    @property
+    def name(self) -> str:
+        """Return one canonical provider name."""
+
+        ...
+
+    @property
+    def expected_objects(self) -> ExpectedProviderObjects:
+        """Return the source-owned exact opaque object set."""
+
+        ...
+
+    def async_read_snapshot(
+        self,
+        hass: HomeAssistant,
+    ) -> AsyncIterator[ProviderDocumentSnapshot]:
+        """Stream immutable read-only documents in canonical key order."""
+
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class _SnapshotSourceRegistration:
+    name: str
+    expected_objects: ExpectedProviderObjects = field(repr=False)
+    reader: Callable[
+        [HomeAssistant],
+        AsyncIterator[ProviderDocumentSnapshot],
+    ] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _CollectedProviderStream:
+    inventory: ProviderDocumentInventory
+    document_count: int
+    canonical_size: int
+    node_count: int
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ConfigEntryReferenceSnapshotSource:
+    """Opaque read-only wrapper around the exact config-entry projector."""
+
+    _policy: tuple[ConfigEntryReferenceObjectPolicy, ...] = field(repr=False)
+    name: str = field(default="config_entry", init=False)
+    expected_objects: ExpectedProviderObjects = field(init=False, repr=False)
+
+    def __init__(
+        self,
+        policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
+    ) -> None:
+        if not _config_entry_reference_policy_is_valid(policy):
+            object.__setattr__(self, "_policy", ())
+            object.__setattr__(self, "name", "config_entry")
+            object.__setattr__(
+                self,
+                "expected_objects",
+                ExpectedProviderObjects("config_entry", ()),
+            )
+            del policy
+            raise ConfigEntryReferenceSnapshotError(
+                "Config-entry reference policy is malformed."
+            )
+        object.__setattr__(self, "_policy", policy)
+        object.__setattr__(self, "name", "config_entry")
+        object.__setattr__(
+            self,
+            "expected_objects",
+            ExpectedProviderObjects(
+                "config_entry",
+                tuple(
+                    sorted(
+                        _config_entry_reference_opaque_key(item.domain, item.entry_id)
+                        for item in policy
+                    )
+                ),
+            ),
+        )
+
+    def async_read_snapshot(
+        self,
+        hass: HomeAssistant,
+    ) -> AsyncIterator[ProviderDocumentSnapshot]:
+        """Stream raw entry projections under deterministic opaque object keys."""
+
+        return _async_iter_opaque_config_entry_snapshot(
+            hass,
+            self._policy,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderDocumentInventory:
+    """Exact immutable documents and digest for one canonical provider."""
+
+    provider: str
+    documents: tuple[ProviderDocumentSnapshot, ...] = field(repr=False)
+    digest: str = field(init=False, repr=False)
+    _canonical_size: int = field(init=False, repr=False, compare=False)
+    _canonical_node_count: int = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        _validate_provider(self.provider)
+        if type(self.documents) is not tuple or any(
+            type(item) is not ProviderDocumentSnapshot for item in self.documents
+        ):
+            raise ExactReferenceInventorySnapshotError(
+                "Provider snapshot documents must be an immutable typed tuple."
+            )
+        if len(self.documents) > _REFERENCE_SNAPSHOT_MAX_DOCUMENTS_PER_PROVIDER:
+            raise ExactReferenceInventorySnapshotError(
+                "Provider snapshot exceeds its document limit."
+            )
+        object_keys = tuple(item.object_id for item in self.documents)
+        if object_keys != tuple(sorted(object_keys)) or len(object_keys) != len(
+            set(object_keys)
+        ):
+            raise ExactReferenceInventorySnapshotError(
+                "Provider snapshot object keys must be unique and sorted."
+            )
+
+        canonical_size = 0
+        canonical_node_count = 0
+        digest_documents: list[dict[str, Any]] = []
+        for document in self.documents:
+            if document.provider != self.provider:
+                raise ExactReferenceInventorySnapshotError(
+                    "Provider snapshot contains a document for another provider."
+                )
+            if document.writable is not False:
+                raise ExactReferenceInventorySnapshotError(
+                    "Provider snapshot contains a writable document."
+                )
+            estimated_node_count = document._canonical_node_count
+            if (
+                type(estimated_node_count) is not int
+                or estimated_node_count <= 0
+                or canonical_node_count + estimated_node_count
+                > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_NODES
+            ):
+                raise ExactReferenceInventorySnapshotError(
+                    "Provider snapshot exceeds the aggregate node limit."
+                )
+            fingerprint, document_size, node_count = _validate_snapshot_document(
+                document
+            )
+            canonical_size += document_size
+            if canonical_size > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_BYTES:
+                raise ExactReferenceInventorySnapshotError(
+                    "Provider snapshot exceeds the aggregate size limit."
+                )
+            canonical_node_count += node_count
+            if (
+                canonical_node_count
+                > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_NODES
+            ):
+                raise ExactReferenceInventorySnapshotError(
+                    "Provider snapshot exceeds the aggregate node limit."
+                )
+            digest_documents.append(
+                {
+                    "object_key": document.object_id,
+                    "revision": _canonical_revision(document.revision),
+                    "payload_fingerprint": fingerprint,
+                }
+            )
+
+        object.__setattr__(self, "_canonical_size", canonical_size)
+        object.__setattr__(
+            self,
+            "_canonical_node_count",
+            canonical_node_count,
+        )
+        digest, _digest_size = _stream_canonical_json_digest(
+            {
+                "domain": "true-family-provider-document-inventory-v1",
+                "provider": self.provider,
+                "documents": digest_documents,
+            },
+            _REFERENCE_SNAPSHOT_MAX_INVENTORY_DIGEST_BYTES,
+        )
+        object.__setattr__(self, "digest", digest)
+
+    @property
+    def count(self) -> int:
+        """Return the exact document count."""
+
+        return len(self.documents)
+
+    @property
+    def object_keys(self) -> tuple[str, ...]:
+        """Return the exact opaque object keys for internal comparison."""
+
+        return tuple(item.object_id for item in self.documents)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ExactReferenceInventorySnapshot:
+    """Manifest-bound read-only inventory of all five provider snapshots."""
+
+    expected_manifest_digest: str = field(repr=False)
+    providers: tuple[ProviderDocumentInventory, ...] = field(repr=False)
+    read_only: bool = field(default=True, init=False)
+    digest: str = field(init=False, repr=False)
+
+    def __init__(
+        self,
+        expected_manifest_digest: str,
+        providers: tuple[ProviderDocumentInventory, ...],
+        *,
+        _token: object | None = None,
+    ) -> None:
+        if _token is not _EXACT_REFERENCE_INVENTORY_TOKEN:
+            raise TypeError(
+                "Exact reference inventory snapshots are collector-owned."
+            )
+        object.__setattr__(self, "expected_manifest_digest", expected_manifest_digest)
+        object.__setattr__(self, "providers", providers)
+        object.__setattr__(self, "read_only", True)
+        _validate_digest(
+            self.expected_manifest_digest,
+            "Exact inventory expected manifest digest",
+        )
+        if type(self.providers) is not tuple or any(
+            type(item) is not ProviderDocumentInventory for item in self.providers
+        ):
+            raise ExactReferenceInventorySnapshotError(
+                "Exact inventory providers must be an immutable typed tuple."
+            )
+        if tuple(item.provider for item in self.providers) != PROVIDER_NAMES:
+            raise ExactReferenceInventorySnapshotError(
+                "Exact inventory must contain all five providers in canonical order."
+            )
+        if sum(item.count for item in self.providers) > _REFERENCE_SNAPSHOT_MAX_DOCUMENTS:
+            raise ExactReferenceInventorySnapshotError(
+                "Exact inventory exceeds its aggregate document limit."
+            )
+        if (
+            sum(item._canonical_size for item in self.providers)
+            > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_BYTES
+        ):
+            raise ExactReferenceInventorySnapshotError(
+                "Exact inventory exceeds its aggregate size limit."
+            )
+        node_counts = tuple(
+            item._canonical_node_count for item in self.providers
+        )
+        if any(type(count) is not int or count < 0 for count in node_counts) or (
+            sum(node_counts) > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_NODES
+        ):
+            raise ExactReferenceInventorySnapshotError(
+                "Exact inventory exceeds its aggregate node limit."
+            )
+        object.__setattr__(
+            self,
+            "digest",
+            _digest_json(
+                {
+                    "domain": "true-family-exact-reference-inventory-v1",
+                    "expected_manifest_digest": self.expected_manifest_digest,
+                    "providers": [
+                        {
+                            "provider": item.provider,
+                            "inventory_digest": item.digest,
+                        }
+                        for item in self.providers
+                    ],
+                }
+            ),
+        )
+
+    def as_public_summary(self) -> dict[str, object]:
+        """Return only read-only state, canonical names, and document counts."""
+
+        return {
+            "read_only": self.read_only,
+            "providers": [
+                {"provider": item.provider, "count": item.count}
+                for item in self.providers
+            ],
+        }
+
+
+async def async_read_exact_reference_inventory_snapshot(
+    hass: HomeAssistant,
+    expected: ExpectedObjectManifest,
+    sources: tuple[ReadOnlyProviderSnapshotSource, ...],
+) -> ExactReferenceInventorySnapshot:
+    """Read five exact sources sequentially under one overall timeout."""
+
+    outcome = await _async_collect_exact_reference_inventory_snapshot(
+        hass,
+        expected,
+        sources,
+    )
+    del hass, expected, sources
+    if outcome is _COLLECTION_TIMED_OUT:
+        raise TimeoutError("Exact reference inventory snapshot timed out.")
+    if type(outcome) is not ExactReferenceInventorySnapshot:
+        raise ExactReferenceInventorySnapshotError(
+            "Exact reference inventory snapshot could not be read safely."
+        )
+    return outcome
+
+
+async def _async_collect_exact_reference_inventory_snapshot(
+    hass: HomeAssistant,
+    expected: ExpectedObjectManifest,
+    sources: tuple[ReadOnlyProviderSnapshotSource, ...],
+) -> ExactReferenceInventorySnapshot | object:
+    # Sources are internal and directly awaited to preserve the no-task contract.
+    # Synchronous descriptor/reader/cleanup code cannot be preempted while it
+    # owns the event-loop thread; monotonic checks fail closed when control returns.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _EXACT_REFERENCE_INVENTORY_TIMEOUT_SECONDS
+    try:
+        async with asyncio.timeout_at(deadline):
+            try:
+                registrations = _prevalidate_snapshot_sources(
+                    expected,
+                    sources,
+                    deadline=deadline,
+                )
+            except _SnapshotDeadlineExceeded:
+                return _COLLECTION_TIMED_OUT
+            except Exception:
+                return _collection_failure_outcome(loop, deadline)
+            if loop.time() >= deadline:
+                return _COLLECTION_TIMED_OUT
+
+            inventories: list[ProviderDocumentInventory] = []
+            aggregate_size = 0
+            aggregate_node_count = 0
+            document_count = 0
+            for registration in registrations:
+                expected_objects = registration.expected_objects
+                collected = await _async_collect_provider_stream(
+                    registration,
+                    expected_objects,
+                    hass,
+                    global_document_count=document_count,
+                    aggregate_size=aggregate_size,
+                    aggregate_node_count=aggregate_node_count,
+                    deadline=deadline,
+                )
+                if type(collected) is not _CollectedProviderStream:
+                    if collected is _COLLECTION_TIMED_OUT:
+                        return _COLLECTION_TIMED_OUT
+                    return _collection_failure_outcome(loop, deadline)
+                document_count += collected.document_count
+                aggregate_size += collected.canonical_size
+                aggregate_node_count += collected.node_count
+                inventories.append(collected.inventory)
+                if loop.time() >= deadline:
+                    return _COLLECTION_TIMED_OUT
+
+            try:
+                snapshot = _new_exact_reference_inventory_snapshot(
+                    expected.digest,
+                    tuple(inventories),
+                )
+            except Exception:
+                return _collection_failure_outcome(loop, deadline)
+            if loop.time() >= deadline:
+                return _COLLECTION_TIMED_OUT
+            return snapshot
+    except TimeoutError:
+        return _COLLECTION_TIMED_OUT
+
+
+def _collection_failure_outcome(
+    loop: asyncio.AbstractEventLoop,
+    deadline: float,
+) -> object:
+    if loop.time() >= deadline:
+        return _COLLECTION_TIMED_OUT
+    return _COLLECTION_FAILED
+
+
+async def _async_collect_provider_stream(
+    registration: _SnapshotSourceRegistration,
+    expected: ExpectedProviderObjects,
+    hass: HomeAssistant,
+    *,
+    global_document_count: int,
+    aggregate_size: int,
+    aggregate_node_count: int,
+    deadline: float,
+) -> _CollectedProviderStream | object:
+    loop = asyncio.get_running_loop()
+    stream = await _async_open_registered_snapshot_stream(registration.reader, hass)
+    if stream is _SOURCE_STREAM_FAILED:
+        return _collection_failure_outcome(loop, deadline)
+    stream = cast(AsyncIterator[ProviderDocumentSnapshot], stream)
+    if loop.time() >= deadline:
+        await _async_close_registered_snapshot_stream(stream)
+        return _COLLECTION_TIMED_OUT
+
+    documents: list[ProviderDocumentSnapshot] = []
+    provider_size = 0
+    provider_node_count = 0
+    outcome: object | None = None
+    cleanup_succeeded = True
+    try:
+        while True:
+            document = await _async_next_registered_snapshot(stream)
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise asyncio.CancelledError
+            if loop.time() >= deadline:
+                outcome = _COLLECTION_TIMED_OUT
+                break
+            if document is _SOURCE_STREAM_END:
+                if len(documents) != expected.count:
+                    outcome = _collection_failure_outcome(loop, deadline)
+                break
+            if document is _SOURCE_STREAM_FAILED:
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+
+            index = len(documents)
+            if (
+                index >= expected.count
+                or index >= _REFERENCE_SNAPSHOT_MAX_DOCUMENTS_PER_PROVIDER
+                or global_document_count + index
+                >= _REFERENCE_SNAPSHOT_MAX_DOCUMENTS
+            ):
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+            if type(document) is not ProviderDocumentSnapshot:
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+            if (
+                document.provider != registration.name
+                or document.object_id != expected.object_keys[index]
+                or document.writable is not False
+            ):
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+
+            estimated_size = document._canonical_document_size
+            estimated_node_count = document._canonical_node_count
+            if (
+                type(estimated_size) is not int
+                or estimated_size < 0
+                or aggregate_size + provider_size + estimated_size
+                > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_BYTES
+            ):
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+            if (
+                type(estimated_node_count) is not int
+                or estimated_node_count <= 0
+                or aggregate_node_count
+                + provider_node_count
+                + estimated_node_count
+                > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_NODES
+            ):
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+            try:
+                _fingerprint, document_size, node_count = (
+                    _validate_snapshot_document(document)
+                )
+            except Exception:
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+            if loop.time() >= deadline:
+                outcome = _COLLECTION_TIMED_OUT
+                break
+            if (
+                aggregate_size + provider_size + document_size
+                > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_BYTES
+            ):
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+            if (
+                aggregate_node_count + provider_node_count + node_count
+                > _REFERENCE_SNAPSHOT_MAX_AGGREGATE_NODES
+            ):
+                outcome = _collection_failure_outcome(loop, deadline)
+                break
+            provider_size += document_size
+            provider_node_count += node_count
+            documents.append(document)
+    finally:
+        if _collector_task_is_cancelling():
+            await _async_cleanup_registered_stream_during_cancellation(stream)
+        else:
+            cleanup_succeeded = await _async_close_registered_snapshot_stream(stream)
+
+    if loop.time() >= deadline:
+        return _COLLECTION_TIMED_OUT
+    if not cleanup_succeeded:
+        return _collection_failure_outcome(loop, deadline)
+    if outcome is not None:
+        return outcome
+    try:
+        inventory = ProviderDocumentInventory(
+            registration.name,
+            tuple(documents),
+        )
+    except Exception:
+        return _collection_failure_outcome(loop, deadline)
+    if loop.time() >= deadline:
+        return _COLLECTION_TIMED_OUT
+    if (
+        inventory.object_keys != expected.object_keys
+        or inventory._canonical_size != provider_size
+        or inventory._canonical_node_count != provider_node_count
+    ):
+        return _collection_failure_outcome(loop, deadline)
+    return _CollectedProviderStream(
+        inventory,
+        len(documents),
+        provider_size,
+        provider_node_count,
+    )
+
+
+async def _async_open_registered_snapshot_stream(
+    reader: Callable[[HomeAssistant], AsyncIterator[ProviderDocumentSnapshot]],
+    hass: HomeAssistant,
+) -> AsyncIterator[ProviderDocumentSnapshot] | object:
+    stream: Any = _CLEANUP_MISSING
+    try:
+        stream = reader(hass)
+    except asyncio.CancelledError:
+        if _collector_task_is_cancelling():
+            raise
+        return _SOURCE_STREAM_FAILED
+    except BaseException:
+        return _SOURCE_STREAM_FAILED
+
+    try:
+        iterator = aiter(stream)
+    except asyncio.CancelledError:
+        if _collector_task_is_cancelling():
+            await _async_cleanup_registered_stream_during_cancellation(stream)
+            raise
+        await _async_close_registered_snapshot_stream(stream)
+        return _SOURCE_STREAM_FAILED
+    except BaseException:
+        await _async_close_registered_snapshot_stream(stream)
+        return _SOURCE_STREAM_FAILED
+    if iterator is not stream:
+        await _async_close_registered_snapshot_stream(iterator)
+        await _async_close_registered_snapshot_stream(stream)
+        return _SOURCE_STREAM_FAILED
+    return iterator
+
+
+async def _async_next_registered_snapshot(
+    stream: AsyncIterator[ProviderDocumentSnapshot],
+) -> ProviderDocumentSnapshot | object:
+    try:
+        return await anext(stream)
+    except StopAsyncIteration:
+        return _SOURCE_STREAM_END
+    except asyncio.CancelledError:
+        if _collector_task_is_cancelling():
+            raise
+        return _SOURCE_STREAM_FAILED
+    except BaseException:
+        return _SOURCE_STREAM_FAILED
+
+
+async def _async_close_registered_snapshot_stream(
+    stream: Any,
+) -> bool:
+    failed = False
+    try:
+        async_close = getattr(stream, "aclose", _CLEANUP_MISSING)
+    except asyncio.CancelledError:
+        if _collector_task_is_cancelling():
+            raise
+        async_close = _CLEANUP_MISSING
+        failed = True
+    except BaseException:
+        async_close = _CLEANUP_MISSING
+        failed = True
+
+    if async_close is not _CLEANUP_MISSING:
+        if not callable(async_close):
+            failed = True
+        else:
+            try:
+                await cast(Awaitable[Any], async_close())
+            except asyncio.CancelledError:
+                if _collector_task_is_cancelling():
+                    raise
+                failed = True
+            except BaseException:
+                failed = True
+            else:
+                return not failed
+
+    try:
+        close = getattr(stream, "close", _CLEANUP_MISSING)
+    except asyncio.CancelledError:
+        if _collector_task_is_cancelling():
+            raise
+        close = _CLEANUP_MISSING
+        failed = True
+    except BaseException:
+        close = _CLEANUP_MISSING
+        failed = True
+
+    if close is _CLEANUP_MISSING:
+        return not failed
+    if not callable(close):
+        return False
+    try:
+        close_result = close()
+        if close_result is not None:
+            await cast(Awaitable[Any], close_result)
+    except asyncio.CancelledError:
+        if _collector_task_is_cancelling():
+            raise
+        return False
+    except BaseException:
+        return False
+    return not failed
+
+
+async def _async_cleanup_registered_stream_during_cancellation(
+    stream: AsyncIterator[ProviderDocumentSnapshot],
+) -> None:
+    try:
+        async with asyncio.timeout(_CANCELLATION_CLEANUP_TIMEOUT_SECONDS):
+            await _async_close_registered_snapshot_stream(stream)
+    except BaseException:
+        return
+
+
+def _collector_task_is_cancelling() -> bool:
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
+def _new_exact_reference_inventory_snapshot(
+    expected_manifest_digest: str,
+    inventories: tuple[ProviderDocumentInventory, ...],
+) -> ExactReferenceInventorySnapshot:
+    return ExactReferenceInventorySnapshot(
+        expected_manifest_digest,
+        inventories,
+        _token=_EXACT_REFERENCE_INVENTORY_TOKEN,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1021,7 +1767,36 @@ async def async_read_config_entry_reference_snapshot(
 ) -> tuple[ProviderDocumentSnapshot, ...]:
     """Read an exact, projected config-entry snapshot without host mutations."""
 
-    _validate_config_entry_reference_policy(policy)
+    result = await _async_read_config_entry_reference_snapshot_safely(hass, policy)
+    if type(result) is tuple:
+        return result
+    del hass, policy
+    raise ConfigEntryReferenceSnapshotError(
+        "Config-entry reference snapshot could not be read safely."
+    )
+
+
+async def _async_read_config_entry_reference_snapshot_safely(
+    hass: HomeAssistant,
+    policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
+) -> tuple[ProviderDocumentSnapshot, ...] | object:
+    try:
+        return await _async_read_config_entry_reference_snapshot_impl(hass, policy)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return _RAW_CONFIG_ENTRY_SNAPSHOT_FAILED
+
+
+async def _async_read_config_entry_reference_snapshot_impl(
+    hass: HomeAssistant,
+    policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
+) -> tuple[ProviderDocumentSnapshot, ...]:
+    if not _config_entry_reference_policy_is_valid(policy):
+        del hass, policy
+        raise ConfigEntryReferenceSnapshotError(
+            "Config-entry reference policy is malformed."
+        )
     try:
         expected_ids = tuple(item.entry_id for item in policy)
         expected_id_set = frozenset(expected_ids)
@@ -1102,6 +1877,95 @@ async def async_read_config_entry_reference_snapshot(
         raise ConfigEntryReferenceSnapshotError(
             "Config-entry reference snapshot could not be read safely."
         ) from None
+
+
+async def _async_iter_opaque_config_entry_snapshot(
+    hass: HomeAssistant,
+    policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
+) -> AsyncIterator[ProviderDocumentSnapshot]:
+    prepared = await _async_prepare_opaque_config_entry_stream(hass, policy)
+    if type(prepared) is not tuple:
+        del hass, policy, prepared
+        raise ConfigEntryReferenceSnapshotError(
+            "Opaque config-entry reference snapshot could not be read safely."
+        )
+    for opaque_key, locator, snapshot in prepared:
+        transformed = _transform_opaque_config_entry_snapshot(
+            opaque_key,
+            locator,
+            snapshot,
+        )
+        if type(transformed) is not ProviderDocumentSnapshot:
+            del hass, policy, prepared, opaque_key, locator, snapshot, transformed
+            raise ConfigEntryReferenceSnapshotError(
+                "Opaque config-entry reference snapshot could not be read safely."
+            )
+        yield transformed
+
+
+async def _async_prepare_opaque_config_entry_stream(
+    hass: HomeAssistant,
+    policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
+) -> tuple[
+    tuple[
+        str,
+        ConfigEntryReferenceObjectPolicy,
+        ProviderDocumentSnapshot,
+    ],
+    ...,
+] | object:
+    try:
+        raw_snapshots = await async_read_config_entry_reference_snapshot(
+            hass,
+            policy,
+        )
+        if len(raw_snapshots) != len(policy):
+            return _CONFIG_ENTRY_SOURCE_FAILED
+        prepared = []
+        for locator, snapshot in zip(policy, raw_snapshots, strict=True):
+            if (
+                snapshot.provider != "config_entry"
+                or snapshot.object_id != locator.entry_id
+                or snapshot.writable is not False
+            ):
+                return _CONFIG_ENTRY_SOURCE_FAILED
+            prepared.append(
+                (
+                    _config_entry_reference_opaque_key(
+                        locator.domain,
+                        locator.entry_id,
+                    ),
+                    locator,
+                    snapshot,
+                )
+            )
+        return tuple(sorted(prepared, key=lambda item: item[0]))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return _CONFIG_ENTRY_SOURCE_FAILED
+
+
+def _transform_opaque_config_entry_snapshot(
+    opaque_key: str,
+    locator: ConfigEntryReferenceObjectPolicy,
+    snapshot: ProviderDocumentSnapshot,
+) -> ProviderDocumentSnapshot | object:
+    try:
+        opaque_snapshot = ProviderDocumentSnapshot(
+            provider="config_entry",
+            object_id=opaque_key,
+            revision=snapshot.revision,
+            payload=snapshot.as_reference_document().payload,
+        )
+        if (
+            snapshot.object_id != locator.entry_id
+            or opaque_snapshot.fingerprint != snapshot.fingerprint
+        ):
+            return _CONFIG_ENTRY_SOURCE_FAILED
+        return opaque_snapshot
+    except Exception:
+        return _CONFIG_ENTRY_SOURCE_FAILED
 
 
 async def async_probe_config_entries(
@@ -1406,6 +2270,602 @@ def _index_provider_items(
     return indexed, duplicates
 
 
+def _prevalidate_snapshot_sources(
+    expected: ExpectedObjectManifest,
+    sources: tuple[ReadOnlyProviderSnapshotSource, ...],
+    *,
+    deadline: float,
+) -> tuple[_SnapshotSourceRegistration, ...]:
+    if type(expected) is not ExpectedObjectManifest:
+        raise TypeError("Expected object manifest is malformed.")
+    _validate_expected_snapshot_resources(expected)
+    if asyncio.get_running_loop().time() >= deadline:
+        raise _SnapshotDeadlineExceeded
+    if type(sources) is not tuple or len(sources) != len(PROVIDER_NAMES):
+        raise ExactReferenceInventorySnapshotError(
+            "Snapshot sources must contain all five providers exactly once."
+        )
+
+    names: list[str] = []
+    declarations: list[ExpectedProviderObjects] = []
+    registrations: list[_SnapshotSourceRegistration] = []
+    for source in sources:
+        try:
+            name = source.name
+        except Exception:
+            name = None
+        if asyncio.get_running_loop().time() >= deadline:
+            raise _SnapshotDeadlineExceeded
+        try:
+            declaration = source.expected_objects
+        except Exception:
+            declaration = None
+        if asyncio.get_running_loop().time() >= deadline:
+            raise _SnapshotDeadlineExceeded
+        try:
+            reader = source.async_read_snapshot
+        except Exception:
+            reader = None
+        if asyncio.get_running_loop().time() >= deadline:
+            raise _SnapshotDeadlineExceeded
+        if name is None or declaration is None or reader is None:
+            raise ExactReferenceInventorySnapshotError(
+                "Snapshot source metadata is malformed."
+            )
+        if type(name) is not str or name not in TRUE_FAMILY_PROVIDER_MANIFEST:
+            raise ExactReferenceInventorySnapshotError(
+                "Snapshot source has a non-canonical provider name."
+            )
+        if type(declaration) is not ExpectedProviderObjects:
+            raise ExactReferenceInventorySnapshotError(
+                "Snapshot source expected objects are malformed."
+            )
+        if declaration.provider != name or not callable(reader):
+            raise ExactReferenceInventorySnapshotError(
+                "Snapshot source metadata is inconsistent."
+            )
+        _validate_expected_provider_resources(declaration)
+        names.append(name)
+        declarations.append(declaration)
+        registrations.append(
+            _SnapshotSourceRegistration(
+                name,
+                declaration,
+                reader,
+            )
+        )
+
+    if tuple(names) != PROVIDER_NAMES:
+        raise ExactReferenceInventorySnapshotError(
+            "Snapshot sources must occur once in canonical provider order."
+        )
+    if tuple(declarations) != expected.providers:
+        raise ExactReferenceInventorySnapshotError(
+            "Snapshot source declarations do not match the expected manifest."
+        )
+    return tuple(registrations)
+
+
+def _validate_expected_snapshot_resources(expected: ExpectedObjectManifest) -> None:
+    _bounded_json_string_size(
+        expected.revision,
+        _REFERENCE_SNAPSHOT_MAX_DOCUMENT_BYTES,
+    )
+    total = 0
+    for item in expected._typed_providers():
+        _validate_expected_provider_resources(item)
+        total += item.count
+    if total > _REFERENCE_SNAPSHOT_MAX_DOCUMENTS:
+        raise ExactReferenceInventorySnapshotError(
+            "Expected snapshot exceeds its aggregate document limit."
+        )
+
+
+def _validate_expected_provider_resources(expected: ExpectedProviderObjects) -> None:
+    _validate_object_keys(expected.object_keys)
+    if expected.count > _REFERENCE_SNAPSHOT_MAX_DOCUMENTS_PER_PROVIDER:
+        raise ExactReferenceInventorySnapshotError(
+            "Expected provider snapshot exceeds its document limit."
+        )
+    for object_key in expected.object_keys:
+        _validate_snapshot_object_key(object_key)
+
+
+def _validate_snapshot_object_key(object_key: str) -> None:
+    if type(object_key) is not str or len(object_key) > (
+        _REFERENCE_SNAPSHOT_MAX_OBJECT_KEY_BYTES
+    ):
+        raise ExactReferenceInventorySnapshotError(
+            "Snapshot object key exceeds its size limit."
+        )
+    _validate_nonempty_string(object_key, "Snapshot object key")
+    if len(object_key.encode("utf-8")) > _REFERENCE_SNAPSHOT_MAX_OBJECT_KEY_BYTES:
+        raise ExactReferenceInventorySnapshotError(
+            "Snapshot object key exceeds its size limit."
+        )
+
+
+class _ProjectedPayloadError(ValueError):
+    """Internal marker for a bounded canonical-payload rejection."""
+
+
+class _CanonicalJsonHasher:
+    """Incrementally hash canonical ensure-ASCII JSON with a hard byte limit."""
+
+    __slots__ = ("_count", "_hasher", "_limit")
+
+    def __init__(self, limit: int) -> None:
+        self._count = 0
+        self._hasher = hashlib.sha256()
+        self._limit = limit
+
+    def _write_bytes(self, value: bytes | bytearray) -> None:
+        if self._count + len(value) > self._limit:
+            raise _ProjectedPayloadError("Canonical payload exceeds its byte limit.")
+        self._hasher.update(value)
+        self._count += len(value)
+
+    def write_ascii(self, value: str) -> None:
+        self._write_bytes(value.encode("ascii"))
+
+    def write_string(self, value: str) -> None:
+        self._write_bytes(b'"')
+        chunk = bytearray()
+        short_escapes = {
+            8: b"\\b",
+            9: b"\\t",
+            10: b"\\n",
+            12: b"\\f",
+            13: b"\\r",
+        }
+        for character in value:
+            codepoint = ord(character)
+            if character == '"':
+                chunk.extend(b'\\"')
+            elif character == "\\":
+                chunk.extend(b"\\\\")
+            elif codepoint in short_escapes:
+                chunk.extend(short_escapes[codepoint])
+            elif 0x20 <= codepoint <= 0x7E:
+                chunk.append(codepoint)
+            elif codepoint <= 0xFFFF:
+                chunk.extend(f"\\u{codepoint:04x}".encode("ascii"))
+            else:
+                adjusted = codepoint - 0x10000
+                high = 0xD800 + (adjusted >> 10)
+                low = 0xDC00 + (adjusted & 0x3FF)
+                chunk.extend(f"\\u{high:04x}\\u{low:04x}".encode("ascii"))
+            if len(chunk) >= _REFERENCE_SNAPSHOT_JSON_CHUNK_BYTES:
+                self._write_bytes(chunk)
+                chunk.clear()
+        if chunk:
+            self._write_bytes(chunk)
+        self._write_bytes(b'"')
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def hexdigest(self) -> str:
+        return self._hasher.hexdigest()
+
+
+def _bounded_json_string_size(value: str, remaining: int) -> int:
+    if type(value) is not str or remaining < 2:
+        raise _ProjectedPayloadError("Canonical JSON string is malformed.")
+    size = 2
+    for character in value:
+        codepoint = ord(character)
+        if character in {'"', "\\"} or codepoint in {8, 9, 10, 12, 13}:
+            increment = 2
+        elif 0x20 <= codepoint <= 0x7E:
+            increment = 1
+        elif codepoint <= 0xFFFF:
+            increment = 6
+        else:
+            increment = 12
+        size += increment
+        if size > remaining:
+            raise _ProjectedPayloadError(
+                "Canonical JSON string exceeds its byte limit."
+            )
+    return size
+
+
+def _canonical_scalar_text(value: Any, remaining: int) -> str:
+    if type(value) is int:
+        if value.bit_length() > _REFERENCE_SNAPSHOT_MAX_INTEGER_BITS:
+            raise _ProjectedPayloadError("Canonical integer exceeds its size limit.")
+        rendered = str(value)
+    elif type(value) is float:
+        if not math.isfinite(value):
+            raise _ProjectedPayloadError("Canonical float must be finite.")
+        rendered = json.dumps(value, allow_nan=False, separators=(",", ":"))
+    else:
+        raise _ProjectedPayloadError("Canonical scalar type is unsupported.")
+    if len(rendered) > remaining:
+        raise _ProjectedPayloadError("Canonical scalar exceeds its byte limit.")
+    return rendered
+
+
+def _validate_and_copy_projected_payload(
+    payload: Any,
+    *,
+    max_bytes: int,
+) -> tuple[dict[str, Any] | list[Any], int, int]:
+    if type(payload) not in (dict, list):
+        raise _ProjectedPayloadError(
+            "Projected payload root must be a built-in mapping or list."
+        )
+    if max_bytes < 0:
+        raise _ProjectedPayloadError("Projected payload has no byte budget.")
+
+    root: list[Any] = [None]
+    stack: list[tuple[Any, int, dict[str, Any] | list[Any], str | int]] = [
+        (payload, 0, root, 0)
+    ]
+    seen_containers: set[int] = set()
+    nodes = 0
+    size = 0
+
+    def add_size(amount: int) -> None:
+        nonlocal size
+        size += amount
+        if size > max_bytes:
+            raise _ProjectedPayloadError(
+                "Projected payload exceeds its canonical byte limit."
+            )
+
+    def attach(
+        parent: dict[str, Any] | list[Any],
+        slot: str | int,
+        value: Any,
+    ) -> None:
+        parent[slot] = value  # type: ignore[index]
+
+    while stack:
+        value, depth, parent, slot = stack.pop()
+        if depth > _REFERENCE_SNAPSHOT_MAX_PAYLOAD_DEPTH:
+            raise _ProjectedPayloadError(
+                "Projected payload exceeds its depth limit."
+            )
+        nodes += 1
+        if nodes + len(stack) > _REFERENCE_SNAPSHOT_MAX_PAYLOAD_NODES:
+            raise _ProjectedPayloadError(
+                "Projected payload exceeds its node limit."
+            )
+
+        value_type = type(value)
+        if value_type is dict:
+            identity = id(value)
+            if identity in seen_containers:
+                raise _ProjectedPayloadError(
+                    "Projected payload contains a container alias."
+                )
+            seen_containers.add(identity)
+            item_count = len(value)
+            if (
+                nodes + len(stack) + (item_count * 2)
+                > _REFERENCE_SNAPSHOT_MAX_PAYLOAD_NODES
+            ):
+                raise _ProjectedPayloadError(
+                    "Projected payload exceeds its node limit."
+                )
+            add_size(2 + item_count + max(0, item_count - 1))
+            nodes += item_count
+            copied: dict[str, Any] = {}
+            attach(parent, slot, copied)
+            items: list[tuple[str, Any]] = []
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise _ProjectedPayloadError(
+                        "Projected payload mapping key is not canonical."
+                    )
+                add_size(_bounded_json_string_size(key, max_bytes - size))
+                items.append((key, item))
+            items.sort(key=lambda item: item[0])
+            for key, item in reversed(items):
+                stack.append((item, depth + 1, copied, key))
+            continue
+
+        if value_type is list:
+            identity = id(value)
+            if identity in seen_containers:
+                raise _ProjectedPayloadError(
+                    "Projected payload contains a container alias."
+                )
+            seen_containers.add(identity)
+            item_count = len(value)
+            if (
+                nodes + len(stack) + item_count
+                > _REFERENCE_SNAPSHOT_MAX_PAYLOAD_NODES
+            ):
+                raise _ProjectedPayloadError(
+                    "Projected payload exceeds its node limit."
+                )
+            add_size(2 + max(0, item_count - 1))
+            copied_list: list[Any] = [None] * item_count
+            attach(parent, slot, copied_list)
+            for index in range(item_count - 1, -1, -1):
+                stack.append((value[index], depth + 1, copied_list, index))
+            continue
+
+        if value_type is str:
+            add_size(_bounded_json_string_size(value, max_bytes - size))
+        elif value is None:
+            add_size(4)
+        elif value_type is bool:
+            add_size(4 if value else 5)
+        elif value_type in (int, float):
+            add_size(len(_canonical_scalar_text(value, max_bytes - size)))
+        else:
+            raise _ProjectedPayloadError(
+                "Projected payload contains a noncanonical value."
+            )
+        attach(parent, slot, value)
+
+    canonical = root[0]
+    if type(canonical) not in (dict, list):
+        raise _ProjectedPayloadError("Projected payload copy is malformed.")
+    return canonical, size, nodes
+
+
+def _preflight_frozen_projected_payload(
+    payload: Any,
+    *,
+    max_bytes: int,
+) -> tuple[int, int]:
+    if type(payload) not in (MappingProxyType, tuple):
+        raise _ProjectedPayloadError(
+            "Frozen projected payload root is malformed."
+        )
+    if max_bytes < 0:
+        raise _ProjectedPayloadError("Projected payload has no byte budget.")
+
+    stack: list[tuple[Any, int]] = [(payload, 0)]
+    nodes = 0
+    size = 0
+
+    def add_size(amount: int) -> None:
+        nonlocal size
+        size += amount
+        if size > max_bytes:
+            raise _ProjectedPayloadError(
+                "Projected payload exceeds its canonical byte limit."
+            )
+
+    while stack:
+        value, depth = stack.pop()
+        if depth > _REFERENCE_SNAPSHOT_MAX_PAYLOAD_DEPTH:
+            raise _ProjectedPayloadError(
+                "Projected payload exceeds its depth limit."
+            )
+        nodes += 1
+        if nodes + len(stack) > _REFERENCE_SNAPSHOT_MAX_PAYLOAD_NODES:
+            raise _ProjectedPayloadError(
+                "Projected payload exceeds its node limit."
+            )
+
+        value_type = type(value)
+        if value_type is MappingProxyType:
+            item_count = len(value)
+            if (
+                nodes + len(stack) + (item_count * 2)
+                > _REFERENCE_SNAPSHOT_MAX_PAYLOAD_NODES
+            ):
+                raise _ProjectedPayloadError(
+                    "Projected payload exceeds its node limit."
+                )
+            add_size(2 + item_count + max(0, item_count - 1))
+            nodes += item_count
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise _ProjectedPayloadError(
+                        "Projected payload mapping key is not canonical."
+                    )
+                add_size(_bounded_json_string_size(key, max_bytes - size))
+                stack.append((item, depth + 1))
+            continue
+
+        if value_type is tuple:
+            item_count = len(value)
+            if (
+                nodes + len(stack) + item_count
+                > _REFERENCE_SNAPSHOT_MAX_PAYLOAD_NODES
+            ):
+                raise _ProjectedPayloadError(
+                    "Projected payload exceeds its node limit."
+                )
+            add_size(2 + max(0, item_count - 1))
+            stack.extend((item, depth + 1) for item in value)
+            continue
+
+        if value_type is str:
+            add_size(_bounded_json_string_size(value, max_bytes - size))
+        elif value is None:
+            add_size(4)
+        elif value_type is bool:
+            add_size(4 if value else 5)
+        elif value_type in (int, float):
+            add_size(len(_canonical_scalar_text(value, max_bytes - size)))
+        else:
+            raise _ProjectedPayloadError(
+                "Projected payload contains a noncanonical value."
+            )
+
+    return size, nodes
+
+
+def _canonical_revision_json_size(revision: Revision, remaining: int) -> int:
+    kind = "integer" if type(revision) is int else "string"
+    size = len('{"kind":')
+    size += _bounded_json_string_size(kind, remaining - size)
+    size += len(',"value":')
+    if type(revision) is int:
+        size += len(_canonical_scalar_text(revision, remaining - size - 1))
+    elif type(revision) is str:
+        size += _bounded_json_string_size(revision, remaining - size - 1)
+    else:
+        raise _ProjectedPayloadError("Provider document revision is malformed.")
+    size += 1
+    if size > remaining:
+        raise _ProjectedPayloadError("Provider document revision is too large.")
+    return size
+
+
+def _canonical_document_overhead(
+    provider: str,
+    object_id: str,
+    revision: Revision,
+) -> int:
+    _validate_provider(provider)
+    _validate_snapshot_object_key(object_id)
+    if type(revision) not in (str, int) or type(revision) is bool:
+        raise _ProjectedPayloadError("Provider document revision is malformed.")
+    if (
+        type(revision) is str
+        and len(revision) > _REFERENCE_SNAPSHOT_MAX_DOCUMENT_BYTES
+    ):
+        raise _ProjectedPayloadError("Provider document revision is too large.")
+    _validate_revision(revision, "Provider document revision")
+
+    limit = _REFERENCE_SNAPSHOT_MAX_DOCUMENT_BYTES
+    size = len('{"object_key":')
+    size += _bounded_json_string_size(object_id, limit - size)
+    size += len(',"payload":')
+    size += len(',"provider":')
+    size += _bounded_json_string_size(provider, limit - size)
+    size += len(',"revision":')
+    size += _canonical_revision_json_size(revision, limit - size - 1)
+    size += 1
+    if size > limit:
+        raise _ProjectedPayloadError("Provider document metadata is too large.")
+    return size
+
+
+def _stream_canonical_json_digest(value: Any, max_bytes: int) -> tuple[str, int]:
+    writer = _CanonicalJsonHasher(max_bytes)
+
+    def emit(item: Any) -> None:
+        item_type = type(item)
+        if item_type in (dict, MappingProxyType):
+            writer.write_ascii("{")
+            for index, key in enumerate(sorted(item)):
+                if index:
+                    writer.write_ascii(",")
+                writer.write_string(key)
+                writer.write_ascii(":")
+                emit(item[key])
+            writer.write_ascii("}")
+        elif item_type in (list, tuple):
+            writer.write_ascii("[")
+            for index, child in enumerate(item):
+                if index:
+                    writer.write_ascii(",")
+                emit(child)
+            writer.write_ascii("]")
+        elif item_type is str:
+            writer.write_string(item)
+        elif item is None:
+            writer.write_ascii("null")
+        elif item_type is bool:
+            writer.write_ascii("true" if item else "false")
+        elif item_type in (int, float):
+            writer.write_ascii(_canonical_scalar_text(item, max_bytes - writer.count))
+        else:
+            raise _ProjectedPayloadError(
+                "Projected payload contains a noncanonical value."
+            )
+
+    emit(value)
+    return writer.hexdigest, writer.count
+
+
+def _prepare_provider_document_snapshot(
+    provider: str,
+    object_id: str,
+    revision: Revision,
+    payload: Any,
+) -> _PreparedProviderDocument | object:
+    try:
+        overhead = _canonical_document_overhead(provider, object_id, revision)
+        canonical_payload, payload_size, node_count = (
+            _validate_and_copy_projected_payload(
+                payload,
+                max_bytes=_REFERENCE_SNAPSHOT_MAX_DOCUMENT_BYTES - overhead,
+            )
+        )
+        fingerprint, streamed_size = _stream_canonical_json_digest(
+            canonical_payload,
+            payload_size,
+        )
+        if streamed_size != payload_size:
+            return _PREPARED_PAYLOAD_FAILED
+        return _PreparedProviderDocument(
+            _freeze_projected_payload(canonical_payload),
+            fingerprint,
+            payload_size,
+            overhead + payload_size,
+            node_count,
+        )
+    except Exception:
+        return _PREPARED_PAYLOAD_FAILED
+
+
+def _recompute_snapshot_document(
+    document: ProviderDocumentSnapshot,
+) -> tuple[str, int, int] | object:
+    try:
+        overhead = _canonical_document_overhead(
+            document.provider,
+            document.object_id,
+            document.revision,
+        )
+        payload_size, node_count = _preflight_frozen_projected_payload(
+            document.payload,
+            max_bytes=_REFERENCE_SNAPSHOT_MAX_DOCUMENT_BYTES - overhead,
+        )
+        fingerprint, streamed_size = _stream_canonical_json_digest(
+            document.payload,
+            payload_size,
+        )
+        document_size = overhead + payload_size
+        if (
+            streamed_size != payload_size
+            or document._canonical_payload_size != payload_size
+            or document._canonical_document_size != document_size
+            or document._canonical_node_count != node_count
+            or document.fingerprint != fingerprint
+        ):
+            return _RECOMPUTED_DOCUMENT_FAILED
+        return fingerprint, document_size, node_count
+    except Exception:
+        return _RECOMPUTED_DOCUMENT_FAILED
+
+
+def _validate_snapshot_document(
+    document: ProviderDocumentSnapshot,
+) -> tuple[str, int, int]:
+    recomputed = _recompute_snapshot_document(document)
+    if type(recomputed) is not tuple:
+        del document
+        raise ExactReferenceInventorySnapshotError(
+            "Provider snapshot document is not canonical."
+        )
+    return recomputed
+
+
+def _config_entry_reference_policy_is_valid(
+    policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
+) -> bool:
+    try:
+        _validate_config_entry_reference_policy(policy)
+    except Exception:
+        return False
+    return True
+
+
 def _validate_config_entry_reference_policy(
     policy: tuple[ConfigEntryReferenceObjectPolicy, ...],
 ) -> None:
@@ -1565,14 +3025,14 @@ def _is_projected_entity_id(value: Any, domains: set[str]) -> bool:
     )
 
 
-def _copy_projected_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, Mapping):
+def _copy_projected_payload(payload: Any) -> dict[str, Any] | list[Any]:
+    if type(payload) not in (dict, list, MappingProxyType, tuple):
         raise ConfigEntryReferenceSnapshotError(
-            "Projected provider document payload must be a mapping."
+            "Projected provider document payload must be a mapping or list."
         )
 
     def copy_value(value: Any) -> Any:
-        if isinstance(value, Mapping):
+        if type(value) in (dict, MappingProxyType):
             if any(type(key) is not str for key in value):
                 raise ConfigEntryReferenceSnapshotError(
                     "Projected provider document payload is not canonical."
@@ -1601,6 +3061,17 @@ def _freeze_projected_payload(value: Any) -> Any:
 
 def _config_entry_key(domain: str, entry_id: str) -> str:
     return json.dumps([domain, entry_id], ensure_ascii=True, separators=(",", ":"))
+
+
+def _config_entry_reference_opaque_key(domain: str, entry_id: str) -> str:
+    return _CONFIG_ENTRY_OPAQUE_KEY_PREFIX + _digest_json(
+        {
+            "purpose": "true-family-config-entry-reference-object-key-v1",
+            "provider": "config_entry",
+            "domain": domain,
+            "entry_id": entry_id,
+        }
+    )
 
 
 def _validate_provider(provider: str) -> None:

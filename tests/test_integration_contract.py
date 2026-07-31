@@ -135,6 +135,35 @@ class IntegrationContractTests(unittest.TestCase):
         ]
         self.assertEqual(readers, ["reference_providers_ha.py"])
 
+    def test_exact_read_only_snapshot_envelope_remains_unwired(self) -> None:
+        names = (
+            "ReadOnlyProviderSnapshotSource",
+            "ConfigEntryReferenceSnapshotSource",
+            "ProviderDocumentInventory",
+            "ExactReferenceInventorySnapshot",
+            "async_read_exact_reference_inventory_snapshot",
+        )
+        owners = {
+            path.name
+            for path in INTEGRATION.glob("*.py")
+            if any(name in path.read_text() for name in names)
+        }
+        self.assertEqual(owners, {"reference_providers_ha.py"})
+
+        forbidden_wiring = (
+            "__init__.py",
+            "setup_manager.py",
+            "websocket.py",
+            "bootstrap_ha.py",
+            "reference_migration.py",
+            "reference_migration_ha.py",
+        )
+        for filename in forbidden_wiring:
+            with self.subTest(filename=filename):
+                source = (INTEGRATION / filename).read_text()
+                for name in names:
+                    self.assertNotIn(name, source)
+
 
 if __name__ == "__main__":
     unittest.main()
