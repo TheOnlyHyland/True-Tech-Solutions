@@ -41,11 +41,24 @@ from .reference_providers_ha import (
     ExpectedObjectManifest,
     HomeAssistantInventoryScope,
 )
-from .replacement import ReplacementError, TrueFamilyRuntime
+from .replacement import (
+    ReplacementError,
+    RuntimeSetupSafetyError,
+    TrueFamilyRuntime,
+)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 PLATFORMS = [Platform.CLIMATE]
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _async_close_runtime_reference_journal(runtime) -> None:
+    """Close a runtime-owned reference journal through its supported surface."""
+
+    if isinstance(runtime, TrueFamilyRuntime):
+        await runtime.async_close_reference_journal()
+    elif runtime.reference_journal is not None:
+        await runtime.reference_journal.async_close()
 
 
 async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
@@ -97,6 +110,31 @@ def reference_journal_reload_is_safe(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Load persisted room bindings and subscribe to bridge events."""
+
+    try:
+        previous_runtime = entry.runtime_data
+    except AttributeError:
+        previous_runtime = None
+    if isinstance(previous_runtime, TrueFamilyRuntime):
+        if hass.data.get(DOMAIN, {}).get(entry.entry_id) is previous_runtime:
+            raise ConfigEntryNotReady(
+                "The previous True Family runtime is still registered."
+            )
+        if previous_runtime.cleanup_pending:
+            try:
+                await previous_runtime.async_shutdown()
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                raise ConfigEntryNotReady(
+                    "Previous True Family runtime cleanup is still pending."
+                ) from err
+        try:
+            await previous_runtime.async_close_reference_journal()
+        except Exception as err:
+            raise ConfigEntryNotReady(
+                "Previous True Family journal cleanup is still pending."
+            ) from err
 
     reference_journal = None
     try:
@@ -154,18 +192,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await runtime.async_setup()
     except asyncio.CancelledError:
         clear_reference_journal_reload_pending(hass, entry.entry_id)
-        try:
-            await runtime.async_shutdown()
-        finally:
-            await reference_journal.async_close()
+        if runtime.cleanup_pending:
+            entry.runtime_data = runtime
+        else:
+            try:
+                await runtime.async_close_reference_journal()
+            except Exception:
+                _LOGGER.warning(
+                    "Failed to close the reference journal after cancellation."
+                )
         raise
+    except RuntimeSetupSafetyError as err:
+        clear_reference_journal_reload_pending(hass, entry.entry_id)
+        if runtime.cleanup_pending:
+            entry.runtime_data = runtime
+            raise ConfigEntryNotReady(
+                "Zigbee joining safety cleanup is still pending."
+            ) from err
+        try:
+            await runtime.async_close_reference_journal()
+        except Exception:
+            _LOGGER.warning("Failed to close the reference journal after setup failure.")
+        raise ConfigEntryNotReady(
+            "Zigbee joining safety is not ready for True Family."
+        ) from err
     except Exception as err:
         clear_reference_journal_reload_pending(hass, entry.entry_id)
         try:
             await runtime.async_shutdown()
-        finally:
-            await reference_journal.async_close()
-        raise ConfigEntryNotReady("MQTT is not ready for True Family") from err
+        except Exception as cleanup_err:
+            entry.runtime_data = runtime
+            raise ConfigEntryNotReady(
+                "True Family setup cleanup is still pending."
+            ) from cleanup_err
+        try:
+            await runtime.async_close_reference_journal()
+        except Exception:
+            _LOGGER.warning("Failed to close the reference journal after setup failure.")
+        raise ConfigEntryNotReady("MQTT is not ready for True Family.") from err
     entry.runtime_data = runtime
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -173,15 +237,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         clear_reference_journal_reload_pending(hass, entry.entry_id)
         try:
             await runtime.async_shutdown()
-        finally:
-            await reference_journal.async_close()
+        except Exception:
+            pass
+        else:
+            try:
+                await runtime.async_close_reference_journal()
+            except Exception:
+                _LOGGER.warning(
+                    "Failed to close the reference journal after cancellation."
+                )
         raise
     except Exception:
         clear_reference_journal_reload_pending(hass, entry.entry_id)
         try:
             await runtime.async_shutdown()
-        finally:
-            await reference_journal.async_close()
+        except Exception as cleanup_err:
+            raise ConfigEntryNotReady(
+                "True Family platform cleanup is still pending."
+            ) from cleanup_err
+        try:
+            await runtime.async_close_reference_journal()
+        except Exception as cleanup_err:
+            raise ConfigEntryNotReady(
+                "True Family journal cleanup is still pending."
+            ) from cleanup_err
         raise
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime
     async_schedule_pending_reference_journal_reload(hass, reference_journal)
@@ -200,8 +279,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
-    if runtime.reference_journal is not None:
-        await runtime.reference_journal.async_close()
+    await _async_close_runtime_reference_journal(runtime)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 

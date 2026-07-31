@@ -104,7 +104,22 @@ class IntegrationContractTests(unittest.TestCase):
         mqtt_source = (INTEGRATION / "mqtt.py").read_text()
         replacement = (INTEGRATION / "replacement.py").read_text()
         self.assertIn("bridge/response/permit_join", mqtt_source)
-        self.assertIn("await asyncio.wait_for(future", mqtt_source)
+        self.assertIn("await asyncio.wait_for(", mqtt_source)
+        self.assertIn("bridge/info", mqtt_source)
+        self.assertIn("bridge/state", mqtt_source)
+        self.assertIn("async_reconcile_join_closed", mqtt_source)
+        self.assertIn("state.generation > request_generation", mqtt_source)
+        self.assertIn("and not state.retained", mqtt_source)
+        self.assertIn("single-writer broker contract", mqtt_source)
+        self.assertIn("_open_provisional_state", mqtt_source)
+        self.assertIn("_commit_provisional_open", mqtt_source)
+        self.assertIn("state.observed_at >= request_started_at", mqtt_source)
+        self.assertNotIn(
+            "state.observed_at < self._open_acknowledged_at",
+            mqtt_source,
+        )
+        self.assertNotIn("_shutdown_closure_proven", replacement)
+        self.assertIn("has_shutdown_safety_coverage", replacement)
         self.assertIn("state.last_updated > command_started", replacement)
         self.assertLess(
             replacement.index("await self._async_test_binding("),
@@ -115,6 +130,69 @@ class IntegrationContractTests(unittest.TestCase):
         source = (INTEGRATION / "replacement.py").read_text()
         self.assertIn("self.entry.async_create_task", source)
         self.assertNotIn("self.hass.async_create_task", source)
+        self.assertNotIn("asyncio.gather", source)
+
+    def test_startup_completion_guards_pairing_and_shutdown_mode(self) -> None:
+        replacement = (INTEGRATION / "replacement.py").read_text()
+        setup = (INTEGRATION / "__init__.py").read_text()
+        shutdown = replacement[
+            replacement.index("    async def async_shutdown(") : replacement.index(
+                "    async def _async_cleanup_failed_setup("
+            )
+        ]
+        self.assertIn("self._startup_complete = False", replacement)
+        self.assertIn("self._startup_complete = True", replacement)
+        self.assertLess(
+            replacement.index("await self._async_reconcile_global_join_closed("),
+            replacement.index("self._startup_complete = True"),
+        )
+        self.assertIn("if not self._startup_complete:", shutdown)
+        self.assertLess(
+            shutdown.index("if not self._startup_complete:"),
+            shutdown.index("has_shutdown_safety_coverage"),
+        )
+        self.assertIn(
+            'raise ReplacementError("True Family startup is incomplete.")',
+            replacement,
+        )
+        self.assertLess(
+            setup.index("await runtime.async_setup()"),
+            setup.index("entry.runtime_data = runtime"),
+        )
+
+    def test_join_barrier_has_no_demo_backend_or_background_waiter(self) -> None:
+        mqtt_source = (INTEGRATION / "mqtt.py").read_text()
+        selected_source = "\n".join(
+            (INTEGRATION / filename).read_text()
+            for filename in ("mqtt.py", "replacement.py", "__init__.py", "const.py")
+        )
+        for forbidden in (
+            "from backend",
+            "import backend",
+            "from tests",
+            "import helpers",
+            "/homeassistant/custom_components",
+        ):
+            self.assertNotIn(forbidden, selected_source)
+        for forbidden in (
+            "asyncio.create_task",
+            "asyncio.gather",
+            "asyncio.sleep",
+        ):
+            self.assertNotIn(forbidden, mqtt_source)
+        self.assertNotIn("_async_retry_close", selected_source)
+        self.assertIn("qos=1", mqtt_source)
+        self.assertIn("retain=False", mqtt_source)
+
+    def test_ha_mqtt_harness_patch_is_fixture_scoped(self) -> None:
+        helpers = (ROOT / "tests" / "ha" / "helpers.py").read_text()
+        conftest = (ROOT / "tests" / "ha" / "conftest.py").read_text()
+        self.assertNotIn("mqtt_component.async_subscribe =", helpers)
+        self.assertNotIn("mqtt_component.async_publish =", helpers)
+        self.assertIn("def install_bridge_harness", helpers)
+        self.assertIn("monkeypatch.setattr", helpers)
+        self.assertIn("def install_scoped_bridge_harness", conftest)
+        self.assertIn("install_bridge_harness(monkeypatch)", conftest)
 
     def test_unconfirmed_join_lease_blocks_new_pairing(self) -> None:
         source = (INTEGRATION / "replacement.py").read_text()

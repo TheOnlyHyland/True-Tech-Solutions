@@ -3,32 +3,90 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from homeassistant.components import mqtt as mqtt_component
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
 from homeassistant.core import Context
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import storage
+from homeassistant.exceptions import ConfigEntryNotReady
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import true_family as true_family_integration
+from custom_components.true_family import mqtt as mqtt_adapter
 from custom_components.true_family import reference_providers_ha as providers
 from custom_components.true_family.const import CONF_BASE_TOPIC, CONF_ROOMS, DOMAIN
 from custom_components.true_family.models import default_rooms, rooms_as_dict
 from custom_components.true_family.mqtt import JoinRequestError
 from custom_components.true_family.replacement import ReplacementError
+from custom_components.true_family.replacement import TrueFamilyRuntime
 
 from helpers import (
+    BRIDGE_INFO_TOPIC,
+    MISSING,
+    PERMIT_REQUEST_TOPIC,
+    PERMIT_RESPONSE_TOPIC,
     async_ack_join_request,
+    async_fire_bridge_info,
     async_start_pairing_with_ack,
     async_wait_for_publish,
+    bridge_harness_for,
     create_physical_climate,
 )
+
+
+def install_incomplete_startup_failure(
+    monkeypatch,
+    *,
+    unsubscribe_failures: int,
+) -> dict[str, int]:
+    """Fail one response subscription and bounded info unsubscriptions."""
+
+    original_subscribe = mqtt_component.async_subscribe
+    state = {
+        "install_failures": 1,
+        "unsubscribe_failures": unsubscribe_failures,
+        "unsubscribe_attempts": 0,
+    }
+
+    async def failing_subscribe(
+        hass,
+        topic,
+        message_callback,
+        *args,
+        **kwargs,
+    ):
+        if topic == PERMIT_RESPONSE_TOPIC and state["install_failures"]:
+            state["install_failures"] -= 1
+            raise RuntimeError("private-subscription-install-canary")
+        unsubscribe = await original_subscribe(
+            hass,
+            topic,
+            message_callback,
+            *args,
+            **kwargs,
+        )
+        if topic != BRIDGE_INFO_TOPIC:
+            return unsubscribe
+
+        def unreliable_unsubscribe() -> None:
+            state["unsubscribe_attempts"] += 1
+            if state["unsubscribe_failures"]:
+                state["unsubscribe_failures"] -= 1
+                raise RuntimeError("private-subscription-cleanup-canary")
+            unsubscribe()
+
+        return unreliable_unsubscribe
+
+    monkeypatch.setattr(mqtt_component, "async_subscribe", failing_subscribe)
+    return state
 
 
 def test_yaml_configuration_is_explicitly_config_entry_only() -> None:
@@ -141,7 +199,7 @@ async def test_setup_creates_seven_unavailable_logical_valves_and_unloads(
     mqtt_client_mock,
     true_family_entry,
 ) -> None:
-    """Load the actual custom component without publishing MQTT."""
+    """Reconcile closed before exposing the seven logical valves."""
 
     publish_count = mqtt_client_mock.publish.call_count
     assert await hass.config_entries.async_setup(true_family_entry.entry_id)
@@ -162,11 +220,675 @@ async def test_setup_creates_seven_unavailable_logical_valves_and_unloads(
         hass.states.get(entry.entity_id).state == "unavailable"
         for entry in logical_entries
     )
-    assert mqtt_client_mock.publish.call_count == publish_count
+    assert mqtt_client_mock.publish.call_count == publish_count + 1
+    topic, startup_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        publish_count + 1,
+    )
+    assert topic == PERMIT_REQUEST_TOPIC
+    assert startup_request["time"] == 0
+    assert qos == 1
+    assert retain is False
 
     assert await hass.config_entries.async_unload(true_family_entry.entry_id)
     await hass.async_block_till_done()
     assert true_family_entry.entry_id not in hass.data.get(DOMAIN, {})
+    _topic, shutdown_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        publish_count + 2,
+    )
+    assert shutdown_request["time"] == 0
+    assert qos == 1
+    assert retain is False
+
+
+async def test_startup_retained_open_is_closed_before_runtime_exposure(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Replace a retained open snapshot with ACKed, newer closed bridge info."""
+
+    harness = bridge_harness_for(hass)
+    harness.retained_info = {
+        "permit_join": True,
+        "permit_join_end": int(
+            (datetime.now(UTC) + timedelta(seconds=60)).timestamp() * 1000
+        ),
+        "config": {"private": "startup-private-payload-canary"},
+    }
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    assert runtime._mqtt.current_closed_baseline() is not None
+    assert hass.data[DOMAIN][true_family_entry.entry_id] is runtime
+
+    _topic, request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        1,
+    )
+    assert request["time"] == 0
+    assert qos == 1
+    assert retain is False
+
+
+async def test_runtime_is_not_exposed_until_startup_close_proof_arrives(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Keep WebSocket lookup and platforms unavailable while closure is pending."""
+
+    harness = bridge_harness_for(hass)
+    harness.auto_close = False
+    setup_task = asyncio.create_task(
+        hass.config_entries.async_setup(true_family_entry.entry_id)
+    )
+    _topic, request, qos, retain = await async_wait_for_publish(mqtt_client_mock, 1)
+    assert request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    assert true_family_entry.entry_id not in hass.data.get(DOMAIN, {})
+    assert not er.async_entries_for_config_entry(
+        er.async_get(hass),
+        true_family_entry.entry_id,
+    )
+
+    async_ack_join_request(hass, request)
+    harness.auto_close = True
+    assert await setup_task
+    assert true_family_entry.entry_id in hass.data[DOMAIN]
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    (
+        "missing_info",
+        "malformed_info",
+        "offline",
+        "unknown_state",
+        "wrong_transaction",
+        "wrong_time",
+        "error_ack",
+        "bridge_remains_open",
+        "retained_replay",
+    ),
+)
+async def test_startup_reconciliation_failures_leave_no_runtime_or_subscriptions(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+    scenario: str,
+) -> None:
+    """Fail setup closed for every missing, malformed, offline, or bad-ACK path."""
+
+    harness = bridge_harness_for(hass)
+    harness.auto_close = False
+    if scenario == "missing_info":
+        harness.retained_info = MISSING
+        harness.close_info = MISSING
+    elif scenario == "malformed_info":
+        harness.retained_info = MISSING
+        harness.close_info = {"permit_join": "private-info-canary"}
+    elif scenario == "offline":
+        harness.retained_state = {"state": "offline"}
+    elif scenario == "unknown_state":
+        harness.retained_state = {"state": "private-state-canary"}
+
+    mqtt_client_mock.unsubscribe.reset_mock()
+    with (
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RESPONSE_SECONDS", 0.01),
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RECONCILE_SECONDS", 0.03),
+    ):
+        if scenario in {"offline", "unknown_state"}:
+            assert not await hass.config_entries.async_setup(true_family_entry.entry_id)
+        else:
+            setup_task = asyncio.create_task(
+                hass.config_entries.async_setup(true_family_entry.entry_id)
+            )
+            _topic, request, _qos, _retain = await async_wait_for_publish(
+                mqtt_client_mock,
+                1,
+            )
+            if scenario == "missing_info":
+                async_ack_join_request(hass, request, bridge_info=None)
+            elif scenario == "malformed_info":
+                async_ack_join_request(
+                    hass,
+                    request,
+                    bridge_info={"permit_join": "private-info-canary"},
+                )
+            elif scenario == "wrong_transaction":
+                async_ack_join_request(
+                    hass,
+                    request,
+                    transaction="wrong-transaction",
+                    bridge_info={"permit_join": False},
+                )
+            elif scenario == "wrong_time":
+                async_ack_join_request(
+                    hass,
+                    request,
+                    acknowledged_time=60,
+                    bridge_info={"permit_join": False},
+                )
+            elif scenario == "error_ack":
+                async_ack_join_request(
+                    hass,
+                    request,
+                    status="error",
+                    bridge_info={"permit_join": False},
+                )
+            elif scenario == "bridge_remains_open":
+                async_ack_join_request(
+                    hass,
+                    request,
+                    bridge_info={
+                        "permit_join": True,
+                        "permit_join_end": int(
+                            (
+                                datetime.now(UTC) + timedelta(seconds=60)
+                            ).timestamp()
+                            * 1000
+                        ),
+                    },
+                )
+            else:
+                async_ack_join_request(hass, request, bridge_info=None)
+                async_fire_bridge_info(
+                    hass,
+                    {"permit_join": False},
+                    retain=True,
+                )
+            assert not await setup_task
+
+    assert true_family_entry.state is ConfigEntryState.SETUP_RETRY
+    assert true_family_entry.entry_id not in hass.data.get(DOMAIN, {})
+    published = [
+        call
+        for call in mqtt_client_mock.publish.call_args_list
+        if call.args[0] == PERMIT_REQUEST_TOPIC
+    ]
+    if scenario in {"offline", "unknown_state"}:
+        assert published == []
+    else:
+        assert len(published) == 1
+        payload = published[0].args[1]
+        if isinstance(payload, bytes):
+            payload = payload.decode()
+        request = json.loads(payload)
+        assert request["time"] == 0
+        assert published[0].args[2] == 1
+        assert published[0].args[3] is False
+
+
+async def test_shutdown_without_session_reconciles_before_unsubscribe(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Always issue a zero-duration global barrier before removing listeners."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    assert runtime.sessions == {}
+    harness = bridge_harness_for(hass)
+    harness.auto_close = False
+    mqtt_client_mock.reset_mock()
+
+    unload_task = asyncio.create_task(
+        hass.config_entries.async_unload(true_family_entry.entry_id)
+    )
+    _topic, request, qos, retain = await async_wait_for_publish(mqtt_client_mock, 1)
+    assert request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    assert len(runtime._mqtt._subscriptions) == 4
+    async_ack_join_request(hass, request)
+    harness.auto_close = True
+    assert await unload_task
+    assert runtime._mqtt._subscriptions == []
+
+
+async def test_failed_unload_then_fresh_runtime_still_closes_without_old_session(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Make restart safety independent of an in-memory replacement session."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    old_runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    assert old_runtime.sessions == {}
+    harness = bridge_harness_for(hass)
+    harness.auto_close = False
+    with (
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RESPONSE_SECONDS", 0.01),
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RECONCILE_SECONDS", 0.03),
+    ):
+        assert not await hass.config_entries.async_unload(true_family_entry.entry_id)
+    assert true_family_entry.state is ConfigEntryState.FAILED_UNLOAD
+    assert old_runtime._shutdown_complete is False
+    assert old_runtime._mqtt._subscriptions
+
+    harness.auto_close = True
+    mqtt_client_mock.publish.reset_mock()
+    fresh_runtime = TrueFamilyRuntime(hass, true_family_entry, default_rooms())
+    await fresh_runtime.async_setup()
+    assert fresh_runtime.sessions == {}
+    _topic, startup_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        1,
+    )
+    assert startup_request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    await fresh_runtime.async_shutdown()
+    await old_runtime.async_shutdown()
+    assert fresh_runtime._shutdown_complete is True
+    assert old_runtime._shutdown_complete is True
+
+
+async def test_incomplete_startup_runtime_is_cleaned_before_fresh_setup(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+    monkeypatch,
+) -> None:
+    """Retry only subscription cleanup for a retained pre-exposure runtime."""
+
+    failure = install_incomplete_startup_failure(
+        monkeypatch,
+        unsubscribe_failures=2,
+    )
+    old_journal = AsyncMock()
+    new_journal = AsyncMock()
+    load_journal = AsyncMock(side_effect=(old_journal, new_journal))
+    mqtt_client_mock.publish.reset_mock()
+
+    with (
+        patch.object(
+            true_family_integration,
+            "async_load_reference_journal",
+            load_journal,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(),
+        ),
+    ):
+        with pytest.raises(ConfigEntryNotReady) as error:
+            await true_family_integration.async_setup_entry(
+                hass,
+                true_family_entry,
+            )
+        assert "private-subscription" not in str(error.value)
+        orphan = true_family_entry.runtime_data
+        assert isinstance(orphan, TrueFamilyRuntime)
+        assert orphan._startup_complete is False
+        assert orphan._shutdown_complete is False
+        assert orphan.cleanup_pending is True
+        assert [item.role for item in orphan._mqtt._subscriptions] == [
+            "state",
+            "info",
+        ]
+        assert true_family_entry.entry_id not in hass.data.get(DOMAIN, {})
+        assert failure["unsubscribe_attempts"] == 2
+        assert load_journal.await_count == 1
+        old_journal.async_close.assert_not_awaited()
+        with pytest.raises(ReplacementError, match="startup is incomplete"):
+            await orphan.async_start_pairing("guest_room", "replace")
+        assert not any(
+            call.args[0] == PERMIT_REQUEST_TOPIC
+            for call in mqtt_client_mock.publish.call_args_list
+        )
+
+        assert await true_family_integration.async_setup_entry(
+            hass,
+            true_family_entry,
+        )
+
+    replacement = true_family_entry.runtime_data
+    assert replacement is not orphan
+    assert replacement._startup_complete is True
+    assert orphan._shutdown_complete is True
+    assert orphan._mqtt.has_subscriptions is False
+    assert failure["unsubscribe_attempts"] == 3
+    assert load_journal.await_count == 2
+    old_journal.async_close.assert_awaited_once()
+    new_journal.async_close.assert_not_awaited()
+    assert hass.data[DOMAIN][true_family_entry.entry_id] is replacement
+    permit_requests = [
+        json.loads(
+            call.args[1].decode()
+            if isinstance(call.args[1], bytes)
+            else call.args[1]
+        )
+        for call in mqtt_client_mock.publish.call_args_list
+        if call.args[0] == PERMIT_REQUEST_TOPIC
+    ]
+    assert [request["time"] for request in permit_requests] == [0]
+
+    with patch.object(
+        hass.config_entries,
+        "async_unload_platforms",
+        AsyncMock(return_value=True),
+    ):
+        assert await true_family_integration.async_unload_entry(
+            hass,
+            true_family_entry,
+        )
+    old_journal.async_close.assert_awaited_once()
+    new_journal.async_close.assert_awaited_once()
+
+
+async def test_repeated_incomplete_startup_cleanup_failure_never_overwrites_runtime(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+    monkeypatch,
+) -> None:
+    """Keep the original runtime and journal until direct cleanup succeeds."""
+
+    failure = install_incomplete_startup_failure(
+        monkeypatch,
+        unsubscribe_failures=3,
+    )
+    old_journal = AsyncMock()
+    new_journal = AsyncMock()
+    load_journal = AsyncMock(side_effect=(old_journal, new_journal))
+    mqtt_client_mock.publish.reset_mock()
+
+    with (
+        patch.object(
+            true_family_integration,
+            "async_load_reference_journal",
+            load_journal,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(),
+        ),
+    ):
+        with pytest.raises(ConfigEntryNotReady):
+            await true_family_integration.async_setup_entry(
+                hass,
+                true_family_entry,
+            )
+        orphan = true_family_entry.runtime_data
+        assert orphan._startup_complete is False
+        assert failure["unsubscribe_attempts"] == 2
+
+        with pytest.raises(ConfigEntryNotReady) as error:
+            await true_family_integration.async_setup_entry(
+                hass,
+                true_family_entry,
+            )
+        assert "private-subscription" not in str(error.value)
+        assert true_family_entry.runtime_data is orphan
+        assert orphan._shutdown_complete is False
+        assert orphan.cleanup_pending is True
+        assert failure["unsubscribe_attempts"] == 3
+        assert load_journal.await_count == 1
+        old_journal.async_close.assert_not_awaited()
+        assert true_family_entry.entry_id not in hass.data.get(DOMAIN, {})
+        assert not any(
+            call.args[0] == PERMIT_REQUEST_TOPIC
+            for call in mqtt_client_mock.publish.call_args_list
+        )
+
+        failure["unsubscribe_failures"] = 0
+        assert await true_family_integration.async_setup_entry(
+            hass,
+            true_family_entry,
+        )
+
+    replacement = true_family_entry.runtime_data
+    assert replacement is not orphan
+    assert orphan._shutdown_complete is True
+    assert failure["unsubscribe_attempts"] == 4
+    old_journal.async_close.assert_awaited_once()
+    assert all(
+        request["time"] == 0
+        for request in (
+            json.loads(
+                call.args[1].decode()
+                if isinstance(call.args[1], bytes)
+                else call.args[1]
+            )
+            for call in mqtt_client_mock.publish.call_args_list
+            if call.args[0] == PERMIT_REQUEST_TOPIC
+        )
+    )
+
+    with patch.object(
+        hass.config_entries,
+        "async_unload_platforms",
+        AsyncMock(return_value=True),
+    ):
+        assert await true_family_integration.async_unload_entry(
+            hass,
+            true_family_entry,
+        )
+    old_journal.async_close.assert_awaited_once()
+    new_journal.async_close.assert_awaited_once()
+
+
+async def test_platform_failure_orphan_is_cleaned_before_runtime_replacement(
+    hass: HomeAssistant,
+    mqtt_mock,
+    true_family_entry,
+) -> None:
+    """Retain one hidden failed runtime until closure, unsubscribe, and journal close."""
+
+    harness = bridge_harness_for(hass)
+    old_journal = AsyncMock()
+    new_journal = AsyncMock()
+    load_journal = AsyncMock(side_effect=(old_journal, new_journal))
+
+    async def fail_platform_setup(*_args) -> None:
+        harness.auto_close = False
+        raise RuntimeError("private-platform-setup-canary")
+
+    with (
+        patch.object(
+            true_family_integration,
+            "async_load_reference_journal",
+            load_journal,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            side_effect=fail_platform_setup,
+        ),
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RESPONSE_SECONDS", 0.01),
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RECONCILE_SECONDS", 0.03),
+        pytest.raises(ConfigEntryNotReady),
+    ):
+        await true_family_integration.async_setup_entry(hass, true_family_entry)
+
+    orphan = true_family_entry.runtime_data
+    assert isinstance(orphan, TrueFamilyRuntime)
+    assert orphan._shutdown_complete is False
+    assert orphan._mqtt.has_subscriptions
+    assert true_family_entry.entry_id not in hass.data.get(DOMAIN, {})
+    old_journal.async_close.assert_not_awaited()
+    assert load_journal.await_count == 1
+
+    with (
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RESPONSE_SECONDS", 0.01),
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RECONCILE_SECONDS", 0.03),
+        pytest.raises(ConfigEntryNotReady),
+    ):
+        await true_family_integration.async_setup_entry(hass, true_family_entry)
+    assert true_family_entry.runtime_data is orphan
+    assert load_journal.await_count == 1
+    old_journal.async_close.assert_not_awaited()
+
+    harness.auto_close = True
+    with (
+        patch.object(
+            true_family_integration,
+            "async_load_reference_journal",
+            load_journal,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(),
+        ),
+    ):
+        assert await true_family_integration.async_setup_entry(
+            hass,
+            true_family_entry,
+        )
+    replacement = true_family_entry.runtime_data
+    assert replacement is not orphan
+    assert orphan._shutdown_complete is True
+    assert orphan._mqtt.has_subscriptions is False
+    old_journal.async_close.assert_awaited_once()
+    new_journal.async_close.assert_not_awaited()
+    assert hass.data[DOMAIN][true_family_entry.entry_id] is replacement
+
+    with patch.object(
+        hass.config_entries,
+        "async_unload_platforms",
+        AsyncMock(return_value=True),
+    ):
+        assert await true_family_integration.async_unload_entry(
+            hass,
+            true_family_entry,
+        )
+    old_journal.async_close.assert_awaited_once()
+    new_journal.async_close.assert_awaited_once()
+
+
+async def test_platform_cancellation_retains_runtime_until_retry_cleanup(
+    hass: HomeAssistant,
+    mqtt_mock,
+    true_family_entry,
+) -> None:
+    """Propagate cancellation while preserving the exact cleanup owner."""
+
+    harness = bridge_harness_for(hass)
+    old_journal = AsyncMock()
+    new_journal = AsyncMock()
+    load_journal = AsyncMock(side_effect=(old_journal, new_journal))
+
+    async def cancel_platform_setup(*_args) -> None:
+        harness.auto_close = False
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(
+            true_family_integration,
+            "async_load_reference_journal",
+            load_journal,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            side_effect=cancel_platform_setup,
+        ),
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RESPONSE_SECONDS", 0.01),
+        patch.object(mqtt_adapter, "PERMIT_JOIN_RECONCILE_SECONDS", 0.03),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await true_family_integration.async_setup_entry(hass, true_family_entry)
+
+    orphan = true_family_entry.runtime_data
+    assert isinstance(orphan, TrueFamilyRuntime)
+    assert orphan.cleanup_pending is True
+    assert true_family_entry.entry_id not in hass.data.get(DOMAIN, {})
+    old_journal.async_close.assert_not_awaited()
+
+    harness.auto_close = True
+    with (
+        patch.object(
+            true_family_integration,
+            "async_load_reference_journal",
+            load_journal,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(),
+        ),
+    ):
+        assert await true_family_integration.async_setup_entry(
+            hass,
+            true_family_entry,
+        )
+    replacement = true_family_entry.runtime_data
+    assert replacement is not orphan
+    assert orphan._shutdown_complete is True
+    old_journal.async_close.assert_awaited_once()
+
+    with patch.object(
+        hass.config_entries,
+        "async_unload_platforms",
+        AsyncMock(return_value=True),
+    ):
+        assert await true_family_integration.async_unload_entry(
+            hass,
+            true_family_entry,
+        )
+    old_journal.async_close.assert_awaited_once()
+    new_journal.async_close.assert_awaited_once()
+
+
+async def test_cancellation_during_shutdown_closure_keeps_subscriptions_for_retry(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Propagate cancellation without claiming closure or unsubscribing."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    harness = bridge_harness_for(hass)
+    harness.auto_close = False
+    mqtt_client_mock.publish.reset_mock()
+
+    shutdown_task = asyncio.create_task(runtime.async_shutdown())
+    _topic, request, qos, retain = await async_wait_for_publish(mqtt_client_mock, 1)
+    assert request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    shutdown_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown_task
+    assert runtime._shutdown_complete is False
+    assert len(runtime._mqtt._subscriptions) == 4
+
+    harness.auto_close = True
+    await runtime.async_shutdown()
+    assert runtime._shutdown_complete is True
+    recovery_requests = []
+    for call in mqtt_client_mock.publish.call_args_list:
+        if call.args[0] != PERMIT_REQUEST_TOPIC:
+            continue
+        payload = call.args[1]
+        if isinstance(payload, bytes):
+            payload = payload.decode()
+        recovery_requests.append(json.loads(payload))
+    assert recovery_requests
+    assert all(request["time"] == 0 for request in recovery_requests)
+    assert await hass.config_entries.async_unload(true_family_entry.entry_id)
 
 
 async def test_unload_during_active_join_confirms_closure(

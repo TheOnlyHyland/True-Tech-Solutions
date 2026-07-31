@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import json
 from typing import Any
 from unittest.mock import MagicMock
+from weakref import WeakKeyDictionary
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -18,6 +20,151 @@ BASE_TOPIC = "zigbee2mqtt"
 PERMIT_REQUEST_TOPIC = f"{BASE_TOPIC}/bridge/request/permit_join"
 PERMIT_RESPONSE_TOPIC = f"{BASE_TOPIC}/bridge/response/permit_join"
 BRIDGE_EVENT_TOPIC = f"{BASE_TOPIC}/bridge/event"
+BRIDGE_INFO_TOPIC = f"{BASE_TOPIC}/bridge/info"
+BRIDGE_STATE_TOPIC = f"{BASE_TOPIC}/bridge/state"
+
+MISSING = object()
+
+
+@dataclass
+class BridgeHarness:
+    """Synthetic retained bridge and close responder for the offline HA harness."""
+
+    retained_state: Any = field(default_factory=lambda: {"state": "online"})
+    retained_info: Any = field(default_factory=lambda: {"permit_join": False})
+    auto_close: bool = True
+    close_status: str = "ok"
+    close_time: Any = MISSING
+    close_transaction: Any = MISSING
+    close_info: Any = field(default_factory=lambda: {"permit_join": False})
+
+
+_BRIDGE_HARNESSES: WeakKeyDictionary[HomeAssistant, BridgeHarness] = (
+    WeakKeyDictionary()
+)
+
+
+def bridge_harness_for(hass: HomeAssistant) -> BridgeHarness:
+    """Return mutable synthetic bridge behavior for one disposable HA instance."""
+
+    harness = _BRIDGE_HARNESSES.get(hass)
+    if harness is None:
+        harness = BridgeHarness()
+        _BRIDGE_HARNESSES[hass] = harness
+    return harness
+
+
+def _mqtt_payload(payload: Any) -> str | bytes:
+    if isinstance(payload, (str, bytes)):
+        return payload
+    return json.dumps(payload)
+
+
+def _fire_harness_message(
+    hass: HomeAssistant,
+    topic: str,
+    payload: Any,
+    retain: bool,
+) -> None:
+    async_fire_mqtt_message(
+        hass,
+        topic,
+        _mqtt_payload(payload),
+        retain=retain,
+    )
+
+
+def _fire_harness_close_response(
+    hass: HomeAssistant,
+    request: dict[str, Any],
+) -> None:
+    harness = bridge_harness_for(hass)
+    response = {
+        "status": harness.close_status,
+        "data": {
+            "time": (
+                request["time"]
+                if harness.close_time is MISSING
+                else harness.close_time
+            )
+        },
+        "transaction": (
+            request["transaction"]
+            if harness.close_transaction is MISSING
+            else harness.close_transaction
+        ),
+    }
+    if harness.close_status != "ok":
+        response["error"] = "private-harness-error-canary"
+    _fire_harness_message(hass, PERMIT_RESPONSE_TOPIC, response, False)
+    if harness.close_info is not MISSING:
+        _fire_harness_message(hass, BRIDGE_INFO_TOPIC, harness.close_info, False)
+
+
+def install_bridge_harness(monkeypatch) -> tuple[Any, Any]:
+    """Install one test-scoped synthetic bridge around HA's MQTT helpers."""
+
+    from homeassistant.components import mqtt as mqtt_component
+
+    original_async_subscribe = mqtt_component.async_subscribe
+    original_async_publish = mqtt_component.async_publish
+
+    async def harness_async_subscribe(
+        hass: HomeAssistant,
+        topic: str,
+        message_callback,
+        *args,
+        **kwargs,
+    ):
+        unsubscribe = await original_async_subscribe(
+            hass,
+            topic,
+            message_callback,
+            *args,
+            **kwargs,
+        )
+        harness = bridge_harness_for(hass)
+        retained_payload = (
+            harness.retained_state
+            if topic == BRIDGE_STATE_TOPIC
+            else harness.retained_info if topic == BRIDGE_INFO_TOPIC else MISSING
+        )
+        if retained_payload is not MISSING:
+            hass.loop.call_soon(
+                _fire_harness_message,
+                hass,
+                topic,
+                retained_payload,
+                True,
+            )
+        return unsubscribe
+
+    async def harness_async_publish(
+        hass: HomeAssistant,
+        topic: str,
+        payload: str | bytes,
+        *args,
+        **kwargs,
+    ):
+        result = await original_async_publish(
+            hass,
+            topic,
+            payload,
+            *args,
+            **kwargs,
+        )
+        if topic == PERMIT_REQUEST_TOPIC:
+            decoded = json.loads(payload)
+            harness = bridge_harness_for(hass)
+            if decoded.get("time") == 0 and harness.auto_close:
+                hass.loop.call_soon(_fire_harness_close_response, hass, decoded)
+        return result
+
+    setattr(harness_async_subscribe, "_true_family_harness", True)
+    setattr(harness_async_publish, "_true_family_harness", True)
+    monkeypatch.setattr(mqtt_component, "async_subscribe", harness_async_subscribe)
+    monkeypatch.setattr(mqtt_component, "async_publish", harness_async_publish)
+    return original_async_subscribe, original_async_publish
 
 
 async def async_wait_for_publish(
@@ -49,19 +196,75 @@ def async_ack_join_request(
     request: dict[str, Any],
     *,
     status: str = "ok",
+    acknowledged_time: Any = MISSING,
+    transaction: Any = MISSING,
+    bridge_info: Any = MISSING,
 ) -> None:
     """Fire a correlated synthetic Zigbee2MQTT permit-join response."""
 
+    response = {
+        "status": status,
+        "data": {
+            "time": (
+                request["time"]
+                if acknowledged_time is MISSING
+                else acknowledged_time
+            )
+        },
+        "transaction": (
+            request["transaction"] if transaction is MISSING else transaction
+        ),
+    }
+    if status != "ok":
+        response["error"] = "private-harness-error-canary"
     async_fire_mqtt_message(
         hass,
         PERMIT_RESPONSE_TOPIC,
-        json.dumps(
-            {
-                "status": status,
-                "data": {"time": request["time"]},
-                "transaction": request["transaction"],
+        json.dumps(response),
+        retain=False,
+    )
+    if bridge_info is MISSING:
+        if request["time"] == 0:
+            bridge_info = {"permit_join": False}
+        else:
+            bridge_info = {
+                "permit_join": True,
+                "permit_join_end": int(datetime.now(UTC).timestamp() * 1000)
+                + request["time"] * 1000,
             }
-        ),
+    if bridge_info is not None:
+        async_fire_bridge_info(hass, bridge_info)
+
+
+def async_fire_bridge_info(
+    hass: HomeAssistant,
+    payload: Any,
+    *,
+    retain: bool = False,
+) -> None:
+    """Fire one synthetic Zigbee2MQTT bridge/info observation."""
+
+    async_fire_mqtt_message(
+        hass,
+        BRIDGE_INFO_TOPIC,
+        _mqtt_payload(payload),
+        retain=retain,
+    )
+
+
+def async_fire_bridge_state(
+    hass: HomeAssistant,
+    payload: Any,
+    *,
+    retain: bool = False,
+) -> None:
+    """Fire one synthetic Zigbee2MQTT bridge/state observation."""
+
+    async_fire_mqtt_message(
+        hass,
+        BRIDGE_STATE_TOPIC,
+        _mqtt_payload(payload),
+        retain=retain,
     )
 
 

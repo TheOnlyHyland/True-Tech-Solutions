@@ -11,7 +11,11 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import entity_registry as er
 import pytest
 
-from custom_components.true_family.const import CONF_BASE_TOPIC, CONF_ROOMS
+from custom_components.true_family.const import (
+    CONF_BASE_TOPIC,
+    CONF_ROOMS,
+    PERMIT_JOIN_BASELINE_MAX_AGE_SECONDS,
+)
 from custom_components.true_family.models import default_rooms, rooms_as_dict
 from custom_components.true_family.mqtt import BridgeEvent, JoinRequestError
 from custom_components.true_family.replacement import (
@@ -23,10 +27,13 @@ from helpers import (
     BRIDGE_EVENT_TOPIC,
     async_ack_join_request,
     async_fire_bridge_event,
+    async_fire_bridge_info,
+    async_fire_bridge_state,
     async_prepare_new_candidate,
     async_wait_for_session_phase,
     async_wait_for_publish,
     async_start_pairing_with_ack,
+    bridge_harness_for,
     create_physical_climate,
     freshen_target_state,
 )
@@ -362,6 +369,365 @@ async def test_second_joined_device_fails_the_active_session(
     failed = runtime.sessions[session["session_id"]]
     assert failed.requires_remediation is True
     assert len(failed.joined_ieee_addresses) == 2
+
+
+async def test_unexpected_external_open_fails_synchronously_then_closes_on_api(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Do not adopt an external open or create a callback closure task."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    mqtt_client_mock.publish.reset_mock()
+    session_data = await async_start_pairing_with_ack(
+        hass,
+        runtime,
+        mqtt_client_mock,
+    )
+    session = runtime.sessions[session_data["session_id"]]
+    tasks_before = set(runtime._tasks)
+    publish_count = mqtt_client_mock.publish.call_count
+
+    async_fire_bridge_info(
+        hass,
+        {
+            "permit_join": True,
+            "permit_join_end": int(
+                (datetime.now(UTC) + timedelta(seconds=120)).timestamp() * 1000
+            ),
+        },
+    )
+    assert session.phase == "failed"
+    assert session.requires_remediation is True
+    assert runtime._bridge_requires_closure is True
+    assert set(runtime._tasks) == tasks_before
+    assert mqtt_client_mock.publish.call_count == publish_count
+
+    with pytest.raises(ReplacementError):
+        await runtime.async_cancel(session.session_id)
+    _topic, close_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        publish_count + 1,
+    )
+    assert close_request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    assert session.join_closed is True
+    assert runtime._join_owner_session_id is None
+
+
+async def test_repeated_online_during_open_fails_then_reconciles(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Treat an online-only Zigbee2MQTT restart during pairing as unsafe."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    mqtt_client_mock.publish.reset_mock()
+    session_data = await async_start_pairing_with_ack(
+        hass,
+        runtime,
+        mqtt_client_mock,
+    )
+    session = runtime.sessions[session_data["session_id"]]
+    publish_count = mqtt_client_mock.publish.call_count
+
+    async_fire_bridge_state(hass, {"state": "online"})
+    assert session.phase == "failed"
+    assert session.requires_remediation is True
+    assert mqtt_client_mock.publish.call_count == publish_count
+
+    with pytest.raises(ReplacementError):
+        await runtime.async_cancel(session.session_id)
+    _topic, close_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        publish_count + 1,
+    )
+    assert close_request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    assert session.join_closed is True
+
+
+async def test_repeated_online_while_idle_requires_zero_only_reconciliation(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Invalidate idle proof on an online-only restart without opening join."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    mqtt_client_mock.publish.reset_mock()
+
+    async_fire_bridge_state(hass, {"state": "online"})
+    assert runtime._bridge_requires_closure is True
+    assert runtime._mqtt.current_closed_baseline() is None
+    assert mqtt_client_mock.publish.call_count == 0
+
+    harness = bridge_harness_for(hass)
+    harness.auto_close = False
+    reconcile_task = asyncio.create_task(runtime._async_reconcile_if_required())
+    _topic, request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        1,
+    )
+    assert request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    assert mqtt_client_mock.publish.call_count == 1
+    async_ack_join_request(hass, request)
+    await reconcile_task
+    harness.auto_close = True
+    assert runtime._bridge_requires_closure is False
+
+
+@pytest.mark.parametrize(
+    "ordering",
+    ("info_before_ack", "ack_before_info"),
+)
+async def test_open_info_and_ack_both_required_before_pairing_success(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+    ordering: str,
+) -> None:
+    """Accept either upstream ordering without committing provisional info."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    mqtt_client_mock.publish.reset_mock()
+
+    start_task = asyncio.create_task(
+        runtime.async_start_pairing("guest_room", "replace")
+    )
+    _topic, request, qos, retain = await async_wait_for_publish(mqtt_client_mock, 1)
+    assert request["time"] == 60
+    assert qos == 1
+    assert retain is False
+    session = runtime.active_session
+    assert session is not None
+    expected = runtime._mqtt._open_expected_end
+    assert expected is not None
+    expected_end = int(expected.timestamp() * 1000)
+    info = {
+        "permit_join": True,
+        "permit_join_end": expected_end,
+    }
+
+    if ordering == "info_before_ack":
+        async_fire_bridge_info(hass, info)
+    else:
+        async_ack_join_request(hass, request, bridge_info=None)
+    await asyncio.sleep(0)
+    assert start_task.done() is False
+    assert session.phase == "awaiting_pairing"
+
+    if ordering == "info_before_ack":
+        async_ack_join_request(hass, request, bridge_info=None)
+    else:
+        async_fire_bridge_info(hass, info)
+    started = await start_task
+    assert started["phase"] == "awaiting_pairing"
+
+    cancel_task = asyncio.create_task(runtime.async_cancel(session.session_id))
+    await async_wait_for_publish(mqtt_client_mock, 2)
+    cancelled = await cancel_task
+    assert cancelled["phase"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ("invalid_buffered_end", "multiple_provisional", "wrong_ack", "error_ack"),
+)
+async def test_invalid_provisional_open_never_becomes_attributed(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+    scenario: str,
+) -> None:
+    """Fail buffered ambiguity synchronously and retain terminal failure."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    mqtt_client_mock.publish.reset_mock()
+
+    start_task = asyncio.create_task(
+        runtime.async_start_pairing("guest_room", "replace")
+    )
+    _topic, request, _qos, _retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        1,
+    )
+    session = runtime.active_session
+    assert session is not None
+    expected = runtime._mqtt._open_expected_end
+    assert expected is not None
+    expected_end = int(expected.timestamp() * 1000)
+    info = {
+        "permit_join": True,
+        "permit_join_end": (
+            expected_end - 6_000
+            if scenario == "invalid_buffered_end"
+            else expected_end
+        ),
+    }
+    async_fire_bridge_info(hass, info)
+    assert start_task.done() is False
+    assert session.phase == "awaiting_pairing"
+
+    if scenario == "multiple_provisional":
+        async_fire_bridge_info(
+            hass,
+            {
+                "permit_join": True,
+                "permit_join_end": expected_end - 1_000,
+            },
+        )
+        assert session.phase == "failed"
+        async_ack_join_request(hass, request, bridge_info=None)
+    elif scenario == "wrong_ack":
+        async_ack_join_request(
+            hass,
+            request,
+            transaction="wrong-transaction",
+            bridge_info=None,
+        )
+        assert session.phase == "failed"
+    elif scenario == "error_ack":
+        async_ack_join_request(
+            hass,
+            request,
+            status="error",
+            bridge_info=None,
+        )
+        assert session.phase == "failed"
+    else:
+        async_ack_join_request(hass, request, bridge_info=None)
+        assert session.phase == "failed"
+
+    with pytest.raises(ReplacementError):
+        await start_task
+    _topic, close_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        2,
+    )
+    assert close_request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    assert session.phase == "failed"
+    assert session.requires_remediation is True
+    assert session.join_closed is True
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ("after_attribution_deadline", "mismatched_end"),
+)
+async def test_post_ack_external_open_never_becomes_attributed(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+    scenario: str,
+) -> None:
+    """Require deadlines and exact end under the broker single-writer contract."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    mqtt_client_mock.publish.reset_mock()
+
+    start_task = asyncio.create_task(
+        runtime.async_start_pairing("guest_room", "replace")
+    )
+    _topic, request, qos, retain = await async_wait_for_publish(mqtt_client_mock, 1)
+    assert request["time"] == 60
+    assert qos == 1
+    assert retain is False
+    session = runtime.active_session
+    assert session is not None
+    expected = runtime._mqtt._open_expected_end
+    assert expected is not None
+    matching_end = int(expected.timestamp() * 1000)
+    info = {
+        "permit_join": True,
+        "permit_join_end": (
+            matching_end - 6_000 if scenario == "mismatched_end" else matching_end
+        ),
+    }
+
+    async_ack_join_request(hass, request, bridge_info=None)
+    if scenario == "after_attribution_deadline":
+        runtime._mqtt._open_attribution_deadline = hass.loop.time() - 1
+    async_fire_bridge_info(hass, info)
+
+    with pytest.raises(ReplacementError):
+        await start_task
+    _topic, close_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        2,
+    )
+    assert close_request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    assert session.phase == "failed"
+    assert session.requires_remediation is True
+    assert session.join_closed is True
+
+
+async def test_stale_closed_baseline_is_refreshed_before_positive_open(
+    hass: HomeAssistant,
+    mqtt_mock,
+    mqtt_client_mock,
+    true_family_entry,
+) -> None:
+    """Put a fresh zero-duration proof ahead of any positive pairing request."""
+
+    assert await hass.config_entries.async_setup(true_family_entry.entry_id)
+    await hass.async_block_till_done()
+    runtime: TrueFamilyRuntime = true_family_entry.runtime_data
+    assert runtime._mqtt._permit_observed_monotonic is not None
+    runtime._mqtt._permit_observed_monotonic = (
+        hass.loop.time() - PERMIT_JOIN_BASELINE_MAX_AGE_SECONDS - 1
+    )
+    mqtt_client_mock.publish.reset_mock()
+
+    start_task = asyncio.create_task(
+        runtime.async_start_pairing("guest_room", "replace")
+    )
+    _topic, baseline_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        1,
+    )
+    assert baseline_request["time"] == 0
+    assert qos == 1
+    assert retain is False
+    _topic, open_request, qos, retain = await async_wait_for_publish(
+        mqtt_client_mock,
+        2,
+    )
+    assert open_request["time"] == 60
+    assert qos == 1
+    assert retain is False
+    async_ack_join_request(hass, open_request)
+    session_data = await start_task
+    cancelled = await runtime.async_cancel(session_data["session_id"])
+    assert cancelled["phase"] == "cancelled"
 
 
 async def test_failed_restore_never_persists_candidate_binding(

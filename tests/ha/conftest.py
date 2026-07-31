@@ -27,6 +27,7 @@ from custom_components.true_family.reference_migration_ha import (
     REFERENCE_JOURNAL_FILESYSTEM_POLICY_DATA,
     async_provision_reference_journal,
 )
+from helpers import install_bridge_harness
 
 
 _HARNESS_BACKEND_SEAL = object()
@@ -121,6 +122,13 @@ def inject_harness_durability_dependencies(
 @pytest.fixture(autouse=True)
 def enable_true_family_custom_integration(enable_custom_integrations) -> None:
     """Allow loading the project custom integration."""
+
+
+@pytest.fixture(autouse=True)
+def install_scoped_bridge_harness(monkeypatch) -> None:
+    """Install and automatically restore the synthetic MQTT bridge per test."""
+
+    install_bridge_harness(monkeypatch)
 
 
 @pytest_asyncio.fixture(autouse=True)

@@ -42,7 +42,7 @@ from .models import (
     RoomSlot,
     rooms_as_dict,
 )
-from .mqtt import BridgeEvent, Zigbee2MqttClient
+from .mqtt import BridgeEvent, BridgePermitState, Zigbee2MqttClient
 
 if TYPE_CHECKING:
     from .reference_migration_ha import HomeAssistantReferenceJournal
@@ -54,6 +54,10 @@ RoomListener = Callable[[], None]
 
 class ReplacementError(HomeAssistantError):
     """Raised when a replacement transaction fails closed."""
+
+
+class RuntimeSetupSafetyError(ReplacementError):
+    """Raised when startup cannot prove global Zigbee joining is closed."""
 
 
 class TrueFamilyRuntime:
@@ -75,7 +79,10 @@ class TrueFamilyRuntime:
         self._operation_task: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()
         self._closing = False
+        self._startup_complete = False
         self._shutdown_complete = False
+        self._reference_journal_closed = False
+        self._bridge_requires_closure = True
         self._room_listeners: dict[str, set[RoomListener]] = {
             room_id: set() for room_id in rooms
         }
@@ -84,12 +91,26 @@ class TrueFamilyRuntime:
             entry.data[CONF_BASE_TOPIC],
             self.async_handle_bridge_event,
             self._create_task,
+            self._handle_bridge_permit_state,
         )
 
     async def async_setup(self) -> None:
-        """Subscribe to bridge events and responses without publishing."""
+        """Install subscriptions and prove global joining closed before exposure."""
 
-        await self._mqtt.async_setup()
+        try:
+            await self._mqtt.async_setup()
+            await self._async_reconcile_global_join_closed(
+                f"startup-{uuid4().hex}"
+            )
+            self._startup_complete = True
+        except asyncio.CancelledError:
+            await self._async_cleanup_failed_setup()
+            raise
+        except Exception as err:
+            await self._async_cleanup_failed_setup()
+            raise RuntimeSetupSafetyError(
+                "Global Zigbee joining could not be proved closed during startup."
+            ) from err
 
     async def async_shutdown(self) -> None:
         """Stop work, confirm join closure, and release MQTT subscriptions."""
@@ -98,36 +119,86 @@ class TrueFamilyRuntime:
             if self._shutdown_complete:
                 return
             self._closing = True
+            if not self._startup_complete:
+                try:
+                    await self._mqtt.async_shutdown()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    raise ReplacementError(
+                        "Incomplete Zigbee2MQTT startup subscriptions could not "
+                        "be released."
+                    ) from None
+                self._shutdown_complete = True
+                return
             tasks = [task for task in self._tasks if not task.done()]
             for task in tasks:
                 task.cancel("True Family config entry unloading")
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for result in results:
-                    if isinstance(result, Exception):
-                        _LOGGER.warning(
-                            "Task failed during True Family unload: %s",
-                            result,
-                        )
+            for task in tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    current_task = asyncio.current_task()
+                    if current_task is not None and current_task.cancelling():
+                        raise
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Task failed during True Family unload: %s",
+                        err,
+                    )
             async with self._mutation_lock:
                 pass
             for room_lock in self._room_locks.values():
                 async with room_lock:
                     pass
 
-            closure_errors = []
-            for session in self.sessions.values():
-                if not session.join_closed:
-                    try:
-                        await self._async_close_join_confirmed(session)
-                    except Exception as err:
-                        closure_errors.append(err)
-            if closure_errors:
+            if not self._mqtt.has_shutdown_safety_coverage:
+                self._bridge_requires_closure = True
+                raise ReplacementError(
+                    "Zigbee joining closure cannot be observed during unload."
+                )
+            try:
+                await self._async_reconcile_global_join_closed(
+                    f"shutdown-{uuid4().hex}"
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                self._bridge_requires_closure = True
                 raise ReplacementError(
                     "Zigbee joining closure could not be confirmed during unload."
-                ) from closure_errors[0]
-            await self._mqtt.async_shutdown()
+                ) from err
+            try:
+                await self._mqtt.async_shutdown()
+            except Exception as err:
+                raise ReplacementError(
+                    "Zigbee2MQTT subscriptions could not be released during unload."
+                ) from err
             self._shutdown_complete = True
+
+    async def _async_cleanup_failed_setup(self) -> None:
+        """Best-effort subscription teardown without masking setup failure."""
+
+        try:
+            await self._mqtt.async_shutdown()
+        except Exception:
+            _LOGGER.warning("Failed to clean up Zigbee2MQTT startup subscriptions.")
+        else:
+            self._shutdown_complete = True
+
+    @property
+    def cleanup_pending(self) -> bool:
+        """Return whether this runtime still owns callbacks requiring cleanup."""
+
+        return not self._shutdown_complete or self._mqtt.has_subscriptions
+
+    async def async_close_reference_journal(self) -> None:
+        """Close the owned reference journal at most once, with retry on failure."""
+
+        if self.reference_journal is None or self._reference_journal_closed:
+            return
+        await self.reference_journal.async_close()
+        self._reference_journal_closed = True
 
     @property
     def active_session(self) -> ReplacementSession | None:
@@ -136,6 +207,43 @@ class TrueFamilyRuntime:
         if self._active_session_id is None:
             return None
         return self.sessions.get(self._active_session_id)
+
+    @callback
+    def _handle_bridge_permit_state(
+        self,
+        state: BridgePermitState | None,
+        attributed_transaction: str | None,
+    ) -> None:
+        """Record unsafe bridge changes synchronously for serialized remediation."""
+
+        if (
+            state is not None
+            and state.online
+            and state.permit_join
+            and attributed_transaction == self._join_owner_session_id
+        ):
+            return
+        if state is not None and state.online and not state.permit_join:
+            return
+
+        self._bridge_requires_closure = True
+        session = self.active_session
+        if session is None and self._join_owner_session_id is not None:
+            session = self.sessions.get(self._join_owner_session_id)
+        if session is None or session.phase in {
+            ReplacementPhase.COMPLETE,
+            ReplacementPhase.FAILED,
+            ReplacementPhase.CANCELLED,
+            ReplacementPhase.ROLLED_BACK,
+        }:
+            return
+        session.requires_remediation = True
+        session.failure_reason = (
+            "Zigbee2MQTT bridge state changed unexpectedly during replacement."
+        )
+        session.record(f"Replacement failed: {session.failure_reason}")
+        self._set_terminal(session, ReplacementPhase.FAILED)
+        self._emit_session(session)
 
     @callback
     def subscribe_room(self, room_id: str, listener: RoomListener) -> Callable[[], None]:
@@ -195,12 +303,15 @@ class TrueFamilyRuntime:
 
         async with self._mutation_lock:
             self._ensure_open()
-            if (
-                self.active_session is not None
-                or self._join_owner_session_id is not None
-                or self._operation_running
-            ):
+            if self.active_session is not None or self._operation_running:
                 raise ReplacementError("Another valve replacement is already active.")
+            if self._join_owner_session_id is not None:
+                if self._bridge_requires_closure:
+                    await self._async_reconcile_if_required()
+                if self._join_owner_session_id is not None:
+                    raise ReplacementError(
+                        "Another valve replacement is already active."
+                    )
             try:
                 room = self.rooms[room_id]
             except KeyError as err:
@@ -209,6 +320,13 @@ class TrueFamilyRuntime:
                 raise ReplacementError("Choose either replace or repair existing valve.")
             if operation == "repair" and room.binding is None:
                 raise ReplacementError("An unbound room has no existing valve to repair.")
+
+            try:
+                await self._async_prepare_pairing_baseline()
+            except Exception as err:
+                raise ReplacementError(
+                    "A current globally closed Zigbee joining state is required."
+                ) from err
 
             now = datetime.now(UTC)
             session_id = uuid4().hex
@@ -233,15 +351,19 @@ class TrueFamilyRuntime:
             except Exception as err:
                 session.failure_reason = "Zigbee joining could not be acknowledged."
                 session.record(f"Replacement failed: {session.failure_reason}")
-                if not await self._async_attempt_close(session, force=True):
-                    self._create_task(
-                        self._async_retry_close(session.session_id),
-                        "True Family ambiguous join closure retry",
-                    )
+                await self._async_attempt_close(session, force=True)
                 self._set_terminal(session, ReplacementPhase.FAILED)
                 self._emit_session(session)
                 raise ReplacementError(session.failure_reason) from err
 
+            if self._bridge_requires_closure or session.phase is ReplacementPhase.FAILED:
+                await self._async_attempt_close(session, force=True)
+                if session.phase is not ReplacementPhase.FAILED:
+                    self._set_terminal(session, ReplacementPhase.FAILED)
+                raise ReplacementError(
+                    session.failure_reason
+                    or "Zigbee2MQTT bridge state changed while pairing opened."
+                )
             if self._closing:
                 await self._async_attempt_close(session, force=True)
                 self._set_terminal(session, ReplacementPhase.FAILED)
@@ -263,6 +385,11 @@ class TrueFamilyRuntime:
         async with self._mutation_lock:
             if self._closing:
                 return
+            if self._bridge_requires_closure:
+                try:
+                    await self._async_reconcile_if_required()
+                except ReplacementError:
+                    return
             session = self.active_session
             if session is None:
                 return
@@ -431,6 +558,7 @@ class TrueFamilyRuntime:
 
         async with self._mutation_lock:
             self._ensure_open()
+            await self._async_reconcile_if_required()
             session = self._session(session_id)
             if session.phase is not ReplacementPhase.READY_TO_COMMIT:
                 raise ReplacementError("The replacement is not ready to commit.")
@@ -465,6 +593,7 @@ class TrueFamilyRuntime:
         """Cancel a transaction before candidate testing starts."""
 
         async with self._mutation_lock:
+            await self._async_reconcile_if_required()
             session = self._session(session_id)
             if session.phase in {
                 ReplacementPhase.TESTING,
@@ -478,10 +607,6 @@ class TrueFamilyRuntime:
             if not closed and session.join_open_acknowledged:
                 session.failure_reason = "Cancellation could not confirm join closure."
                 session.record(f"Replacement failed: {session.failure_reason}")
-                self._create_task(
-                    self._async_retry_close(session.session_id),
-                    "True Family cancelled join closure retry",
-                )
                 self._set_terminal(session, ReplacementPhase.FAILED)
             else:
                 session.record(
@@ -501,6 +626,7 @@ class TrueFamilyRuntime:
 
         async with self._mutation_lock:
             self._ensure_open()
+            await self._async_reconcile_if_required()
             if self.active_session is not None or self._operation_running:
                 raise ReplacementError("Another valve operation is already active.")
             try:
@@ -925,10 +1051,6 @@ class TrueFamilyRuntime:
         closed = await self._async_attempt_close(session)
         if not closed and session.join_open_acknowledged:
             reason = f"{reason} Join closure is not yet confirmed."
-            self._create_task(
-                self._async_retry_close(session.session_id),
-                "True Family join closure retry",
-            )
         session.failure_reason = reason
         session.record(f"Replacement failed: {reason}")
         self._set_terminal(session, ReplacementPhase.FAILED)
@@ -939,44 +1061,88 @@ class TrueFamilyRuntime:
         session: ReplacementSession,
         force: bool = False,
     ) -> bool:
-        if session.join_closed or (
-            not session.join_open_acknowledged and not force
+        if (
+            session.join_closed
+            and not self._bridge_requires_closure
+            and self._mqtt.current_closed_baseline() is not None
         ):
+            return True
+        if not session.join_open_acknowledged and not force:
             return session.join_closed
         try:
             await self._async_close_join_confirmed(session)
         except Exception as err:
+            self._bridge_requires_closure = True
             session.record(f"Join closure request failed: {err}")
             _LOGGER.warning("Could not confirm Zigbee join closure: %s", err)
             return False
         return True
 
-    async def _async_retry_close(self, session_id: str) -> None:
-        session = self.sessions[session_id]
-        while not self._closing and not session.join_closed:
-            if datetime.now(UTC) > session.pairing_deadline + timedelta(seconds=5):
-                session.record("The acknowledged pairing hard deadline elapsed.")
-                self._emit_session(session)
-                return
-            await asyncio.sleep(2)
-            if await self._async_attempt_close(session, force=True):
-                session.record("Zigbee joining closure confirmed on retry.")
-                self._emit_session(session)
-                return
+    async def _async_prepare_pairing_baseline(self) -> None:
+        """Refresh a stale or invalid global closed baseline before opening."""
+
+        await self._async_reconcile_if_required()
+        if self._mqtt.current_closed_baseline() is None:
+            try:
+                await self._async_reconcile_global_join_closed(
+                    f"baseline-{uuid4().hex}"
+                )
+            except Exception as err:
+                self._bridge_requires_closure = True
+                raise ReplacementError(
+                    "A fresh Zigbee joining closure could not be proved."
+                ) from err
+        if self._mqtt.current_closed_baseline() is None:
+            raise ReplacementError(
+                "Zigbee joining closure proof is missing or stale."
+            )
+
+    async def _async_reconcile_if_required(self) -> None:
+        """Perform deferred callback remediation inside a serialized operation."""
+
+        if not self._bridge_requires_closure:
+            return
+        try:
+            await self._async_reconcile_global_join_closed(
+                f"remediation-{uuid4().hex}"
+            )
+        except Exception as err:
+            self._bridge_requires_closure = True
+            raise ReplacementError(
+                "Zigbee joining requires acknowledged closure remediation."
+            ) from err
 
     async def _async_close_join_confirmed(
         self,
         session: ReplacementSession,
     ) -> None:
-        if session.join_closed:
+        if (
+            session.join_closed
+            and not self._bridge_requires_closure
+            and self._mqtt.current_closed_baseline() is not None
+        ):
             return
-        session.join_closed_at = await self._mqtt.async_close_join(session.session_id)
-        session.join_closed = True
-        timeout_task = self._timeout_tasks.pop(session.session_id, None)
-        if timeout_task and timeout_task is not asyncio.current_task():
-            timeout_task.cancel()
-        if self._join_owner_session_id == session.session_id:
-            self._join_owner_session_id = None
+        await self._async_reconcile_global_join_closed(f"close-{uuid4().hex}")
+
+    async def _async_reconcile_global_join_closed(self, transaction: str) -> datetime:
+        """Use the one global barrier, then release every in-memory join lease."""
+
+        closed_at = await self._mqtt.async_close_join(transaction)
+        self._mark_global_join_closed(closed_at)
+        return closed_at
+
+    def _mark_global_join_closed(self, closed_at: datetime) -> None:
+        """Apply global proof only after the MQTT barrier has completed."""
+
+        for session in self.sessions.values():
+            if not session.join_closed:
+                session.join_closed_at = closed_at
+                session.join_closed = True
+            timeout_task = self._timeout_tasks.pop(session.session_id, None)
+            if timeout_task and timeout_task is not asyncio.current_task():
+                timeout_task.cancel()
+        self._join_owner_session_id = None
+        self._bridge_requires_closure = False
 
     def _validate_plan(self, room: RoomSlot, session: ReplacementSession) -> None:
         if room.revision != session.expected_revision or room.binding != session.old_binding:
@@ -1104,6 +1270,8 @@ class TrueFamilyRuntime:
             self._operation_task = None
 
     def _ensure_open(self) -> None:
+        if not self._startup_complete:
+            raise ReplacementError("True Family startup is incomplete.")
         if self._closing:
             raise ReplacementError("True Family is unloading.")
 
