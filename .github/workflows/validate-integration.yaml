@@ -75,7 +75,7 @@ jobs:
       - name: "Run Home Assistant integration tests"
         run: uv run --frozen pytest -q tests/ha
 
-      - name: "Run pure safety contracts"
+      - name: "Run pure deployment and preflight safety contracts"
         run: uv run --frozen python -m unittest discover -s tests -p "test_*.py"
 
       - name: "Run physical-probe Node contracts"

@@ -1,0 +1,61 @@
+{
+  "schema": "true-family-brt-probe-manifest-v1",
+  "manifest_version": 1,
+  "artifact": {
+    "source": "custom_components/true_family/probe/true_family_brt_probe.mjs",
+    "deployed_filename": "true_family_brt_probe.mjs",
+    "extension_class": "TrueFamilyBrtProbeExtension",
+    "byte_length": 164691,
+    "sha256": "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1"
+  },
+  "protocol": {
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "state_schema": "true-family-physical-probe-state-v2",
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2
+  },
+  "runtime": {
+    "node": {
+      "version": "20.19.2"
+    },
+    "zigbee2mqtt": {
+      "version": "2.12.1",
+      "commit": "aa909a8a62f76e2dd98ace3a172bca88ee56f5fe",
+      "tree": "fd134890cc89e628caa48f6f235862b0bfe40c45",
+      "npm_integrity": "sha512-OucrVP2raFmMEKK+4r7qHOSamAmaM4WI0WYLbLRhZ1s73frVDcppzD/6BHGPWFIalJrxGrdKHYSbRmpQqLUt5w=="
+    },
+    "zigbee_herdsman": {
+      "version": "10.6.1",
+      "commit": "b9f67e9bc2ba90f93be28fd4c21aa487f941f9a1"
+    },
+    "zigbee_herdsman_converters": {
+      "version": "26.76.0",
+      "commit": "1d15c0ca29d2ec80c9bc67f9186e072e15129487"
+    }
+  },
+  "topics": {
+    "ready": "bridge/true_family/physical_probe/ready",
+    "status": "bridge/true_family/physical_probe/status",
+    "request": "bridge/request/true_family/physical_probe",
+    "response": "bridge/response/true_family/physical_probe",
+    "result": "bridge/true_family/physical_probe/result",
+    "ack": "bridge/request/true_family/physical_probe/ack",
+    "ack_response": "bridge/response/true_family/physical_probe/ack"
+  },
+  "deployment": {
+    "extension_path": "external_extensions/true_family_brt_probe.mjs",
+    "journal_path": "true_family_brt_probe.state.json",
+    "fresh_deployment_only": true,
+    "dynamic_mqtt_extension_save_forbidden": true,
+    "dynamic_mqtt_extension_remove_forbidden": true,
+    "dynamic_mqtt_converter_save_forbidden": true,
+    "dynamic_mqtt_converter_remove_forbidden": true,
+    "required_loader_count": 1,
+    "required_journal_owner_count": 1,
+    "existing_journal_forbidden": true,
+    "existing_temp_forbidden": true,
+    "existing_alias_forbidden": true
+  }
+}

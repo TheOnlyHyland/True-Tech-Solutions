@@ -16,9 +16,11 @@ publishes them, and the frontend runs entirely in demo mode. Phase two adds
 installable custom-integration source, a pinned Home Assistant harness, strict
 bootstrap/reference-migration logic, durable journal wiring, fail-closed
 provider readiness, sanitized admin APIs, and an integrated project-only
-companion App journal. The source remains outside the live Home Assistant
-installation and cannot affect the live home unless deliberately installed and
-configured.
+companion App journal. Release `0.2.1` of the integration and App remains
+installed on the household Home Assistant system in a deliberately inactive
+state: its seven climates are unbound and unavailable, and bootstrap and
+migration are incomplete. The physical-probe and preflight source described
+below is unreleased, unwired, and absent from that installed release.
 
 ## Layout
 
@@ -28,16 +30,24 @@ configured.
 - `backend/replacement.py`: guarded in-memory replacement state machine.
 - `frontend/index.html`: standalone prototype entry point.
 - `frontend/replacement-wizard.js`: browser-only customer workflow.
-- `custom_components/true_family/`: installable phase-two integration source that
-  remains outside the live Home Assistant installation.
+- `custom_components/true_family/`: phase-two integration source; released
+  `0.2.1` remains installed but inactive, while later physical-probe work here is
+  unreleased and unwired.
 - `custom_components/true_family/physical_probe.py`: stdlib-only, unwired generic
   protocol-v2 physical-probe contracts and the three pinned converter-resolved
   BRT identity aliases.
+- `custom_components/true_family/physical_probe_preflight.py`: pure, non-I/O
+  raw deployment/pre-arm validation reports and digest-only ARM permit candidates.
 - `custom_components/true_family/probe/true_family_brt_probe.mjs`: source-only
   Zigbee2MQTT 2.12.1 external extension with bounded serialization, durable
   recovery, and no deployment lifecycle.
+- `custom_components/true_family/probe/true_family_brt_probe.manifest.json`:
+  immutable artifact, protocol, runtime, upstream-reference, topic, and
+  fresh-deployment identity.
 - `tests/fixtures/physical_probe_vectors.json`: shared Python/Node UTF-8
   canonicalization, digest, request, record, result, and frame vectors.
+- `tests/fixtures/physical_probe_preflight_vectors.json`: canonical good
+  deployment, pre-arm, request, report, and permit-candidate digests.
 - `custom_components/true_family/reference_projection.py`: strict semantic
   entity-reference projection for scalar fields and allowlisted Jinja helpers.
 - `custom_components/true_family/reference_journal_remote.py`: signed client for
@@ -119,13 +129,16 @@ scripts/verify
 The verification script uses the pinned disposable Home Assistant 2026.7.4
 harness and requires exact Node.js `20.19.2`. Set
 `TRUE_FAMILY_HA_HARNESS_ROOT` when the harness is elsewhere. The current gate
-passes 610 Home Assistant runtime tests, 252 pure Python protocol, persistence,
-release, and static contract tests, and 130 zero-dependency Node tests, for 992
-total.
+passes 610 Home Assistant runtime tests, 300 pure Python protocol, persistence,
+deployment-preflight, release, and static contract tests, and 130 zero-dependency
+Node tests, for 1,040 total.
 
 The physical-probe source is offline and unwired: integration setup does not
 import or register it, and this project contains no automatic external-extension
-deployment, save, or removal path. Protocol v2 accepts only BRT DP2
+deployment, save, or removal path. The pure preflight module validates only
+caller-supplied mappings; it has no collector, broker client, deployment mutator,
+filesystem, process, network, MQTT, or Home Assistant access. Protocol v2 accepts
+only BRT DP2
 `commandDataResponse` frames as physical and direct-command proof, treats DP2
 `commandDataReport` as competing traffic, and ignores unrelated companion
 DP5 and DP14 `commandDataResponse` frames. Generated command sequences are
@@ -273,45 +286,73 @@ runtimes rather than inheriting the different behavior of `strip()` and `trim()`
 Both reject ill-formed Unicode, including lone UTF-16 surrogates, and both treat an
 observed proof at its exact proof deadline as expired.
 
-Exact runtime/build verification, extension lifecycle and collision handling,
-and the residual writer fence remain a separate future preflight. That fence
-must give Zigbee2MQTT a dedicated broker principal. The external orchestrator's
-MQTT PUBLISH ACL must be deny-by-default and allow only the two exact, fully
-base-prefixed probe request and acknowledgement topics. Every other principal
-must be denied all friendly-name, IEEE, endpoint, attribute, and group write
-aliases for the candidate and every bridge control request.
+The v1 preflight contract now defines, but does not deploy or collect, the exact
+runtime/build, external-extension identity, lifecycle collision, privacy, and
+writer-fence evidence required by this source. Its first raw temporal snapshot is
+fresh-deployment-only: the semantic digest of the complete immutable manifest,
+exact clean artifact, pinned runtimes and upstream references, normalized
+effective ACL, disabled writers and unsafe controls, full candidate identity,
+and complete absence of journal, temporary, alias, recovery, or in-flight write
+evidence must all match. The expected owner is derived from the collection epoch,
+process instance, artifact, extension path, and journal path. Configuration and
+ACL generations and digests form the observed fence report. Any existing or
+recovery journal fails closed; this pass never invokes recovery.
 
-The deny rules must use containment semantics compatible with Zigbee2MQTT 2.12.1's
-unanchored bridge request regex, including repeated-prefix aliases. They must
-explicitly block raw `bridge/request/action`, device rename, group membership,
-backup, restart, extension mutation, and converter mutation requests, including
-their save/remove forms. The orchestrator's SUBSCRIBE ACL must also be
-deny-by-default and allow only the exact probe ready, status, result, and response
-topics it needs. It must deny `bridge/response/backup` and broad bridge or source
-surfaces. Backup, journal, or source access belongs only to a separately attested
-administrator/recovery principal if ever required. Retained `bridge/extensions`
-source must remain denied to the orchestrator and be handled only by that privacy
-policy and exact source-attestation path.
+The second, shorter-lived raw snapshot uses strict temporal order:
+`deployment observed < pre-arm observed < now < pre-arm expiry`, with pre-arm
+expiry no later than deployment expiry. It repeats the same epoch, process,
+derived owner, configuration/ACL fence, source hashes, candidate identity, name,
+set topic, and empty groups; records exactly one current loader and journal owner
+with any previous owner drained and zero late completions; repeats the fresh
+absent-journal observation; proves complete idle endpoint inventory; and requires
+a ready, generation-zero, record-free, command-free probe.
 
-The preflight must freeze the candidate friendly name and endpoint group
-membership; disable the Zigbee2MQTT frontend and every relevant automation,
-script, and Scheduler writer; attest and allowlist exactly one copy of this
-external extension; exclude every unreviewed in-process endpoint writer; and keep
-payload-debug logging disabled for the complete proof.
+Deployment and pre-arm attestations are reports only. They are deliberately
+constructible data and are never accepted as authorization input.
+`validate_prearm` re-runs deployment validation from the raw deployment mapping.
+`authorize_arm` accepts the two raw snapshots plus only an exact canonical ARM
+JSON string, then re-runs deployment, pre-arm, duplicate-key, canonical-byte, and
+strict request validation. Raw trees accept only exact built-in dictionaries and
+lists, never proxies or subclasses. Canonical ARM text is character-bounded before
+UTF-8 encoding and then byte-bounded before parsing. The permit binds safe digests
+of those exact payload bytes and the fully prefixed publication topic plus fixed
+QoS 1 and retain false; it exposes no raw request, candidate, or topic.
+`verify_arm_permit` repeats that complete raw pipeline before exact-comparing a
+permit candidate. It proves only recomputed self-consistency, not authenticity,
+and a fabricated report or permit cannot replace raw evidence.
 
-No second instance or reload may start while one loader owns the journal.
-Cross-instance late journal completion remains blocked on that future
-single-loader lifecycle/collision preflight; this source deliberately does not
-invent a process-local lock. Zigbee2MQTT publishes external-extension source on
-`bridge/extensions`, so broker privacy and source attestation must cover that
-retained surface. Full IEEE identity is durable recovery data but remains masked
-from public probe messages. Raw DP2 and write-alias monitoring is only defense in
-depth because it cannot enforce broker ACLs, prevent the built-in Publish action,
-or inspect retain metadata. Physical provenance is operational isolation, not a
-transport-origin bit. Exact direct-command sequence echo and final adapter/radio
-ordering across all three fingerprints still require the pinned harness and an
-actual-spare no-op bench gate. These offline tests do not establish bench
-readiness.
+The permit candidate sets `one_shot_required` to `true`,
+`consumption_enforced` to `false`, and `commands_authorized` to `false`. Repeated
+pure calculation may return the same candidate. It grants no endpoint command
+authority and does not enforce one-shot use. A future external consumer must hold
+the fence lease, atomically consume the exact permit, and publish the exact
+canonical bytes and fixed topic/QoS/retain envelope.
+
+The normalized orchestrator PUBLISH and SUBSCRIBE policy is deny-by-default. It
+allows only the two exact fully prefixed probe request topics for publication at
+QoS 1 with retain disabled, and only the five exact ready, status, result, normal
+response, and acknowledgement-response topics for subscription. Candidate
+friendly-name and IEEE publish subtrees remain denied to every non-Zigbee2MQTT
+principal. A candidate friendly name cannot use `bridge` as its first topic
+segment or duplicate its IEEE root, keeping both fenced roots distinct from every
+bridge/probe namespace. Slash-delimited `bridge/request/` containment, including
+repeated prefix forms, fails closed outside the exact request pair; bridge source,
+backup, broad bridge, and candidate surfaces are not exposed to the orchestrator.
+Zigbee2MQTT subscription remains default-allow for concrete topics and the sole
+exact `<base>/#` filter, including request topics, while every other wildcard
+filter and Zigbee2MQTT publication to any bridge-request containment remains
+denied.
+
+This is a report boundary, not operational readiness. Raw evidence establishes
+only internal self-consistency until an authenticated trusted collector proves
+real candidate-alias ownership, obtains authoritative broker/lifecycle evidence,
+and continuously holds the external fence lease. Two point-in-time mappings do
+not acquire or hold a lease. Actual broker ACL
+installation and read-back, atomic permit consumption, cross-instance lifecycle
+enforcement, retained-source privacy proof, deployment/removal workflow, pinned
+runtime disposable harness, final adapter/radio ordering, and actual-spare
+physical bench proof all remain blocked. These offline reports do not establish
+bench or deployment readiness.
 
 ## Preview Frontend
 
@@ -338,12 +379,14 @@ The phase-one backend and browser demo do not:
 - Modify schedules or dashboards.
 - Control heating.
 
-The phase-two source contains Home Assistant, MQTT, climate, and WebSocket
-adapters that would become active only after a deliberate installation and
-config-entry setup. It is not installed, imported, registered, or connected to
-the live home. No concrete five-provider write bridge or migration executor is
-installed by default, so reference migration remains unavailable even in the
-development integration until those explicit host capabilities are supplied.
+The released phase-two source contains Home Assistant, MQTT, climate, and
+WebSocket adapters. Release `0.2.1` of the integration and journal App remains
+installed but intentionally inactive on the household system: no logical valve
+is bound and no bootstrap, migration, probe, or heating action is active. The
+unreleased physical-probe preflight is not imported or registered by integration
+setup. No concrete five-provider write bridge or migration executor is installed
+by default, so reference migration remains unavailable until those explicit host
+capabilities are supplied.
 
 Reference migration is deliberately conservative. Complete entity IDs are
 matched semantically, so a physical entity such as `climate.kitchen_radiator`
@@ -406,8 +449,9 @@ backup, and partial restore passed. The integration remained absent, so the
 signed journal protocol and config-entry reload could not be exercised; Core
 logged the expected missing-integration error when discovery fired. Watchdog
 crash recovery, actual process capabilities, and `NoNewPrivs` remain open. The
-App, private data, test backup, and repository were removed, and the release is
-not currently installed.
+App, private data, test backup, and repository were removed. That temporary
+`0.2.0` test installation is not current; the separate `0.2.1` integration and
+App installation described above remains present but inactive.
 
 A later controlled integration gate installed the component before the App and
 used isolated MQTT root `true_family_gate`. The first real REST flow exposed a

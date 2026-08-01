@@ -49,10 +49,12 @@ node --test "$PROJECT/tests/js/test_physical_probe.mjs"
 
 jq empty \
   "$PROJECT/custom_components/true_family/manifest.json" \
+  "$PROJECT/custom_components/true_family/probe/true_family_brt_probe.manifest.json" \
   "$PROJECT/custom_components/true_family/strings.json" \
   "$PROJECT/custom_components/true_family/translations/en.json" \
   "$PROJECT/hacs.json" \
   "$PROJECT/release/identity.json" \
+  "$PROJECT/tests/fixtures/physical_probe_preflight_vectors.json" \
   "$PROJECT/tests/fixtures/physical_probe_vectors.json"
 
 yq '.' \

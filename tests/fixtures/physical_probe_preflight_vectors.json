@@ -1,0 +1,416 @@
+{
+  "now_ms": 1800000002001,
+  "scope": {
+    "base_topic": "zigbee2mqtt",
+    "friendly_name": "spare-brt-100",
+    "candidate_ieee": "0xa4c1380000000001",
+    "set_topic": "spare-brt-100/set"
+  },
+  "deployment_snapshot": {
+    "schema": "true-family-probe-deployment-snapshot-v1",
+    "manifest_schema": "true-family-brt-probe-manifest-v1",
+    "manifest_version": 1,
+    "manifest_digest": "021c19cc3ab337eee7f5e866ae37544915a08ca26d603c8d5ca55e6d98957908",
+    "protocol": {
+      "protocol_id": "true-family-physical-probe",
+      "protocol_version": 2,
+      "state_schema": "true-family-physical-probe-state-v2",
+      "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+      "profile_id": "moes-brt-100-trv",
+      "profile_version": 2
+    },
+    "observed_at_ms": 1800000000000,
+    "expires_at_ms": 1800000060000,
+    "runtime": {
+      "node": {
+        "version": "20.19.2"
+      },
+      "zigbee2mqtt": {
+        "version": "2.12.1",
+        "commit": "aa909a8a62f76e2dd98ace3a172bca88ee56f5fe",
+        "tree": "fd134890cc89e628caa48f6f235862b0bfe40c45",
+        "npm_integrity": "sha512-OucrVP2raFmMEKK+4r7qHOSamAmaM4WI0WYLbLRhZ1s73frVDcppzD/6BHGPWFIalJrxGrdKHYSbRmpQqLUt5w=="
+      },
+      "zigbee_herdsman": {
+        "version": "10.6.1",
+        "commit": "b9f67e9bc2ba90f93be28fd4c21aa487f941f9a1"
+      },
+      "zigbee_herdsman_converters": {
+        "version": "26.76.0",
+        "commit": "1d15c0ca29d2ec80c9bc67f9186e072e15129487"
+      }
+    },
+    "artifact": {
+      "source": "custom_components/true_family/probe/true_family_brt_probe.mjs",
+      "deployed_filename": "true_family_brt_probe.mjs",
+      "extension_class": "TrueFamilyBrtProbeExtension",
+      "byte_length": 164691,
+      "sha256": "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1",
+      "matching_files": 1,
+      "external_converters": [],
+      "unreviewed_command_extensions": []
+    },
+    "deployment": {
+      "extension_path": "external_extensions/true_family_brt_probe.mjs",
+      "extension_path_digest": "31ac660464272e01b0d47c6add9e95faf7243a51e78d9387f432b97db7c4f108",
+      "journal_path": "true_family_brt_probe.state.json",
+      "journal_path_digest": "c724e2e42330d29f5fa9ab80ac306257c99be466edecac6f6da141031a9dc644",
+      "journal_main_present": false,
+      "matching_journal_temps": 0,
+      "matching_journal_aliases": 0,
+      "recovery_evidence_present": false,
+      "journal_write_in_flight": false,
+      "loader_count": 1,
+      "journal_owner_count": 1,
+      "dynamic_mqtt_extension_save_allowed": false,
+      "dynamic_mqtt_extension_remove_allowed": false,
+      "dynamic_mqtt_converter_save_allowed": false,
+      "dynamic_mqtt_converter_remove_allowed": false
+    },
+    "controls": {
+      "advanced_enable_external_js": true,
+      "frontend_enabled": false,
+      "payload_debug_enabled": false,
+      "debug_to_frontend_enabled": false
+    },
+    "writer_inventory": {
+      "home_assistant_candidate_writer": false,
+      "automation": false,
+      "script": false,
+      "scheduler": false,
+      "frontend": false,
+      "other_mqtt_clients": false,
+      "unreviewed_in_process_extensions": false
+    },
+    "lifecycle": {
+      "collection_epoch_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "process_instance_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_owner_digest": "42a1dbf0e79c32b0cd43d7c3cc2ae4eaef2af6b3751245f84f420903c98e3a9d"
+    },
+    "fence": {
+      "configuration_generation": 13,
+      "configuration_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "acl_generation": 11,
+      "acl_digest": "4618453655a639b5d132b9e5948fda3e8d9c7b4af2b51c66c82857dcd6c87def"
+    },
+    "candidate_scope": {
+      "base_topic": "zigbee2mqtt",
+      "friendly_name": "spare-brt-100",
+      "set_topic": "spare-brt-100/set",
+      "identity": {
+        "ieee_address": "0xa4c1380000000001",
+        "model": "BRT-100-TRV",
+        "vendor": "Moes",
+        "zigbee_model": "TS0601",
+        "manufacturer_fingerprint": "_TZE200_b6wax7g0",
+        "endpoint_id": 1,
+        "cluster_name": "manuSpecificTuya",
+        "cluster_id": 61184
+      },
+      "groups": []
+    },
+    "effective_acl": {
+      "schema": "true-family-physical-probe-acl-plan-v1",
+      "enforcement": {
+        "anonymous_access": "disabled",
+        "superuser_bypass": "disabled",
+        "dedicated_listener": true,
+        "effective_readback_complete": true
+      },
+      "scope": {
+        "base_topic": "zigbee2mqtt",
+        "candidate_publish_roots": [
+          "zigbee2mqtt/spare-brt-100",
+          "zigbee2mqtt/0xa4c1380000000001"
+        ],
+        "candidate_set_topic": "zigbee2mqtt/spare-brt-100/set"
+      },
+      "principals": {
+        "orchestrator": {
+          "publish_default": "deny",
+          "publish_allow": [
+            {
+              "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+              "qos": 1,
+              "retain": false
+            },
+            {
+              "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe/ack",
+              "qos": 1,
+              "retain": false
+            }
+          ],
+          "subscribe_default": "deny",
+          "subscribe_allow": [
+            "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+            "zigbee2mqtt/bridge/true_family/physical_probe/status",
+            "zigbee2mqtt/bridge/true_family/physical_probe/result",
+            "zigbee2mqtt/bridge/response/true_family/physical_probe",
+            "zigbee2mqtt/bridge/response/true_family/physical_probe/ack"
+          ]
+        },
+        "zigbee2mqtt": {
+          "publish_default": "allow",
+          "subscribe_default": "allow",
+          "subscribe_filters": [
+            "zigbee2mqtt/#"
+          ],
+          "bridge_request_publish": "deny"
+        },
+        "admin_recovery": {
+          "publish_default": "deny",
+          "subscribe_default": "deny"
+        },
+        "other": {
+          "publish_default": "deny",
+          "subscribe_default": "deny"
+        },
+        "anonymous": {
+          "publish_default": "deny",
+          "subscribe_default": "deny"
+        }
+      },
+      "global_denies": {
+        "unknown_principals": true,
+        "non_zigbee2mqtt_candidate_publish_subtrees": true,
+        "bridge_request_publish_slash_containment": true,
+        "bridge_request_publish_exceptions": [
+          "zigbee2mqtt/bridge/request/true_family/physical_probe",
+          "zigbee2mqtt/bridge/request/true_family/physical_probe/ack"
+        ]
+      }
+    }
+  },
+  "prearm_snapshot": {
+    "schema": "true-family-probe-prearm-snapshot-v1",
+    "deployment_snapshot_digest": "6e5d45724a623a3bef799561b3b0c5ac1ae9c3e24f3641e2cd174fef6f8ff4d7",
+    "manifest_digest": "021c19cc3ab337eee7f5e866ae37544915a08ca26d603c8d5ca55e6d98957908",
+    "protocol": {
+      "protocol_id": "true-family-physical-probe",
+      "protocol_version": 2,
+      "state_schema": "true-family-physical-probe-state-v2",
+      "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+      "profile_id": "moes-brt-100-trv",
+      "profile_version": 2
+    },
+    "observed_at_ms": 1800000002000,
+    "expires_at_ms": 1800000007000,
+    "boot": {
+      "boot_id_before": "tfpp-boot-11111111111111111111111111111111",
+      "boot_id_after": "tfpp-boot-11111111111111111111111111111111",
+      "generation_before": 7,
+      "generation_after": 7
+    },
+    "lifecycle": {
+      "collection_epoch_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "process_instance_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_owner_digest": "42a1dbf0e79c32b0cd43d7c3cc2ae4eaef2af6b3751245f84f420903c98e3a9d"
+    },
+    "fence": {
+      "configuration_generation_before": 13,
+      "configuration_generation_after": 13,
+      "configuration_digest_before": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "configuration_digest_after": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "acl_generation_before": 11,
+      "acl_generation_after": 11,
+      "acl_digest_before": "4618453655a639b5d132b9e5948fda3e8d9c7b4af2b51c66c82857dcd6c87def",
+      "acl_digest_after": "4618453655a639b5d132b9e5948fda3e8d9c7b4af2b51c66c82857dcd6c87def"
+    },
+    "source_inventory": {
+      "installed_sha256": "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1",
+      "loaded_sha256": "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1",
+      "retained_inventory_sha256": "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1",
+      "inventory_entries": 1,
+      "raw_source_exposed_to_orchestrator": false
+    },
+    "loaders": [
+      {
+        "owner_digest": "42a1dbf0e79c32b0cd43d7c3cc2ae4eaef2af6b3751245f84f420903c98e3a9d",
+        "collection_epoch_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "process_instance_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "extension_class": "TrueFamilyBrtProbeExtension",
+        "artifact_digest": "0f606cc0d7558d703fc72a4b97283d621a3ab348cc3cce77d3ad75145814046d",
+        "path_digest": "31ac660464272e01b0d47c6add9e95faf7243a51e78d9387f432b97db7c4f108",
+        "previous_owner_drained": true,
+        "late_completions": 0
+      }
+    ],
+    "journal_owners": [
+      {
+        "owner_digest": "42a1dbf0e79c32b0cd43d7c3cc2ae4eaef2af6b3751245f84f420903c98e3a9d",
+        "collection_epoch_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "process_instance_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "extension_class": "TrueFamilyBrtProbeExtension",
+        "artifact_digest": "0f606cc0d7558d703fc72a4b97283d621a3ab348cc3cce77d3ad75145814046d",
+        "path_digest": "c724e2e42330d29f5fa9ab80ac306257c99be466edecac6f6da141031a9dc644",
+        "previous_owner_drained": true,
+        "late_completions": 0
+      }
+    ],
+    "journal_observation": {
+      "observed_at_ms": 1800000002000,
+      "journal_path": "true_family_brt_probe.state.json",
+      "journal_path_digest": "c724e2e42330d29f5fa9ab80ac306257c99be466edecac6f6da141031a9dc644",
+      "main_present": false,
+      "matching_temps": 0,
+      "matching_aliases": 0,
+      "recovery_evidence_present": false,
+      "write_in_flight": false
+    },
+    "candidate": {
+      "base_topic": "zigbee2mqtt",
+      "friendly_name": "spare-brt-100",
+      "set_topic": "spare-brt-100/set",
+      "identity": {
+        "ieee_address": "0xa4c1380000000001",
+        "model": "BRT-100-TRV",
+        "vendor": "Moes",
+        "zigbee_model": "TS0601",
+        "manufacturer_fingerprint": "_TZE200_b6wax7g0",
+        "endpoint_id": 1,
+        "cluster_name": "manuSpecificTuya",
+        "cluster_id": 61184
+      },
+      "identity_digest_before": "c48418b33bb8109adb14ddcc0b2a7a806ce124c3206ba6c71874b667da062cc2",
+      "identity_digest_after": "c48418b33bb8109adb14ddcc0b2a7a806ce124c3206ba6c71874b667da062cc2",
+      "scope_digest_before": "dd4b3333530a6b3e547f08470b236e1f47dea9be87f162912713c8697e7a9d1d",
+      "scope_digest_after": "dd4b3333530a6b3e547f08470b236e1f47dea9be87f162912713c8697e7a9d1d",
+      "selected_endpoint_id": 1,
+      "endpoint_inventory_complete": true,
+      "endpoints": [
+        {
+          "endpoint_id": 1,
+          "has_pending_requests_api": true,
+          "pending": false
+        },
+        {
+          "endpoint_id": 2,
+          "has_pending_requests_api": true,
+          "pending": false
+        }
+      ],
+      "groups": [],
+      "rename_events": 0,
+      "group_events": 0
+    },
+    "pending_work": {
+      "probe_fifo": 0,
+      "dispatch": 0,
+      "journal_write": 0,
+      "publication_retry": 0,
+      "orchestrator_outbound": 0,
+      "broker_queued_request": 0,
+      "retained_request": 0
+    },
+    "probe_state": {
+      "ready": true,
+      "phase": "idle",
+      "generation": 0,
+      "record_present": false,
+      "remediation_required": false,
+      "arm_accepted_count": 0,
+      "endpoint_commands_since_loader_start": 0
+    },
+    "expected_arm_request_digest": "1f943f4587efccdbc53858a61cef1193df608c1b1994deb0f8b3a8221205d838"
+  },
+  "arm_request": {
+    "action": "arm",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "request_id": "tfpp-req-222222222222222222222222",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "nonce": "tfpp-nonce-44444444444444444444444444444444",
+    "phase": "quiescent",
+    "generation": 0,
+    "request_deadline_ms": 1800000006000,
+    "candidate": {
+      "ieee_address": "0xa4c1380000000001",
+      "model": "BRT-100-TRV",
+      "vendor": "Moes",
+      "zigbee_model": "TS0601",
+      "manufacturer_fingerprint": "_TZE200_b6wax7g0",
+      "endpoint_id": 1,
+      "cluster_name": "manuSpecificTuya",
+      "cluster_id": 61184
+    },
+    "intended_target": 21,
+    "physical_targets": [
+      18,
+      21
+    ],
+    "operation_deadline_ms": 1800000120000
+  },
+  "arm_request_json": "{\"action\":\"arm\",\"boot_id\":\"tfpp-boot-11111111111111111111111111111111\",\"build_id\":\"tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0\",\"candidate\":{\"cluster_id\":61184,\"cluster_name\":\"manuSpecificTuya\",\"endpoint_id\":1,\"ieee_address\":\"0xa4c1380000000001\",\"manufacturer_fingerprint\":\"_TZE200_b6wax7g0\",\"model\":\"BRT-100-TRV\",\"vendor\":\"Moes\",\"zigbee_model\":\"TS0601\"},\"generation\":0,\"intended_target\":21,\"nonce\":\"tfpp-nonce-44444444444444444444444444444444\",\"operation_deadline_ms\":1800000120000,\"operation_id\":\"tfpp-op-333333333333333333333333\",\"phase\":\"quiescent\",\"physical_targets\":[18,21],\"profile_id\":\"moes-brt-100-trv\",\"profile_version\":2,\"protocol_id\":\"true-family-physical-probe\",\"protocol_version\":2,\"request_deadline_ms\":1800000006000,\"request_id\":\"tfpp-req-222222222222222222222222\"}",
+  "expected": {
+    "manifest_digest": "021c19cc3ab337eee7f5e866ae37544915a08ca26d603c8d5ca55e6d98957908",
+    "acl_scope_digest": "59a5336a934168f3737f78f28d45add55d5f4b066fe90014f663cedb2389e947",
+    "acl_policy_digest": "4618453655a639b5d132b9e5948fda3e8d9c7b4af2b51c66c82857dcd6c87def",
+    "artifact_digest": "0f606cc0d7558d703fc72a4b97283d621a3ab348cc3cce77d3ad75145814046d",
+    "owner_digest": "42a1dbf0e79c32b0cd43d7c3cc2ae4eaef2af6b3751245f84f420903c98e3a9d",
+    "candidate_identity_digest": "c48418b33bb8109adb14ddcc0b2a7a806ce124c3206ba6c71874b667da062cc2",
+    "candidate_scope_digest": "dd4b3333530a6b3e547f08470b236e1f47dea9be87f162912713c8697e7a9d1d",
+    "fence_digest": "d6e17f2ce0839baf342a560aa4f8a60888bce6d7ee972aa9814a33e1bfca0299",
+    "arm_request_digest": "1f943f4587efccdbc53858a61cef1193df608c1b1994deb0f8b3a8221205d838",
+    "deployment_attestation": {
+      "schema": "true-family-probe-deployment-attestation-v1",
+      "snapshot_digest": "6e5d45724a623a3bef799561b3b0c5ac1ae9c3e24f3641e2cd174fef6f8ff4d7",
+      "manifest_digest": "021c19cc3ab337eee7f5e866ae37544915a08ca26d603c8d5ca55e6d98957908",
+      "artifact_digest": "0f606cc0d7558d703fc72a4b97283d621a3ab348cc3cce77d3ad75145814046d",
+      "acl_digest": "4618453655a639b5d132b9e5948fda3e8d9c7b4af2b51c66c82857dcd6c87def",
+      "observed_at_ms": 1800000000000,
+      "expires_at_ms": 1800000060000,
+      "collection_epoch_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "process_instance_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_owner_digest": "42a1dbf0e79c32b0cd43d7c3cc2ae4eaef2af6b3751245f84f420903c98e3a9d",
+      "candidate_identity_digest": "c48418b33bb8109adb14ddcc0b2a7a806ce124c3206ba6c71874b667da062cc2",
+      "candidate_scope_digest": "dd4b3333530a6b3e547f08470b236e1f47dea9be87f162912713c8697e7a9d1d",
+      "configuration_generation": 13,
+      "configuration_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "acl_generation": 11,
+      "fence_digest": "d6e17f2ce0839baf342a560aa4f8a60888bce6d7ee972aa9814a33e1bfca0299"
+    },
+    "prearm_attestation": {
+      "schema": "true-family-probe-prearm-attestation-v1",
+      "deployment_snapshot_digest": "6e5d45724a623a3bef799561b3b0c5ac1ae9c3e24f3641e2cd174fef6f8ff4d7",
+      "snapshot_digest": "45b6a12cde315de4a758deadcea596ebf062cd34673854e33b7793372429c4a6",
+      "manifest_digest": "021c19cc3ab337eee7f5e866ae37544915a08ca26d603c8d5ca55e6d98957908",
+      "acl_digest": "4618453655a639b5d132b9e5948fda3e8d9c7b4af2b51c66c82857dcd6c87def",
+      "observed_at_ms": 1800000002000,
+      "expires_at_ms": 1800000007000,
+      "collection_epoch_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "process_instance_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_owner_digest": "42a1dbf0e79c32b0cd43d7c3cc2ae4eaef2af6b3751245f84f420903c98e3a9d",
+      "candidate_identity_digest": "c48418b33bb8109adb14ddcc0b2a7a806ce124c3206ba6c71874b667da062cc2",
+      "candidate_scope_digest": "dd4b3333530a6b3e547f08470b236e1f47dea9be87f162912713c8697e7a9d1d",
+      "configuration_generation": 13,
+      "configuration_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "acl_generation": 11,
+      "fence_digest": "d6e17f2ce0839baf342a560aa4f8a60888bce6d7ee972aa9814a33e1bfca0299",
+      "boot_id": "tfpp-boot-11111111111111111111111111111111",
+      "arm_request_digest": "1f943f4587efccdbc53858a61cef1193df608c1b1994deb0f8b3a8221205d838"
+    },
+    "arm_permit": {
+      "schema": "true-family-probe-arm-permit-v1",
+      "permit_digest": "feaf3e846234341e599e3f6b19830eac955e1b6ea50d84844d90afe7e2fc52c2",
+      "deployment_snapshot_digest": "6e5d45724a623a3bef799561b3b0c5ac1ae9c3e24f3641e2cd174fef6f8ff4d7",
+      "prearm_snapshot_digest": "45b6a12cde315de4a758deadcea596ebf062cd34673854e33b7793372429c4a6",
+      "request_digest": "1f943f4587efccdbc53858a61cef1193df608c1b1994deb0f8b3a8221205d838",
+      "canonical_payload_digest": "17f7b34e87b5b3f622b5970e23ec687c66da6cab5e47cf441285a3f674095fa7",
+      "request_topic_digest": "319c1e46f9bd97db13dd5a8c7e47529583380096957c7f8609adaf27c1ef22b7",
+      "collection_epoch_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "expected_owner_digest": "42a1dbf0e79c32b0cd43d7c3cc2ae4eaef2af6b3751245f84f420903c98e3a9d",
+      "fence_digest": "d6e17f2ce0839baf342a560aa4f8a60888bce6d7ee972aa9814a33e1bfca0299",
+      "allowed_action": "arm",
+      "qos": 1,
+      "retain": false,
+      "one_shot_required": true,
+      "consumption_enforced": false,
+      "commands_authorized": false,
+      "expires_at_ms": 1800000006000
+    }
+  }
+}
