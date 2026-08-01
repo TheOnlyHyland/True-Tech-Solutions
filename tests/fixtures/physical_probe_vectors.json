@@ -1,0 +1,818 @@
+{
+  "canonical_vectors": [
+    {
+      "name": "ascii",
+      "value": {
+        "z": 2,
+        "a": [
+          1,
+          true,
+          null
+        ]
+      },
+      "domain": "fixture/ascii/v1",
+      "canonical": "{\"a\":[1,true,null],\"z\":2}",
+      "digest": "0aa01f758cfe80662b1bef5b80928ba29f74a7dcd9ad9bbafd7386d1b467f137"
+    },
+    {
+      "name": "unicode",
+      "value": {
+        "accent": "café",
+        "emoji": "snowman ☃",
+        "漢字": "家庭"
+      },
+      "domain": "fixture/unicode/v1",
+      "canonical": "{\"accent\":\"café\",\"emoji\":\"snowman ☃\",\"漢字\":\"家庭\"}",
+      "digest": "6ecd51d257b82905e1fd76e32cdd12707633cb8bea988f1792dcf59b357d0fa5"
+    },
+    {
+      "name": "unicode_keys",
+      "value": {
+        "😀": "astral",
+        "": "bmp",
+        "a": "ascii"
+      },
+      "domain": "fixture/unicode-keys/v1",
+      "canonical": "{\"a\":\"ascii\",\"\":\"bmp\",\"😀\":\"astral\"}",
+      "digest": "5734ad225d789a0fb08997db9c685b2b989b261f6c7209edaf41660751932a97"
+    }
+  ],
+  "invalid_boundary_text_vectors": [
+    {
+      "name": "unicode_nel_prefix",
+      "value": "\u0085BRT-100-TRV"
+    },
+    {
+      "name": "unicode_nel_suffix",
+      "value": "BRT-100-TRV\u0085"
+    },
+    {
+      "name": "unicode_bom_prefix",
+      "value": "\ufeffBRT-100-TRV"
+    },
+    {
+      "name": "unicode_bom_suffix",
+      "value": "BRT-100-TRV\ufeff"
+    },
+    {
+      "name": "lone_high_surrogate",
+      "utf16_code_unit": 55296
+    },
+    {
+      "name": "lone_low_surrogate",
+      "utf16_code_unit": 56320
+    }
+  ],
+  "terminal_authority_vectors": [
+    {
+      "name": "last_valid_before_deadline",
+      "result_not_before_ms": 1800000119999,
+      "valid": true
+    },
+    {
+      "name": "exact_operation_deadline",
+      "result_not_before_ms": 1800000120000,
+      "valid": false
+    },
+    {
+      "name": "after_operation_deadline",
+      "result_not_before_ms": 1800000120001,
+      "valid": false
+    }
+  ],
+  "failure_generation_parity_vectors": [
+    {
+      "name": "control_drift_failure",
+      "failure_code": "control_drift",
+      "source_generation": 1,
+      "expected_generation": 2
+    },
+    {
+      "name": "generation_64_remediation",
+      "failure_code": "queue_overflow",
+      "source_generation": 64,
+      "expected_generation": 64
+    }
+  ],
+  "sequence_capacity_policy": {
+    "maximum_used_sequences": 16,
+    "claimed_restore_attempts": 3,
+    "unclaimed_safety_attempts": 3,
+    "phase_vectors": [
+      {
+        "phase": "awaiting_physical_target_1",
+        "restore_attempts": 0,
+        "maximum_used_sequences": 6
+      },
+      {
+        "phase": "awaiting_physical_target_2",
+        "restore_attempts": 0,
+        "maximum_used_sequences": 7
+      },
+      {
+        "phase": "awaiting_noop_response",
+        "restore_attempts": 0,
+        "maximum_used_sequences": 9
+      },
+      {
+        "phase": "awaiting_challenge_response",
+        "restore_attempts": 0,
+        "maximum_used_sequences": 10
+      },
+      {
+        "phase": "awaiting_restore_response",
+        "restore_attempts": 1,
+        "maximum_used_sequences": 11
+      },
+      {
+        "phase": "awaiting_restore_response",
+        "restore_attempts": 2,
+        "maximum_used_sequences": 12
+      },
+      {
+        "phase": "awaiting_restore_response",
+        "restore_attempts": 3,
+        "maximum_used_sequences": 13
+      },
+      {
+        "phase": "result_pending_ack",
+        "restore_attempts": 1,
+        "maximum_used_sequences": 13
+      },
+      {
+        "phase": "quiescent",
+        "restore_attempts": 1,
+        "maximum_used_sequences": 13
+      },
+      {
+        "phase": "remediation_required",
+        "restore_attempts": 0,
+        "maximum_used_sequences": 13
+      }
+    ]
+  },
+  "deadline_immutability_vectors": [
+    {
+      "name": "claimed_restore",
+      "record": "remediation_claimed_restore_record",
+      "operation_deadline_ms": 1800000120000
+    },
+    {
+      "name": "verified_result",
+      "record": "verified_record",
+      "operation_deadline_ms": 1800000120000
+    },
+    {
+      "name": "failed_restored_result",
+      "record": "failed_restored_record",
+      "operation_deadline_ms": 1800000120000
+    }
+  ],
+  "claimed_restore_window": {
+    "operation_deadline_ms": 1800000120000,
+    "last_valid_start_ms": 1800000110000,
+    "first_invalid_start_ms": 1800000110001
+  },
+  "arm_request": {
+    "action": "arm",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "request_id": "tfpp-req-555555555555555555555555",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "nonce": "tfpp-nonce-88888888888888888888888888888888",
+    "phase": "quiescent",
+    "generation": 0,
+    "request_deadline_ms": 1800000010000,
+    "candidate": {
+      "ieee_address": "0xa4c1380000000001",
+      "model": "BRT-100-TRV",
+      "vendor": "Moes",
+      "zigbee_model": "TS0601",
+      "manufacturer_fingerprint": "_TZE200_b6wax7g0",
+      "endpoint_id": 1,
+      "cluster_name": "manuSpecificTuya",
+      "cluster_id": 61184
+    },
+    "intended_target": 21,
+    "physical_targets": [
+      18,
+      21
+    ],
+    "operation_deadline_ms": 1800000120000
+  },
+  "armed_record": {
+    "schema": "true-family-physical-probe-state-v2",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "candidate_ieee": "0xa4c1380000000001",
+    "candidate_set_topic": "candidate-valve/set",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "bound_boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "phase": "awaiting_physical_target_1",
+    "generation": 1,
+    "operation_deadline_ms": 1800000120000,
+    "last_request_deadline_ms": 1800000010000,
+    "expected_proof_deadline_ms": 1800000060000,
+    "intended_target": 21,
+    "challenge_target": 22,
+    "physical_targets": [
+      18,
+      21
+    ],
+    "restore_required": false,
+    "remediation_after_restore": false,
+    "restore_attempts": 0,
+    "consumed_request_ids": [
+      "tfpp-req-555555555555555555555555"
+    ],
+    "used_sequences": [],
+    "proofs": [],
+    "expected_proof": {
+      "purpose": "physical_target_1",
+      "frame_kind": "commandDataResponse",
+      "sequence": null,
+      "target": 18
+    },
+    "outcome": null,
+    "failure_code": null,
+    "result_id": null,
+    "result_not_before_ms": 0,
+    "cleanup_allowed": false
+  },
+  "verified_record": {
+    "schema": "true-family-physical-probe-state-v2",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "candidate_ieee": "0xa4c1380000000001",
+    "candidate_set_topic": "candidate-valve/set",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "bound_boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "phase": "result_pending_ack",
+    "generation": 6,
+    "operation_deadline_ms": 1800000120000,
+    "last_request_deadline_ms": 1800000010000,
+    "expected_proof_deadline_ms": 0,
+    "intended_target": 21,
+    "challenge_target": 22,
+    "physical_targets": [
+      18,
+      21
+    ],
+    "restore_required": false,
+    "remediation_after_restore": false,
+    "restore_attempts": 1,
+    "consumed_request_ids": [
+      "tfpp-req-555555555555555555555555"
+    ],
+    "used_sequences": [
+      500,
+      501,
+      100,
+      101,
+      102
+    ],
+    "proofs": [
+      {
+        "purpose": "physical_target_1",
+        "frame_kind": "commandDataResponse",
+        "sequence": 500,
+        "target": 18
+      },
+      {
+        "purpose": "physical_target_2",
+        "frame_kind": "commandDataResponse",
+        "sequence": 501,
+        "target": 21
+      },
+      {
+        "purpose": "noop",
+        "frame_kind": "commandDataResponse",
+        "sequence": 100,
+        "target": 21
+      },
+      {
+        "purpose": "challenge",
+        "frame_kind": "commandDataResponse",
+        "sequence": 101,
+        "target": 22
+      },
+      {
+        "purpose": "restore",
+        "frame_kind": "commandDataResponse",
+        "sequence": 102,
+        "target": 21
+      }
+    ],
+    "expected_proof": null,
+    "outcome": "verified",
+    "failure_code": null,
+    "result_id": "tfpp-result-344353369cc16c204a729649",
+    "result_not_before_ms": 1800000002005,
+    "cleanup_allowed": false
+  },
+  "failed_safe_record": {
+    "schema": "true-family-physical-probe-state-v2",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "candidate_ieee": "0xa4c1380000000001",
+    "candidate_set_topic": "candidate-valve/set",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "bound_boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "phase": "result_pending_ack",
+    "generation": 3,
+    "operation_deadline_ms": 1800000120000,
+    "last_request_deadline_ms": 1800000010000,
+    "expected_proof_deadline_ms": 0,
+    "intended_target": 21,
+    "challenge_target": 22,
+    "physical_targets": [
+      18,
+      21
+    ],
+    "restore_required": false,
+    "remediation_after_restore": false,
+    "restore_attempts": 0,
+    "consumed_request_ids": [
+      "tfpp-req-555555555555555555555555"
+    ],
+    "used_sequences": [
+      500
+    ],
+    "proofs": [
+      {
+        "purpose": "physical_target_1",
+        "frame_kind": "commandDataResponse",
+        "sequence": 500,
+        "target": 18
+      }
+    ],
+    "expected_proof": null,
+    "outcome": "failed_safe",
+    "failure_code": "competing_frame",
+    "result_id": "tfpp-result-e6eb630dce1ad7347d041aa7",
+    "result_not_before_ms": 1800000002002,
+    "cleanup_allowed": false
+  },
+  "failed_restored_record": {
+    "schema": "true-family-physical-probe-state-v2",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "candidate_ieee": "0xa4c1380000000001",
+    "candidate_set_topic": "candidate-valve/set",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "bound_boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "phase": "result_pending_ack",
+    "generation": 6,
+    "operation_deadline_ms": 1800000120000,
+    "last_request_deadline_ms": 1800000010000,
+    "expected_proof_deadline_ms": 0,
+    "intended_target": 21,
+    "challenge_target": 22,
+    "physical_targets": [
+      18,
+      21
+    ],
+    "restore_required": false,
+    "remediation_after_restore": false,
+    "restore_attempts": 1,
+    "consumed_request_ids": [
+      "tfpp-req-555555555555555555555555"
+    ],
+    "used_sequences": [
+      500,
+      501,
+      100,
+      101,
+      102
+    ],
+    "proofs": [
+      {
+        "purpose": "physical_target_1",
+        "frame_kind": "commandDataResponse",
+        "sequence": 500,
+        "target": 18
+      },
+      {
+        "purpose": "physical_target_2",
+        "frame_kind": "commandDataResponse",
+        "sequence": 501,
+        "target": 21
+      },
+      {
+        "purpose": "noop",
+        "frame_kind": "commandDataResponse",
+        "sequence": 100,
+        "target": 21
+      },
+      {
+        "purpose": "restore",
+        "frame_kind": "commandDataResponse",
+        "sequence": 102,
+        "target": 21
+      }
+    ],
+    "expected_proof": null,
+    "outcome": "failed_restored",
+    "failure_code": "proof_mismatch",
+    "result_id": "tfpp-result-f0645e23f379b596e7f657a2",
+    "result_not_before_ms": 1800000002005,
+    "cleanup_allowed": false
+  },
+  "remediation_restore_record": {
+    "schema": "true-family-physical-probe-state-v2",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "candidate_ieee": "0xa4c1380000000001",
+    "candidate_set_topic": "candidate-valve/set",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "bound_boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "phase": "remediation_required",
+    "generation": 5,
+    "operation_deadline_ms": 1800000120000,
+    "last_request_deadline_ms": 1800000010000,
+    "expected_proof_deadline_ms": 0,
+    "intended_target": 21,
+    "challenge_target": 22,
+    "physical_targets": [
+      18,
+      21
+    ],
+    "restore_required": true,
+    "remediation_after_restore": false,
+    "restore_attempts": 0,
+    "consumed_request_ids": [
+      "tfpp-req-555555555555555555555555"
+    ],
+    "used_sequences": [
+      500,
+      501,
+      100,
+      101
+    ],
+    "proofs": [
+      {
+        "purpose": "physical_target_1",
+        "frame_kind": "commandDataResponse",
+        "sequence": 500,
+        "target": 18
+      },
+      {
+        "purpose": "physical_target_2",
+        "frame_kind": "commandDataResponse",
+        "sequence": 501,
+        "target": 21
+      },
+      {
+        "purpose": "noop",
+        "frame_kind": "commandDataResponse",
+        "sequence": 100,
+        "target": 21
+      }
+    ],
+    "expected_proof": null,
+    "outcome": null,
+    "failure_code": "queue_overflow",
+    "result_id": null,
+    "result_not_before_ms": 0,
+    "cleanup_allowed": false
+  },
+  "remediation_claimed_restore_record": {
+    "schema": "true-family-physical-probe-state-v2",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "candidate_ieee": "0xa4c1380000000001",
+    "candidate_set_topic": "candidate-valve/set",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "bound_boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "phase": "awaiting_restore_response",
+    "generation": 6,
+    "operation_deadline_ms": 1800000120000,
+    "last_request_deadline_ms": 1800000010000,
+    "expected_proof_deadline_ms": 1800000010006,
+    "intended_target": 21,
+    "challenge_target": 22,
+    "physical_targets": [
+      18,
+      21
+    ],
+    "restore_required": true,
+    "remediation_after_restore": true,
+    "restore_attempts": 1,
+    "consumed_request_ids": [
+      "tfpp-req-555555555555555555555555"
+    ],
+    "used_sequences": [
+      500,
+      501,
+      100,
+      101,
+      102
+    ],
+    "proofs": [
+      {
+        "purpose": "physical_target_1",
+        "frame_kind": "commandDataResponse",
+        "sequence": 500,
+        "target": 18
+      },
+      {
+        "purpose": "physical_target_2",
+        "frame_kind": "commandDataResponse",
+        "sequence": 501,
+        "target": 21
+      },
+      {
+        "purpose": "noop",
+        "frame_kind": "commandDataResponse",
+        "sequence": 100,
+        "target": 21
+      }
+    ],
+    "expected_proof": {
+      "purpose": "restore",
+      "frame_kind": "commandDataResponse",
+      "sequence": 102,
+      "target": 21
+    },
+    "outcome": null,
+    "failure_code": "queue_overflow",
+    "result_id": null,
+    "result_not_before_ms": 0,
+    "cleanup_allowed": false
+  },
+  "resume_request": {
+    "action": "resume",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "request_id": "tfpp-req-666666666666666666666666",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "nonce": "tfpp-nonce-99999999999999999999999999999999",
+    "phase": "awaiting_noop_response",
+    "generation": 3,
+    "request_deadline_ms": 1800000020000
+  },
+  "ack_request": {
+    "action": "ack",
+    "protocol_id": "true-family-physical-probe",
+    "protocol_version": 2,
+    "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+    "profile_id": "moes-brt-100-trv",
+    "profile_version": 2,
+    "boot_id": "tfpp-boot-11111111111111111111111111111111",
+    "request_id": "tfpp-req-666666666666666666666666",
+    "operation_id": "tfpp-op-333333333333333333333333",
+    "nonce": "tfpp-nonce-99999999999999999999999999999999",
+    "phase": "result_pending_ack",
+    "generation": 3,
+    "request_deadline_ms": 1800000020000,
+    "result_id": "tfpp-result-e6eb630dce1ad7347d041aa7"
+  },
+  "public_messages": {
+    "ready": {
+      "protocol_id": "true-family-physical-probe",
+      "protocol_version": 2,
+      "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+      "profile_id": "moes-brt-100-trv",
+      "profile_version": 2,
+      "boot_id": "tfpp-boot-11111111111111111111111111111111",
+      "phase": "ready",
+      "required_runtime_versions": {
+        "zigbee2mqtt": "2.12.1",
+        "zigbee_herdsman": "10.6.1",
+        "zigbee_herdsman_converters": "26.76.0"
+      },
+      "request_topic": "bridge/request/true_family/physical_probe",
+      "ack_topic": "bridge/request/true_family/physical_probe/ack"
+    },
+    "status": {
+      "protocol_id": "true-family-physical-probe",
+      "protocol_version": 2,
+      "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+      "profile_id": "moes-brt-100-trv",
+      "profile_version": 2,
+      "boot_id": "tfpp-boot-11111111111111111111111111111111",
+      "phase": "remediation_required",
+      "generation": 5,
+      "operation_id": "tfpp-op-333333333333333333333333",
+      "result_id": null,
+      "result_not_before_ms": 0,
+      "identity": "...0001",
+      "restore_required": true,
+      "restore_attempts": 0,
+      "cleanup_allowed": false
+    },
+    "failed_safe_result": {
+      "protocol_id": "true-family-physical-probe",
+      "protocol_version": 2,
+      "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+      "profile_id": "moes-brt-100-trv",
+      "profile_version": 2,
+      "boot_id": "tfpp-boot-11111111111111111111111111111111",
+      "operation_id": "tfpp-op-333333333333333333333333",
+      "result_id": "tfpp-result-e6eb630dce1ad7347d041aa7",
+      "result_not_before_ms": 1800000002002,
+      "phase": "result_pending_ack",
+      "generation": 3,
+      "identity": "...0001",
+      "outcome": "failed_safe",
+      "failure_code": "competing_frame",
+      "cleanup_allowed": false
+    },
+    "failed_restored_result": {
+      "protocol_id": "true-family-physical-probe",
+      "protocol_version": 2,
+      "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+      "profile_id": "moes-brt-100-trv",
+      "profile_version": 2,
+      "boot_id": "tfpp-boot-11111111111111111111111111111111",
+      "operation_id": "tfpp-op-333333333333333333333333",
+      "result_id": "tfpp-result-f0645e23f379b596e7f657a2",
+      "result_not_before_ms": 1800000002005,
+      "phase": "result_pending_ack",
+      "generation": 6,
+      "identity": "...0001",
+      "outcome": "failed_restored",
+      "failure_code": "proof_mismatch",
+      "cleanup_allowed": false
+    },
+    "response": {
+      "protocol_id": "true-family-physical-probe",
+      "protocol_version": 2,
+      "build_id": "tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0",
+      "boot_id": "tfpp-boot-11111111111111111111111111111111",
+      "request_id": "tfpp-req-666666666666666666666666",
+      "operation_id": "tfpp-op-333333333333333333333333",
+      "action": "resume",
+      "accepted": false,
+      "phase": "remediation_required",
+      "generation": 5,
+      "error_code": "queue_overflow"
+    }
+  },
+  "parity_artifacts": [
+    {
+      "name": "failed_safe_record",
+      "canonical": "{\"bound_boot_id\":\"tfpp-boot-11111111111111111111111111111111\",\"build_id\":\"tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0\",\"candidate_ieee\":\"0xa4c1380000000001\",\"candidate_set_topic\":\"candidate-valve/set\",\"challenge_target\":22,\"cleanup_allowed\":false,\"consumed_request_ids\":[\"tfpp-req-555555555555555555555555\"],\"expected_proof\":null,\"expected_proof_deadline_ms\":0,\"failure_code\":\"competing_frame\",\"generation\":3,\"intended_target\":21,\"last_request_deadline_ms\":1800000010000,\"operation_deadline_ms\":1800000120000,\"operation_id\":\"tfpp-op-333333333333333333333333\",\"outcome\":\"failed_safe\",\"phase\":\"result_pending_ack\",\"physical_targets\":[18,21],\"profile_id\":\"moes-brt-100-trv\",\"profile_version\":2,\"proofs\":[{\"frame_kind\":\"commandDataResponse\",\"purpose\":\"physical_target_1\",\"sequence\":500,\"target\":18}],\"protocol_id\":\"true-family-physical-probe\",\"protocol_version\":2,\"remediation_after_restore\":false,\"restore_attempts\":0,\"restore_required\":false,\"result_id\":\"tfpp-result-e6eb630dce1ad7347d041aa7\",\"result_not_before_ms\":1800000002002,\"schema\":\"true-family-physical-probe-state-v2\",\"used_sequences\":[500]}",
+      "sha256": "febb35391858c5afb5e3523df2580347a730b4c8b3dc5add6f2cf33b6a75f079"
+    },
+    {
+      "name": "remediation_claimed_restore_record",
+      "canonical": "{\"bound_boot_id\":\"tfpp-boot-11111111111111111111111111111111\",\"build_id\":\"tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0\",\"candidate_ieee\":\"0xa4c1380000000001\",\"candidate_set_topic\":\"candidate-valve/set\",\"challenge_target\":22,\"cleanup_allowed\":false,\"consumed_request_ids\":[\"tfpp-req-555555555555555555555555\"],\"expected_proof\":{\"frame_kind\":\"commandDataResponse\",\"purpose\":\"restore\",\"sequence\":102,\"target\":21},\"expected_proof_deadline_ms\":1800000010006,\"failure_code\":\"queue_overflow\",\"generation\":6,\"intended_target\":21,\"last_request_deadline_ms\":1800000010000,\"operation_deadline_ms\":1800000120000,\"operation_id\":\"tfpp-op-333333333333333333333333\",\"outcome\":null,\"phase\":\"awaiting_restore_response\",\"physical_targets\":[18,21],\"profile_id\":\"moes-brt-100-trv\",\"profile_version\":2,\"proofs\":[{\"frame_kind\":\"commandDataResponse\",\"purpose\":\"physical_target_1\",\"sequence\":500,\"target\":18},{\"frame_kind\":\"commandDataResponse\",\"purpose\":\"physical_target_2\",\"sequence\":501,\"target\":21},{\"frame_kind\":\"commandDataResponse\",\"purpose\":\"noop\",\"sequence\":100,\"target\":21}],\"protocol_id\":\"true-family-physical-probe\",\"protocol_version\":2,\"remediation_after_restore\":true,\"restore_attempts\":1,\"restore_required\":true,\"result_id\":null,\"result_not_before_ms\":0,\"schema\":\"true-family-physical-probe-state-v2\",\"used_sequences\":[500,501,100,101,102]}",
+      "sha256": "a6071188b5e30bcd21e054e0a7334589a62383f1360d3e7f435f4420836f3e96"
+    },
+    {
+      "name": "remediation_status",
+      "canonical": "{\"boot_id\":\"tfpp-boot-11111111111111111111111111111111\",\"build_id\":\"tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0\",\"cleanup_allowed\":false,\"generation\":5,\"identity\":\"...0001\",\"operation_id\":\"tfpp-op-333333333333333333333333\",\"phase\":\"remediation_required\",\"profile_id\":\"moes-brt-100-trv\",\"profile_version\":2,\"protocol_id\":\"true-family-physical-probe\",\"protocol_version\":2,\"restore_attempts\":0,\"restore_required\":true,\"result_id\":null,\"result_not_before_ms\":0}",
+      "sha256": "637313f7cd465d01832a45055df71325be689c33d5c1b45d11584865cc7e0341"
+    },
+    {
+      "name": "resume_request",
+      "canonical": "{\"action\":\"resume\",\"boot_id\":\"tfpp-boot-11111111111111111111111111111111\",\"build_id\":\"tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0\",\"generation\":3,\"nonce\":\"tfpp-nonce-99999999999999999999999999999999\",\"operation_id\":\"tfpp-op-333333333333333333333333\",\"phase\":\"awaiting_noop_response\",\"profile_id\":\"moes-brt-100-trv\",\"profile_version\":2,\"protocol_id\":\"true-family-physical-probe\",\"protocol_version\":2,\"request_deadline_ms\":1800000020000,\"request_id\":\"tfpp-req-666666666666666666666666\"}",
+      "sha256": "a1098b771049eefc1b0a5725499fd49cece4c7d3b0eac97e9e0f849b04a3068d"
+    },
+    {
+      "name": "ack_request",
+      "canonical": "{\"action\":\"ack\",\"boot_id\":\"tfpp-boot-11111111111111111111111111111111\",\"build_id\":\"tfpp-v2-z2m-2.12.1-zh-10.6.1-zhc-26.76.0\",\"generation\":3,\"nonce\":\"tfpp-nonce-99999999999999999999999999999999\",\"operation_id\":\"tfpp-op-333333333333333333333333\",\"phase\":\"result_pending_ack\",\"profile_id\":\"moes-brt-100-trv\",\"profile_version\":2,\"protocol_id\":\"true-family-physical-probe\",\"protocol_version\":2,\"request_deadline_ms\":1800000020000,\"request_id\":\"tfpp-req-666666666666666666666666\",\"result_id\":\"tfpp-result-e6eb630dce1ad7347d041aa7\"}",
+      "sha256": "362d038c7b09ced649328c482ef164655161c9c234b301b73cd0fda49370dbea"
+    },
+    {
+      "name": "utf8_public_text",
+      "canonical": "{\"message\":\"Physical proof café £ €\",\"phase\":\"remediation_required\"}",
+      "sha256": "eaa77303742e6c97d9f6906df88675d8445f83d4408a21405ee53d8a4da96f15"
+    }
+  ],
+  "result": {
+    "result_id": "tfpp-result-344353369cc16c204a729649",
+    "outcome": "verified",
+    "failure_code": null
+  },
+  "invalid_proofs": [
+    {
+      "name": "target_out_of_range",
+      "profile": {
+        "minimum_target": 0,
+        "maximum_target": 35,
+        "target_step": 1
+      },
+      "proof": {
+        "purpose": "noop",
+        "frame_kind": "commandDataResponse",
+        "sequence": 100,
+        "target": 36
+      }
+    },
+    {
+      "name": "target_off_step",
+      "profile": {
+        "minimum_target": 0,
+        "maximum_target": 34,
+        "target_step": 2
+      },
+      "proof": {
+        "purpose": "noop",
+        "frame_kind": "commandDataResponse",
+        "sequence": 100,
+        "target": 21
+      }
+    },
+    {
+      "name": "unknown_field",
+      "profile": {
+        "minimum_target": 0,
+        "maximum_target": 35,
+        "target_step": 1
+      },
+      "proof": {
+        "purpose": "noop",
+        "frame_kind": "commandDataResponse",
+        "sequence": 100,
+        "target": 21,
+        "unknown": true
+      }
+    }
+  ],
+  "frames": [
+    {
+      "name": "physical_response",
+      "classification": "proof",
+      "type": "commandDataResponse",
+      "sequence": 500,
+      "target": 18,
+      "data": [
+        0,
+        0,
+        0,
+        18
+      ]
+    },
+    {
+      "name": "dp2_report",
+      "classification": "competing",
+      "type": "commandDataReport",
+      "sequence": 501,
+      "target": 21,
+      "data": [
+        0,
+        0,
+        0,
+        21
+      ]
+    },
+    {
+      "name": "companion_dp5",
+      "classification": "ignored",
+      "type": "commandDataResponse",
+      "datapoint": 5,
+      "datatype": 2,
+      "sequence": 502,
+      "target": 0,
+      "data": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "companion_dp14",
+      "classification": "ignored",
+      "type": "commandDataResponse",
+      "datapoint": 14,
+      "datatype": 2,
+      "sequence": 503,
+      "target": 0,
+      "data": [
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

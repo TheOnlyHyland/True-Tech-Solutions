@@ -7,6 +7,11 @@ ROOT="${TRUE_FAMILY_HA_HARNESS_ROOT:-/data/.cache/opencode-tmp/opencode/true-fam
 PYTHON="$ROOT/venv/bin/python"
 UV="$ROOT/bin/uv"
 
+test "$(node --version)" = "v20.19.2" || {
+  printf '%s\n' "Node.js 20.19.2 is required" >&2
+  exit 1
+}
+
 env -i \
   PATH="/usr/bin:/bin" \
   HOME="$ROOT/home" \
@@ -38,13 +43,17 @@ env PYTHONPYCACHEPREFIX="$ROOT/cache/pycache" \
   "$PROJECT/tests"
 
 node --check "$PROJECT/frontend/replacement-wizard.js"
+node --check \
+  "$PROJECT/custom_components/true_family/probe/true_family_brt_probe.mjs"
+node --test "$PROJECT/tests/js/test_physical_probe.mjs"
 
 jq empty \
   "$PROJECT/custom_components/true_family/manifest.json" \
   "$PROJECT/custom_components/true_family/strings.json" \
   "$PROJECT/custom_components/true_family/translations/en.json" \
   "$PROJECT/hacs.json" \
-  "$PROJECT/release/identity.json"
+  "$PROJECT/release/identity.json" \
+  "$PROJECT/tests/fixtures/physical_probe_vectors.json"
 
 yq '.' \
   "$PROJECT/.github/workflows/release-app.yaml" \

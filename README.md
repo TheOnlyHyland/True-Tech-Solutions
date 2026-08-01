@@ -30,6 +30,14 @@ configured.
 - `frontend/replacement-wizard.js`: browser-only customer workflow.
 - `custom_components/true_family/`: installable phase-two integration source that
   remains outside the live Home Assistant installation.
+- `custom_components/true_family/physical_probe.py`: stdlib-only, unwired generic
+  protocol-v2 physical-probe contracts and the three pinned converter-resolved
+  BRT identity aliases.
+- `custom_components/true_family/probe/true_family_brt_probe.mjs`: source-only
+  Zigbee2MQTT 2.12.1 external extension with bounded serialization, durable
+  recovery, and no deployment lifecycle.
+- `tests/fixtures/physical_probe_vectors.json`: shared Python/Node UTF-8
+  canonicalization, digest, request, record, result, and frame vectors.
 - `custom_components/true_family/reference_projection.py`: strict semantic
   entity-reference projection for scalar fields and allowlisted Jinja helpers.
 - `custom_components/true_family/reference_journal_remote.py`: signed client for
@@ -109,9 +117,201 @@ scripts/verify
 ```
 
 The verification script uses the pinned disposable Home Assistant 2026.7.4
-harness. Set `TRUE_FAMILY_HA_HARNESS_ROOT` when the harness is elsewhere. The
-current gate passes 572 Home Assistant runtime tests and 161 pure, protocol,
-persistence, release, and static contract tests, for 733 total.
+harness and requires exact Node.js `20.19.2`. Set
+`TRUE_FAMILY_HA_HARNESS_ROOT` when the harness is elsewhere. The current gate
+passes 610 Home Assistant runtime tests, 252 pure Python protocol, persistence,
+release, and static contract tests, and 130 zero-dependency Node tests, for 992
+total.
+
+The physical-probe source is offline and unwired: integration setup does not
+import or register it, and this project contains no automatic external-extension
+deployment, save, or removal path. Protocol v2 accepts only BRT DP2
+`commandDataResponse` frames as physical and direct-command proof, treats DP2
+`commandDataReport` as competing traffic, and ignores unrelated companion
+DP5 and DP14 `commandDataResponse` frames. Generated command sequences are
+limited to `0..65534`; observed physical frames may use `65535`. Physical proofs
+have a 60-second deadline, direct proofs have a 10-second deadline, and restore
+stops after three durable attempts. One core FIFO serializes startup, MQTT,
+device frames, timers, and stop handling. Candidate resolution is bounded to four
+seconds and request authority is rechecked after it returns. Every no-op and
+challenge dispatch is bound to the exact durable operation, generation, phase,
+expected proof, candidate topic, and authorization epoch; stale resolver
+completions cannot invoke an old command. Non-safety invocation must begin
+strictly before a captured deadline that leaves the complete pinned five-second
+Endpoint timeout before both proof and operation deadlines. The default adapter
+rechecks that deadline after its own synchronous candidate inspection. A claimed
+restore remains bound to the original operation deadline and can be created or
+reused only when its complete ten-second direct-proof window fits. Post-deadline
+safety restoration ignores command-capable deadlines only through bounded
+unclaimed intended-target dispatch; it can never create proof, a result, or
+cleanup authority. Queue overflow synchronously and irreversibly
+latches remediation before queued work can run; its handler uses only bounded
+unclaimed intended-target defense and never starts a claimed restore. Scheduler
+failure, journal uncertainty, restart recovery, result drift, acknowledgement
+identity drift, and shutdown retain that safety path while blocking new unsafe
+work. Definite sequence, transition, validation, or journal-write failures inside
+frame and drift processing synchronously latch safety-only operation before the
+adapter may suppress an error; challenged work receives an unclaimed restore and
+all such failures install durable or in-memory no-result remediation.
+Restore-to-remediation intent is durable across restart. Pending results
+have a durable two-second settling window: only immediate duplicate final-restore
+responses are ignored, and cleanup remains blocked until a later valid
+acknowledgement in the same boot. Any validation failure from candidate-,
+endpoint-, cluster-, and DP2-relevant traffic supersedes a pending result, issues
+intended-target safety restoration, and makes later acknowledgement impossible;
+unrelated non-DP and noncandidate traffic remains ignored. Neither claimed
+restore, restart recovery, nor terminalization can extend the original operation
+deadline. A claimed restore
+lacking a full proof window is replaced by unclaimed restoration and remediation.
+The complete result settling window must also end strictly before the original
+deadline, both before and after the terminal journal write. Otherwise the probe
+enters no-result, no-cleanup remediation. Every pending result or quiescent record loaded
+from an earlier boot is invalidated into restore-only remediation and cannot be
+republished, acknowledged, or trusted for cleanup. Because safety restore
+precedes remediation persistence, this startup rule also fails closed after
+process death in that interval. An unexpired previous-boot physical or no-op phase
+remains inactive until an explicit resume rebinds it. If it expires first, it
+enters no-result remediation with no restore requirement and cannot advertise a
+result under the old boot. In the current boot, timer or acknowledgement
+processing at or beyond the operation deadline supersedes the result and enters
+restore-required remediation instead of republishing or granting cleanup. After
+a same-boot acknowledgement, the external orchestrator must complete cleanup and
+remove both the journal and extension through the attested out-of-band lifecycle
+before any restart; persisted quiescence is deliberately not restart authority.
+
+Every final DP2 write uses `sendPolicy: "immediate"`,
+`disableRecovery: true`, `disableDefaultResponse: true`, and a pinned five-second
+Endpoint timeout. Before every request resolution, command, and acknowledgement,
+the selected endpoint and every available endpoint on the candidate device must
+expose `hasPendingRequests()` and report an empty queue. This is read-only: the
+probe never clears or mutates herdsman queues. Immediate send, disabled recovery,
+and empty queues are necessary but do not prove final adapter/radio ordering;
+that still requires the pinned runtime harness and actual-spare physical proof.
+
+The writer monitor deliberately covers the exact candidate friendly-name and IEEE
+publish subtrees more broadly than Zigbee2MQTT's documented aliases. It recognizes
+direct `/set...` writes and endpoint-shaped paths followed by `/set...`, including
+space, tab, vertical-tab, form-feed, CR/LF, zero-padded, hexadecimal, scientific,
+and long numeric endpoint spellings accepted through JavaScript `Number()`
+coercion, plus attribute subpaths. It rejects only MQTT-invalid NUL/wildcards,
+malformed Unicode, size violations, and non-candidate roots; conservative false
+positives beneath the exact candidate roots are intentional. The broker ACL must
+deny each entire friendly-name and IEEE candidate publish subtree rather than
+enumerate expected aliases. The event can
+arrive after the built-in Publish extension has already invoked a converter, so
+this remains restore-triggering defense rather than prevention. Any slash-delimited
+MQTT topic containing `bridge/request/`, except the two exact probe request topics, is also
+reactive drift. Pinned entity-rename and group-membership callbacks detect changes
+to the candidate identity or endpoint. These callbacks can run after the built-in
+action and do not claim to prevent it. Candidate name and group membership must
+therefore remain frozen by preflight. Before either physical proof is accepted,
+the candidate is boundedly re-resolved and its immutable identity, set topic, and
+empty endpoint queues are checked again; this still does not establish transport
+origin.
+
+Claimed restore is limited to three distinct durable sequences and attempts. A
+persisted claimed attempt may be retransmitted after restart. Separately, each
+distinct safety event or restart may issue up to three unclaimed, fresh-sequence,
+intended-target-only endpoint invocations; there is no global maximum of three
+physical transmissions.
+The durable used-sequence bound is 16. Initial and resumed no-op allocation must
+leave one challenge, all three claimed restores, and all three unclaimed safety
+attempts available. Challenge allocation must leave all six restore slots, each
+claimed restore must leave every remaining claimed slot plus three unclaimed
+slots, and result, quiescent, and remediation records must retain three slots.
+Both validators reject records that violate the reserve for their phase. A no-op
+resume that would cross its reserve is rejected before persistence or dispatch,
+leaving the existing operation and its timeout safety path unchanged.
+Unclaimed remediation restores track per-key in-flight versus completed
+invocation. Completion means only that `endpoint.command` was invoked; it never
+claims a proof, delivery, restore success, or cleanup authority.
+
+Journal, publication, dispatch, and graceful-stop waits are bounded.
+Reconciliation never calls `load()` while a journal write is still pending
+because that could delete the live pre-rename temporary file. It instead keeps
+the current record as observed authority, latches safety-only operation, and
+authorizes any unclaimed defense against the current operation, generation, and
+epoch while using the intended record only for target and sequence exclusion. A
+settled may-have-committed error may perform bounded read-back.
+
+Atomic startup load validates the main journal and every bounded matching temp
+before deleting anything. It compares immutable operation, profile, candidate,
+deadline, and target identity before considering generation because generation
+restarts for each operation. Every valid surviving temp, including an exact
+canonical duplicate of the main journal, is interruption evidence. Coherent temp
+evidence of any generation is converted with all coherent records into atomically
+durable `journal_uncertain` remediation, including main replacement and directory
+fsync, before any temp is unlinked. The highest-generation evidence supplies the
+remediation state, while all credible evidence contributes restore risk.
+Conflicting identity preserves every file, leaves no operational authority, and
+requires manual remediation. A failed recovery write preserves every original
+temp and gives startup only in-memory safety authority. Pre-unlink fsync, unlink,
+and post-unlink fsync failures are reported with the safe recovery record; at
+that point main is already durable remediation, so cleanup failure cannot revive
+stale active authority. Recovery can issue an intended-target restore when
+credible evidence may have reached challenge, restore, or restored terminal
+state, but it never returns active result or cleanup authority and never creates
+a challenge. Startup remains no-ready and cannot resume the stale active record
+on a later restart.
+
+The adapter passes
+relative publication topics to Zigbee2MQTT, which adds the configured
+base-topic prefix; effective publications use QoS 1 and `retain: false`. READY is
+only a discovery hint. Request acceptance and the latest status generation plus
+result ID are authoritative. Zigbee2MQTT `Mqtt.publish` may swallow broker
+delivery failures, so periodic status/result attempts and request retries can
+mitigate loss but do not prove broker delivery.
+
+Identity is fingerprint-specific and immutable: `_TZE200_b6wax7g0` and
+`_TZE200_6y7kyjga` require model `BRT-100-TRV` and vendor `Moes`, while
+`_TZE200_qsoecqlk` requires model `Powerswitch-ZK(W)` and vendor `Sibling`.
+Cross-combinations fail closed.
+
+Python and JavaScript text validation share one explicit boundary-whitespace set:
+Unicode White_Space plus U+FEFF. Boundary U+0085 and U+FEFF are rejected in both
+runtimes rather than inheriting the different behavior of `strip()` and `trim()`.
+Both reject ill-formed Unicode, including lone UTF-16 surrogates, and both treat an
+observed proof at its exact proof deadline as expired.
+
+Exact runtime/build verification, extension lifecycle and collision handling,
+and the residual writer fence remain a separate future preflight. That fence
+must give Zigbee2MQTT a dedicated broker principal. The external orchestrator's
+MQTT PUBLISH ACL must be deny-by-default and allow only the two exact, fully
+base-prefixed probe request and acknowledgement topics. Every other principal
+must be denied all friendly-name, IEEE, endpoint, attribute, and group write
+aliases for the candidate and every bridge control request.
+
+The deny rules must use containment semantics compatible with Zigbee2MQTT 2.12.1's
+unanchored bridge request regex, including repeated-prefix aliases. They must
+explicitly block raw `bridge/request/action`, device rename, group membership,
+backup, restart, extension mutation, and converter mutation requests, including
+their save/remove forms. The orchestrator's SUBSCRIBE ACL must also be
+deny-by-default and allow only the exact probe ready, status, result, and response
+topics it needs. It must deny `bridge/response/backup` and broad bridge or source
+surfaces. Backup, journal, or source access belongs only to a separately attested
+administrator/recovery principal if ever required. Retained `bridge/extensions`
+source must remain denied to the orchestrator and be handled only by that privacy
+policy and exact source-attestation path.
+
+The preflight must freeze the candidate friendly name and endpoint group
+membership; disable the Zigbee2MQTT frontend and every relevant automation,
+script, and Scheduler writer; attest and allowlist exactly one copy of this
+external extension; exclude every unreviewed in-process endpoint writer; and keep
+payload-debug logging disabled for the complete proof.
+
+No second instance or reload may start while one loader owns the journal.
+Cross-instance late journal completion remains blocked on that future
+single-loader lifecycle/collision preflight; this source deliberately does not
+invent a process-local lock. Zigbee2MQTT publishes external-extension source on
+`bridge/extensions`, so broker privacy and source attestation must cover that
+retained surface. Full IEEE identity is durable recovery data but remains masked
+from public probe messages. Raw DP2 and write-alias monitoring is only defense in
+depth because it cannot enforce broker ACLs, prevent the built-in Publish action,
+or inspect retain metadata. Physical provenance is operational isolation, not a
+transport-origin bit. Exact direct-command sequence echo and final adapter/radio
+ordering across all three fingerprints still require the pinned harness and an
+actual-spare no-op bench gate. These offline tests do not establish bench
+readiness.
 
 ## Preview Frontend
 

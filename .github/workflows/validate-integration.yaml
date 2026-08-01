@@ -57,6 +57,18 @@ jobs:
           enable-cache: true
           version: "0.11.33"
 
+      - name: "Set up locked Node.js"
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20.19.2"
+
+      - name: "Require exact Node.js"
+        run: |
+          test "$(node --version)" = "v20.19.2" || {
+            echo "Node.js 20.19.2 is required" >&2
+            exit 1
+          }
+
       - name: "Install locked test environment"
         run: uv sync --locked
 
@@ -65,3 +77,8 @@ jobs:
 
       - name: "Run pure safety contracts"
         run: uv run --frozen python -m unittest discover -s tests -p "test_*.py"
+
+      - name: "Run physical-probe Node contracts"
+        run: |
+          node --check custom_components/true_family/probe/true_family_brt_probe.mjs
+          node --test tests/js/test_physical_probe.mjs
