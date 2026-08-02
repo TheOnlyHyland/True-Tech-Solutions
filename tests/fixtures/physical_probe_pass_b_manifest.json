@@ -99,6 +99,23 @@
         "security",
         "unknown"
       ],
+      "runtime_failure_policy": {
+        "schema": "true-family-pass-b0-runtime-failure-v2",
+        "exact_keys": [
+          "failure_code",
+          "result",
+          "schema"
+        ],
+        "failure_code_pattern": "^[a-z0-9_]{1,40}$",
+        "max_bytes": 256,
+        "byte_exact_canonical_token": true,
+        "trailing_newline_required": true,
+        "classification_prefix": "runtime_",
+        "classification_max_bytes": 64,
+        "internal_failure_code": "internal_failure",
+        "synthetic_failure_code": "case_failed",
+        "source_smoke_failure_codes_verified": true
+      },
       "known_process_failure_codes": [
         "package_fetch_download_arguments",
         "package_fetch_download_kind",
@@ -249,9 +266,9 @@
       "final_verification_failed",
       "verifier_failed"
     ],
-    "launcher_normalized_sha256": "1a969eb6ea94d8cbdb89d8094af608082f682eb6bb5f1268e4e0312a8123c21d",
-    "harness_sha256": "c3e310ce1b3e02fcc559f51cb379bf4d31d1bda02e89a2578802274c07091ea8",
-    "verifier_sha256": "a62df70e9e35e6b63eeef9a904973f3d384dc32d269177cc8591305aafb54b54"
+    "launcher_normalized_sha256": "558d36215f36e7d051bc5cf6a4bf685322fcca804ec8b7c97cf74ee56c6bd194",
+    "harness_sha256": "9806a02deedf9750fa68c7557dda25a95b05b9b646d4cdac7b6724c5a1d19e6c",
+    "verifier_sha256": "cfbccb7623a2cd2ede041b886088cadac1ffd15c53d53be12e533017ef7ce4ab"
   },
   "test_scope": {
     "cases": [

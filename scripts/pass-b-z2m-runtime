@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="1a969eb6ea94d8cbdb89d8094af608082f682eb6bb5f1268e4e0312a8123c21d"
+EXPECTED_LAUNCHER_SHA256="558d36215f36e7d051bc5cf6a4bf685322fcca804ec8b7c97cf74ee56c6bd194"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -598,7 +598,7 @@ start_container() {
       "${stage}_state_error_no_such_file"|"${stage}_state_error_not_directory"|"${stage}_state_error_readonly"|\
       "${stage}_state_error_cgroup"|"${stage}_state_error_security"|"${stage}_state_error_unknown"|\
       "${stage}_process_exit"|"${stage}_inspect_timeout"|\
-      "${stage}_inspect_failed"|"${stage}_inspect_malformed"|"${stage}_unknown"|runtime_case_failed)
+      "${stage}_inspect_failed"|"${stage}_inspect_malformed"|"${stage}_unknown")
       fail "$classification"
       ;;
     package_fetch_download_arguments|package_fetch_download_kind|package_fetch_download_contract|\
@@ -616,6 +616,13 @@ start_container() {
       verifier_stage_write_failed|verifier_stage_rehash_failed|verifier_image_inspect_failed|\
       verifier_run_verification_failed|verifier_final_verification_failed|verifier_verifier_failed)
       fail "$classification"
+      ;;
+    runtime_*)
+      runtime_suffix="${classification#runtime_}"
+      if [ "$stage" = "runtime" ] && [[ "$runtime_suffix" =~ ^[a-z0-9_]{1,40}$ ]] && [ "${#classification}" -le 64 ]; then
+        fail "$classification"
+      fi
+      fail "${stage}_unknown"
       ;;
     pnpm_fetch_*|pnpm_install_*)
       pnpm_phase="${classification#pnpm_}"

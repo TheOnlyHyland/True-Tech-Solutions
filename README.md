@@ -249,10 +249,14 @@ for a bounded private `.State` inspection before cleanup. Only the fixed
 the classifier. It emits
 fixed timeout, OOM, process-exit, malformed-inspect, unknown, or OCI `rlimit`,
 mount, permission, invalid-argument, exec, `no_such_file`, `not_directory`,
-`readonly`, cgroup, and security categories. The runtime wrapper's exact
-`case_failed` record and the downloader's exact failure records receive more
-specific process-exit codes. Every other invoked verifier mode emits at most one
-bounded canonical `true-family-pass-b0-verifier-failure-v1` record. It exposes
+`readonly`, cgroup, and security categories. Exact canonical
+`true-family-pass-b0-runtime-failure-v2` records preserve only a lowercase
+`failure_code` matching `^[a-z0-9_]{1,40}$` as `runtime_<failure_code>`.
+This includes the wrapper's synthetic `case_failed` and the harness's exact
+`internal_failure`; malformed, noncanonical, duplicate, multiple, oversized, or
+extended records remain `runtime_process_exit`. Downloader failure records also
+receive specific process-exit codes. Every other invoked verifier mode emits at
+most one bounded canonical `true-family-pass-b0-verifier-failure-v1` record. It exposes
 only an allowlisted mode-level `failure_code`; unknown exceptions become
 `verifier_failed`. The start classifier accepts only that exact canonical schema
 and otherwise retains `verifier_process_exit`. All other package, Node, Docker,

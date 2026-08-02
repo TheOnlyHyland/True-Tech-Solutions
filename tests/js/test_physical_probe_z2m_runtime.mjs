@@ -14,6 +14,8 @@ import {normalizedLauncherDigestBytes, runtimeHashes, treeEvidence} from "/verif
 const CASE_SCHEMA = "true-family-pass-b0-runtime-case-v2";
 const RAW_SCHEMA = "true-family-pass-b0-runtime-raw-v2";
 const FAILURE_SCHEMA = "true-family-pass-b0-runtime-failure-v2";
+const FAILURE_CODE_PATTERN_TEXT = "^[a-z0-9_]{1,40}$";
+const FAILURE_MAX_BYTES = 256;
 const STAGE_SCHEMA = "true-family-pass-b0-runtime-stage-v2";
 const MANIFEST_SCHEMA = "true-family-pass-b0-manifest-v2";
 const CLASSIFICATION = "ci-only-non-authoritative-reviewed-source-smoke";
@@ -257,6 +259,19 @@ function validateManifest(manifest) {
         state_inspect_seconds: 10,
         classifier_seconds: 5,
         state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "no_such_file", "not_directory", "readonly", "cgroup", "security", "unknown"],
+        runtime_failure_policy: {
+            schema: FAILURE_SCHEMA,
+            exact_keys: ["failure_code", "result", "schema"],
+            failure_code_pattern: FAILURE_CODE_PATTERN_TEXT,
+            max_bytes: FAILURE_MAX_BYTES,
+            byte_exact_canonical_token: true,
+            trailing_newline_required: true,
+            classification_prefix: "runtime_",
+            classification_max_bytes: 64,
+            internal_failure_code: "internal_failure",
+            synthetic_failure_code: "case_failed",
+            source_smoke_failure_codes_verified: true,
+        },
         known_process_failure_codes: [
             "package_fetch_download_arguments",
             "package_fetch_download_kind",

@@ -96,6 +96,10 @@ const PACKAGE_DOWNLOAD_FAILURE_SCHEMA = "true-family-pass-b0-package-download-fa
 const PACKAGE_DOWNLOAD_TIMEOUT_MS = 45000;
 const VERIFIER_FAILURE_SCHEMA = "true-family-pass-b0-verifier-failure-v1";
 const VERIFIER_FAILURE_MAX_BYTES = 256;
+const RUNTIME_FAILURE_SCHEMA = "true-family-pass-b0-runtime-failure-v2";
+const RUNTIME_FAILURE_MAX_BYTES = 256;
+const RUNTIME_FAILURE_CODE_PATTERN_TEXT = "^[a-z0-9_]{1,40}$";
+const RUNTIME_FAILURE_CODE_PATTERN = /^[a-z0-9_]{1,40}$/u;
 const PNPM_FAILURE_SCHEMA = "true-family-pass-b0-pnpm-failure-v1";
 const PNPM_DIAGNOSTIC_MAX_BYTES = 1024 * 1024;
 const PNPM_DIAGNOSTIC_LINE_MAX_BYTES = 64 * 1024;
@@ -223,6 +227,30 @@ function canonical(value) {
 
 function same(left, right) {
     return canonical(left) === canonical(right);
+}
+
+function harnessSmokeFailureCodes(source) {
+    const helperNames = ["gate", "exactKeys", "readJson", "checkMode", "strictProxy", "bounded"];
+    const expectedLiteralCalls = {gate: 157, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
+    const masked = source.replace(/(?:async\s+)?function\s+(?:gate|exactKeys|readJson|checkMode|strictProxy|bounded)\s*\([^)]*\)\s*\{/gu, "");
+    const codes = [];
+    for (const name of helperNames) {
+        const pattern = new RegExp(`\\b${name}\\([\\s\\S]*?,\\s*"((?:\\\\.|[^"\\\\])*)"\\s*(?:,\\s*[^)]*)?\\);`, "gu");
+        const matches = [...masked.matchAll(pattern)];
+        gate(matches.length === expectedLiteralCalls[name], "runtime_failure_source");
+        const totalCalls = (source.match(new RegExp(`\\b${name}\\(`, "gu")) ?? []).length - 1;
+        gate(matches.length + (name === "gate" ? 3 : 0) === totalCalls, "runtime_failure_source");
+        for (const match of matches) codes.push(JSON.parse(`"${match[1]}"`));
+    }
+    const direct = [...source.matchAll(/new\s+SmokeFailure\(\s*"((?:\\.|[^"\\])*)"\s*\)/gu)];
+    const forwarded = (source.match(/new\s+SmokeFailure\(code\)/gu) ?? []).length;
+    const constructors = (source.match(/new\s+SmokeFailure\(/gu) ?? []).length;
+    gate(direct.length === 1 && forwarded === 5 && direct.length + forwarded === constructors, "runtime_failure_source");
+    for (const match of direct) codes.push(JSON.parse(`"${match[1]}"`));
+    gate(source.includes('error instanceof SmokeFailure ? error.code : "internal_failure"'), "runtime_failure_source");
+    const unique = [...new Set(codes)].sort();
+    gate(unique.length > 0 && unique.every((code) => RUNTIME_FAILURE_CODE_PATTERN.test(code)), "runtime_failure_source");
+    return unique;
 }
 
 function allowedVerifierFailureCode(code) {
@@ -535,6 +563,19 @@ function validateManifest(manifest) {
         state_inspect_seconds: 10,
         classifier_seconds: 5,
         state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "no_such_file", "not_directory", "readonly", "cgroup", "security", "unknown"],
+        runtime_failure_policy: {
+            schema: RUNTIME_FAILURE_SCHEMA,
+            exact_keys: ["failure_code", "result", "schema"],
+            failure_code_pattern: RUNTIME_FAILURE_CODE_PATTERN_TEXT,
+            max_bytes: RUNTIME_FAILURE_MAX_BYTES,
+            byte_exact_canonical_token: true,
+            trailing_newline_required: true,
+            classification_prefix: "runtime_",
+            classification_max_bytes: 64,
+            internal_failure_code: "internal_failure",
+            synthetic_failure_code: "case_failed",
+            source_smoke_failure_codes_verified: true,
+        },
         known_process_failure_codes: [
             ...PACKAGE_DOWNLOAD_FAILURE_CODES.map((code) => `package_fetch_${code}`),
             ...VERIFIER_FAILURE_CODES.map((code) => `verifier_${code}`),
@@ -1454,7 +1495,27 @@ function validateAttachLogConfig(logConfig) {
 }
 
 const START_STAGES = Object.freeze(["package_fetch", "fetch", "install", "runtime", "verifier"]);
-const RUNTIME_CASE_FAILURE = '{"failure_code":"case_failed","result":"fail","schema":"true-family-pass-b0-runtime-failure-v2"}\n';
+
+function runtimeFailureToken(code) {
+    gate(typeof code === "string" && RUNTIME_FAILURE_CODE_PATTERN.test(code), "runtime_failure_token");
+    return `${canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_code: code})}\n`;
+}
+
+function runtimeFailureClassification(output) {
+    if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > RUNTIME_FAILURE_MAX_BYTES) return null;
+    let value;
+    try {
+        value = JSON.parse(output);
+    } catch {
+        return null;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (!same(Object.keys(value).sort(), ["failure_code", "result", "schema"])) return null;
+    if (value.schema !== RUNTIME_FAILURE_SCHEMA || value.result !== "fail" || typeof value.failure_code !== "string") return null;
+    if (!RUNTIME_FAILURE_CODE_PATTERN.test(value.failure_code) || output !== runtimeFailureToken(value.failure_code)) return null;
+    const classification = `runtime_${value.failure_code}`;
+    return classification.length <= 64 ? classification : null;
+}
 
 function packageFetchFailureClassification(output) {
     for (const code of PACKAGE_DOWNLOAD_FAILURE_CODES) {
@@ -1539,7 +1600,10 @@ function classifyStageStart(stage, startStatus, inspectStatus, output, stateText
             const classification = pnpmFailureClassification(stage, output);
             if (classification !== null) return classification;
         }
-        if (stage === "runtime" && output === RUNTIME_CASE_FAILURE) return "runtime_case_failed";
+        if (stage === "runtime") {
+            const classification = runtimeFailureClassification(output);
+            if (classification !== null) return classification;
+        }
         return `${stage}_process_exit`;
     }
     if (state.Status !== "exited" || state.Running) return `${stage}_unknown`;
@@ -2561,6 +2625,40 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         gate(pnpmFailureClassification("fetch", output) === null, "pnpm_classifier_self_test");
         gate(classifyStageStart("fetch", 1, 0, output, startState({ExitCode: 1})) === "fetch_process_exit", "pnpm_classifier_self_test");
     }
+    const harnessFailureCodes = harnessSmokeFailureCodes(harnessText);
+    gate(harnessFailureCodes.includes("prohibited_api"), "runtime_failure_source");
+    for (const code of [...harnessFailureCodes, "case_failed", "internal_failure", "future_failure", "a".repeat(40)]) {
+        const token = runtimeFailureToken(code);
+        gate(Buffer.byteLength(token, "utf8") <= RUNTIME_FAILURE_MAX_BYTES, "runtime_failure_self_test");
+        gate(runtimeFailureClassification(token) === `runtime_${code}`, "runtime_failure_self_test");
+        gate(classifyStageStart("runtime", 1, 0, token, startState({ExitCode: 1})) === `runtime_${code}`, "runtime_failure_self_test");
+        gate(`runtime_${code}`.length <= 64, "runtime_failure_self_test");
+    }
+    const malformedRuntimeFailures = [
+        "{",
+        runtimeFailureToken("case_failed").trimEnd(),
+        runtimeFailureToken("internal_failure").trimEnd(),
+        `${runtimeFailureToken("case_failed")}\n`,
+        JSON.stringify({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_code: "case_failed"}) + "\n",
+        canonical({schema: "wrong", result: "fail", failure_code: "case_failed"}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "pass", failure_code: "case_failed"}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_code: "UPPERCASE"}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_code: "private/path"}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_code: "private.path"}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_code: "private\npath"}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_code: "a".repeat(41)}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_code: "case_failed", path: "/private/path"}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail"}) + "\n",
+        canonical({schema: RUNTIME_FAILURE_SCHEMA, failure_code: "case_failed"}) + "\n",
+        canonical({result: "fail", failure_code: "case_failed"}) + "\n",
+        '{"failure_code":"case_failed","failure_code":"case_failed","result":"fail","schema":"true-family-pass-b0-runtime-failure-v2"}\n',
+        `${runtimeFailureToken("case_failed")}${runtimeFailureToken("internal_failure")}`,
+        "x".repeat(RUNTIME_FAILURE_MAX_BYTES + 1),
+    ];
+    for (const output of malformedRuntimeFailures) {
+        gate(runtimeFailureClassification(output) === null, "runtime_failure_self_test");
+        gate(classifyStageStart("runtime", 1, 0, output, startState({ExitCode: 1})) === "runtime_process_exit", "runtime_failure_self_test");
+    }
     const startClassifications = [
         ["unknown", 0, 0, "", startState(), "verifier_unknown"],
         ["runtime", -1, 0, "", startState(), "runtime_unknown"],
@@ -2581,9 +2679,8 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         ["runtime", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "cgroup operation not permitted"}), "runtime_state_error_cgroup"],
         ["verifier", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "AppArmor permission denied"}), "verifier_state_error_security"],
         ["runtime", 125, 0, "private daemon detail", startState({Status: "created", ExitCode: 128, Error: "private daemon detail"}), "runtime_state_error_unknown"],
-        ["runtime", 1, 0, RUNTIME_CASE_FAILURE, startState({ExitCode: 1}), "runtime_case_failed"],
-        ["runtime", 1, 0, RUNTIME_CASE_FAILURE.trimEnd(), startState({ExitCode: 1}), "runtime_process_exit"],
-        ["package_fetch", 1, 0, RUNTIME_CASE_FAILURE, startState({ExitCode: 1}), "package_fetch_process_exit"],
+        ["runtime", 1, 0, runtimeFailureToken("case_failed"), startState({ExitCode: 1}), "runtime_case_failed"],
+        ["package_fetch", 1, 0, runtimeFailureToken("case_failed"), startState({ExitCode: 1}), "package_fetch_process_exit"],
         ["runtime", 1, 124, "private output", "private state", "runtime_inspect_timeout"],
         ["runtime", 1, 137, "private output", "private state", "runtime_inspect_timeout"],
         ["runtime", 1, 1, "private output", "private state", "runtime_inspect_failed"],
@@ -2602,6 +2699,9 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const classifiedFailure = startContainerSource.indexOf('fail "$classification"');
     gate(startCapture >= 0 && stateInspect > startCapture && classifier > stateInspect && classifiedFailure > classifier, "container_start_source");
     gate(!launcher.includes('docker_checked "container_start"') && startContainerSource.includes('>"$output" 2>"$log"') && startContainerSource.includes('2>/dev/null') && !startContainerSource.includes("remove_container_checked"), "container_start_source");
+    gate(startContainerSource.includes('runtime_suffix="${classification#runtime_}"') && startContainerSource.includes('[[ "$runtime_suffix" =~ ^[a-z0-9_]{1,40}$ ]]') && startContainerSource.includes('[ "${#classification}" -le 64 ]'), "runtime_failure_source");
+    gate(!startContainerSource.includes("|runtime_case_failed") && !verifierSourceText.includes(["const RUNTIME", "CASE_FAILURE"].join("_")), "runtime_failure_source");
+    gate(launcher.includes(`printf '%s\\n' '${runtimeFailureToken("case_failed").trimEnd()}'`), "runtime_failure_source");
     const disposableSource = launcher.slice(launcher.indexOf("run_disposable() {"), launcher.indexOf("capture_expected_status IMAGE_PROBE_STATUS"));
     const disposableCreate = disposableSource.indexOf('create_container producer "$name"');
     const disposableStart = disposableSource.indexOf('start_container "$stage"');
