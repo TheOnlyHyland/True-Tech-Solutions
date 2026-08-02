@@ -187,10 +187,14 @@ receive the launcher-pinned literal `CI=true`, rather than a value inherited
 from the host, so pnpm remains noninteractive without a TTY. Both use pnpm's
 machine `ndjson` reporter redirected to private tmpfs files. On a nonzero exit,
 the verifier reads only regular, non-symlinked files bounded to
-1 MiB each, inspects only allowlisted root `code` or nested `err.code` values,
-and emits one canonical `true-family-pass-b0-pnpm-failure-v1` record. Unknown or
-malformed diagnostics become `pnpm_fetch_failed` or `pnpm_install_failed`; raw
-messages, paths, package names, and URLs are never emitted.
+1 MiB each and first inspects canonical root `code` or nested `err.code` values.
+Any single identifier matching exactly `ERR_PNPM_[A-Z0-9_]{1,40}` is emitted as
+a lowercase phase suffix. Structurally invalid NDJSON receives one bounded raw
+scan using ASCII token boundaries; one unique identifier is emitted, multiple
+identifiers become `multiple_codes`, and no identifier becomes only
+`diagnostic_empty`, `diagnostic_oversize`, `diagnostic_non_ndjson`, or
+`diagnostic_no_code`. Raw messages, paths, package names, URLs, hashes, counts,
+and timing are never emitted.
 Every package fetch, dependency fetch, install, extraction, and verifier container
 that writes a host bind output runs under the runner's captured numeric UID/GID,
 which must both be nonzero. No `nproc` limit is applied to these producers because

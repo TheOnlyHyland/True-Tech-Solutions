@@ -97,40 +97,20 @@ const VERIFIER_FAILURE_MAX_BYTES = 256;
 const PNPM_FAILURE_SCHEMA = "true-family-pass-b0-pnpm-failure-v1";
 const PNPM_DIAGNOSTIC_MAX_BYTES = 1024 * 1024;
 const PNPM_DIAGNOSTIC_LINE_MAX_BYTES = 64 * 1024;
-const PNPM_ERROR_CODES = Object.freeze([
-    "ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY",
-    "ERR_PNPM_BAD_PM_VERSION",
-    "ERR_PNPM_BROKEN_LOCKFILE",
-    "ERR_PNPM_CONFIG_CONFLICT",
-    "ERR_PNPM_DISK_FULL",
-    "ERR_PNPM_FETCH_401",
-    "ERR_PNPM_FETCH_403",
-    "ERR_PNPM_FETCH_404",
-    "ERR_PNPM_FETCHING_GIT_REPOSITORY",
-    "ERR_PNPM_FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE",
-    "ERR_PNPM_INCLUDED_DEPS_CONFLICT",
-    "ERR_PNPM_LOCKFILE_BREAKING_CHANGE",
-    "ERR_PNPM_LOCKFILE_CONFIG_MISMATCH",
-    "ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY",
-    "ERR_PNPM_META_FETCH_FAIL",
-    "ERR_PNPM_NO_MATCHING_VERSION",
-    "ERR_PNPM_NO_MATCHING_VERSION_INSIDE_WORKSPACE",
-    "ERR_PNPM_NO_OFFLINE_TARBALL",
-    "ERR_PNPM_OFFLINE_META_FETCH_FAIL",
-    "ERR_PNPM_OUTDATED_LOCKFILE",
-    "ERR_PNPM_PEER_DEP_ISSUES",
-    "ERR_PNPM_PREPARE_PACKAGE",
-    "ERR_PNPM_REGISTRIES_MISMATCH",
-    "ERR_PNPM_TARBALL_INTEGRITY",
-    "ERR_PNPM_UNEXPECTED_STORE",
-    "ERR_PNPM_UNSUPPORTED_ENGINE",
-    "ERR_PNPM_WORKSPACE_PKG_NOT_FOUND",
-]);
+const PNPM_ERROR_IDENTIFIER_PATTERN_TEXT = "^ERR_PNPM_[A-Z0-9_]{1,40}$";
+const PNPM_ERROR_IDENTIFIER_PATTERN = /^ERR_PNPM_[A-Z0-9_]{1,40}$/u;
+const PNPM_FAILURE_CODE_PATTERN_TEXT = "^pnpm_(fetch|install)_[a-z0-9_]{1,40}$";
 const PNPM_PHASES = Object.freeze(["fetch", "install"]);
-const PNPM_STAGE_FAILURE_CODES = Object.freeze(PNPM_PHASES.flatMap((phase) => [
-    `pnpm_${phase}_failed`,
-    ...PNPM_ERROR_CODES.map((code) => `pnpm_${phase}_${code.slice("ERR_PNPM_".length).toLowerCase()}`),
-]));
+const PNPM_NO_CODE_SUFFIXES = Object.freeze([
+    "diagnostic_empty",
+    "diagnostic_oversize",
+    "diagnostic_non_ndjson",
+    "diagnostic_no_code",
+]);
+const PNPM_FIXED_FAILURE_SUFFIXES = Object.freeze(["multiple_codes", ...PNPM_NO_CODE_SUFFIXES]);
+const PNPM_FIXED_STAGE_FAILURE_CODES = Object.freeze(PNPM_PHASES.flatMap((phase) => (
+    PNPM_FIXED_FAILURE_SUFFIXES.map((suffix) => `pnpm_${phase}_${suffix}`)
+)));
 const VERIFIER_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,54}$/u;
 const VERIFIER_MODE_FAILURE_CODES = Object.freeze({
     "--self-check": "self_check_failed",
@@ -265,87 +245,130 @@ function verifierFailureToken(code) {
     return token;
 }
 
-function allowedPnpmFailureCode(code) {
-    return code === "pnpm_failed" || PNPM_STAGE_FAILURE_CODES.includes(code);
+function allowedPnpmFailureCode(code, phase) {
+    if (typeof code !== "string" || code.length > 64) return false;
+    const match = /^pnpm_(fetch|install)_([a-z0-9_]{1,40})$/u.exec(code);
+    if (match === null || (phase !== undefined && match[1] !== phase)) return false;
+    return PNPM_FIXED_FAILURE_SUFFIXES.includes(match[2])
+        || PNPM_ERROR_IDENTIFIER_PATTERN.test(`ERR_PNPM_${match[2].toUpperCase()}`);
+}
+
+function pnpmFailureCode(phase, suffix) {
+    const code = `pnpm_${phase}_${suffix}`;
+    return allowedPnpmFailureCode(code, phase) ? code : "pnpm_fetch_diagnostic_non_ndjson";
 }
 
 function pnpmFailureToken(code) {
-    const safe = allowedPnpmFailureCode(code) ? code : "pnpm_failed";
+    const safe = allowedPnpmFailureCode(code) ? code : "pnpm_fetch_diagnostic_non_ndjson";
     return `${canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: safe})}\n`;
 }
 
 function parsePnpmNdjson(text, seenLines) {
-    gate(typeof text === "string" && Buffer.byteLength(text, "utf8") <= PNPM_DIAGNOSTIC_MAX_BYTES, "pnpm_diagnostic");
-    if (text === "") return [];
-    gate(!text.includes("\r"), "pnpm_diagnostic");
-    const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+    if (typeof text !== "string") return {status: "non_ndjson", codes: []};
+    if (Buffer.byteLength(text, "utf8") > PNPM_DIAGNOSTIC_MAX_BYTES) return {status: "oversize", codes: []};
+    if (text === "") return {status: "ok", codes: []};
+    if (text.includes("\r") || !text.endsWith("\n")) return {status: "non_ndjson", codes: []};
     const codes = [];
-    for (const line of lines) {
-        gate(line !== "" && Buffer.byteLength(line, "utf8") <= PNPM_DIAGNOSTIC_LINE_MAX_BYTES, "pnpm_diagnostic");
-        gate(!seenLines.has(line), "pnpm_diagnostic");
+    for (const line of text.slice(0, -1).split("\n")) {
+        if (line === "") return {status: "non_ndjson", codes: []};
+        if (Buffer.byteLength(line, "utf8") > PNPM_DIAGNOSTIC_LINE_MAX_BYTES) return {status: "oversize", codes: []};
+        if (seenLines.has(line)) return {status: "non_ndjson", codes: []};
         seenLines.add(line);
         let value;
         try {
             value = JSON.parse(line);
         } catch {
-            throw new VerifyError("pnpm_diagnostic");
+            return {status: "non_ndjson", codes: []};
         }
-        gate(value && typeof value === "object" && !Array.isArray(value) && JSON.stringify(value) === line, "pnpm_diagnostic");
+        if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(value) !== line) return {status: "non_ndjson", codes: []};
         if (Object.hasOwn(value, "code")) {
-            gate(typeof value.code === "string" && /^ERR_PNPM_[A-Z0-9_]+$/u.test(value.code), "pnpm_diagnostic");
-            codes.push(value.code);
+            if (typeof value.code !== "string") return {status: "non_ndjson", codes: []};
+            if (PNPM_ERROR_IDENTIFIER_PATTERN.test(value.code)) codes.push(value.code);
         }
         if (Object.hasOwn(value, "err") && value.err !== null) {
-            gate(typeof value.err === "object" && !Array.isArray(value.err), "pnpm_diagnostic");
+            if (typeof value.err !== "object" || Array.isArray(value.err)) return {status: "non_ndjson", codes: []};
             if (Object.hasOwn(value.err, "code")) {
-                gate(typeof value.err.code === "string" && /^ERR_PNPM_[A-Z0-9_]+$/u.test(value.err.code), "pnpm_diagnostic");
-                codes.push(value.err.code);
+                if (typeof value.err.code !== "string") return {status: "non_ndjson", codes: []};
+                if (PNPM_ERROR_IDENTIFIER_PATTERN.test(value.err.code)) codes.push(value.err.code);
             }
         }
+    }
+    return {status: "ok", codes};
+}
+
+function scanPnpmIdentifiers(text) {
+    const codes = [];
+    const pattern = /ERR_PNPM_[A-Z0-9_]{1,40}/gu;
+    const asciiWord = /[A-Za-z0-9_]/u;
+    for (const match of text.matchAll(pattern)) {
+        const before = match.index === 0 ? "" : text[match.index - 1];
+        const afterIndex = match.index + match[0].length;
+        const after = afterIndex === text.length ? "" : text[afterIndex];
+        if ((before !== "" && asciiWord.test(before)) || (after !== "" && asciiWord.test(after))) continue;
+        codes.push(match[0]);
     }
     return codes;
 }
 
+function classifyPnpmIdentifiers(phase, codes, emptySuffix) {
+    const unique = [...new Set(codes)];
+    if (unique.length > 1) return pnpmFailureCode(phase, "multiple_codes");
+    if (unique.length === 1) return pnpmFailureCode(phase, unique[0].slice("ERR_PNPM_".length).toLowerCase());
+    return pnpmFailureCode(phase, emptySuffix);
+}
+
 function classifyPnpmText(phase, stdoutText, stderrText) {
-    if (!PNPM_PHASES.includes(phase)) return "pnpm_failed";
-    const generic = `pnpm_${phase}_failed`;
-    try {
-        const seenLines = new Set();
-        const codes = [
-            ...parsePnpmNdjson(stdoutText, seenLines),
-            ...parsePnpmNdjson(stderrText, seenLines),
-        ];
-        const unique = [...new Set(codes)];
-        if (unique.length !== 1 || !PNPM_ERROR_CODES.includes(unique[0])) return generic;
-        return `pnpm_${phase}_${unique[0].slice("ERR_PNPM_".length).toLowerCase()}`;
-    } catch {
-        return generic;
+    if (!PNPM_PHASES.includes(phase)) return "pnpm_fetch_diagnostic_non_ndjson";
+    if (typeof stdoutText !== "string" || typeof stderrText !== "string") return pnpmFailureCode(phase, "diagnostic_non_ndjson");
+    if (Buffer.byteLength(stdoutText, "utf8") > PNPM_DIAGNOSTIC_MAX_BYTES || Buffer.byteLength(stderrText, "utf8") > PNPM_DIAGNOSTIC_MAX_BYTES) {
+        return pnpmFailureCode(phase, "diagnostic_oversize");
     }
+    if (stdoutText === "" && stderrText === "") return pnpmFailureCode(phase, "diagnostic_empty");
+    const seenLines = new Set();
+    const stdout = parsePnpmNdjson(stdoutText, seenLines);
+    const stderr = parsePnpmNdjson(stderrText, seenLines);
+    if (stdout.status === "ok" && stderr.status === "ok") {
+        return classifyPnpmIdentifiers(phase, [...stdout.codes, ...stderr.codes], "diagnostic_no_code");
+    }
+    const rawCodes = [...scanPnpmIdentifiers(stdoutText), ...scanPnpmIdentifiers(stderrText)];
+    if (rawCodes.length > 0) return classifyPnpmIdentifiers(phase, rawCodes, "diagnostic_non_ndjson");
+    const suffix = stdout.status === "oversize" || stderr.status === "oversize"
+        ? "diagnostic_oversize"
+        : "diagnostic_non_ndjson";
+    return pnpmFailureCode(phase, suffix);
 }
 
 function readPnpmDiagnosticFile(filePath, dependencies = {}) {
     const lstat = dependencies.lstatSync ?? fs.lstatSync;
     const readFile = dependencies.readFileSync ?? fs.readFileSync;
-    const metadata = lstat(filePath);
-    gate(metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1 && metadata.size <= PNPM_DIAGNOSTIC_MAX_BYTES, "pnpm_diagnostic");
-    const bytes = readFile(filePath);
-    gate(Buffer.isBuffer(bytes) && bytes.length === metadata.size && bytes.length <= PNPM_DIAGNOSTIC_MAX_BYTES, "pnpm_diagnostic");
-    const text = bytes.toString("utf8");
-    gate(Buffer.from(text, "utf8").equals(bytes), "pnpm_diagnostic");
-    return text;
+    try {
+        const metadata = lstat(filePath);
+        if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1 || !Number.isSafeInteger(metadata.size) || metadata.size < 0) {
+            return {status: "non_ndjson", text: ""};
+        }
+        if (metadata.size > PNPM_DIAGNOSTIC_MAX_BYTES) return {status: "oversize", text: ""};
+        const bytes = readFile(filePath);
+        if (!Buffer.isBuffer(bytes) || bytes.length !== metadata.size) return {status: "non_ndjson", text: ""};
+        if (bytes.length > PNPM_DIAGNOSTIC_MAX_BYTES) return {status: "oversize", text: ""};
+        const text = bytes.toString("utf8");
+        if (!Buffer.from(text, "utf8").equals(bytes)) return {status: "non_ndjson", text: ""};
+        return {status: "ok", text};
+    } catch {
+        return {status: "non_ndjson", text: ""};
+    }
 }
 
 function classifyPnpmFiles(phase, stdoutPath, stderrPath, dependencies = {}) {
-    if (!PNPM_PHASES.includes(phase)) return "pnpm_failed";
-    try {
-        return classifyPnpmText(
-            phase,
-            readPnpmDiagnosticFile(stdoutPath, dependencies),
-            readPnpmDiagnosticFile(stderrPath, dependencies),
-        );
-    } catch {
-        return `pnpm_${phase}_failed`;
+    if (!PNPM_PHASES.includes(phase)) return "pnpm_fetch_diagnostic_non_ndjson";
+    const stdout = readPnpmDiagnosticFile(stdoutPath, dependencies);
+    const stderr = readPnpmDiagnosticFile(stderrPath, dependencies);
+    if (stdout.status !== "ok" || stderr.status !== "ok") {
+        const suffix = stdout.status === "oversize" || stderr.status === "oversize"
+            ? "diagnostic_oversize"
+            : "diagnostic_non_ndjson";
+        return pnpmFailureCode(phase, suffix);
     }
+    return classifyPnpmText(phase, stdout.text, stderr.text);
 }
 
 function sha256Bytes(value) {
@@ -495,7 +518,14 @@ function validateManifest(manifest) {
         noninteractive_ci: true,
         original_exit_status_preserved: true,
         raw_output_emitted: false,
-        error_codes: PNPM_ERROR_CODES,
+        canonical_code_fields: ["code", "err.code"],
+        identifier_pattern: PNPM_ERROR_IDENTIFIER_PATTERN_TEXT,
+        failure_code_pattern: PNPM_FAILURE_CODE_PATTERN_TEXT,
+        raw_scan_on_structural_failure: true,
+        raw_scan_ascii_boundaries: true,
+        fixed_no_code_suffixes: PNPM_NO_CODE_SUFFIXES,
+        multiple_code_suffix: "multiple_codes",
+        failure_code_max_bytes: 64,
     }), "manifest_pnpm_diagnostic_policy");
     gate(same(manifest.container.start_diagnostics, {
         stages: ["package_fetch", "fetch", "install", "runtime", "verifier"],
@@ -506,7 +536,7 @@ function validateManifest(manifest) {
         known_process_failure_codes: [
             ...PACKAGE_DOWNLOAD_FAILURE_CODES.map((code) => `package_fetch_${code}`),
             ...VERIFIER_FAILURE_CODES.map((code) => `verifier_${code}`),
-            ...PNPM_STAGE_FAILURE_CODES,
+            ...PNPM_FIXED_STAGE_FAILURE_CODES,
             "runtime_case_failed",
         ],
         unknown_process_output_code: "<stage>_process_exit",
@@ -1455,7 +1485,7 @@ function pnpmFailureClassification(stage, output) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     if (!same(Object.keys(value).sort(), ["failure_code", "result", "schema"])) return null;
     if (value.schema !== PNPM_FAILURE_SCHEMA || value.result !== "fail") return null;
-    if (!PNPM_STAGE_FAILURE_CODES.includes(value.failure_code) || !value.failure_code.startsWith(`pnpm_${stage}_`)) return null;
+    if (!allowedPnpmFailureCode(value.failure_code, stage)) return null;
     return output === pnpmFailureToken(value.failure_code) ? value.failure_code : null;
 }
 
@@ -2263,8 +2293,8 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const commonFlags = shellArray("COMMON_FLAGS");
     const producerFlags = shellArray("PRODUCER_FLAGS");
     const runtimeFlags = shellArray("RUNTIME_FLAGS");
-    const pnpmFailureSuffixes = shellArray("PNPM_FAILURE_SUFFIXES").split("\n").map((line) => line.trim()).filter(Boolean);
-    gate(same(pnpmFailureSuffixes, ["failed", ...PNPM_ERROR_CODES.map((code) => code.slice("ERR_PNPM_".length).toLowerCase())]), "pnpm_classifier_source");
+    const pnpmFailureSuffixes = shellArray("PNPM_FIXED_FAILURE_SUFFIXES").split("\n").map((line) => line.trim()).filter(Boolean);
+    gate(same(pnpmFailureSuffixes, PNPM_FIXED_FAILURE_SUFFIXES), "pnpm_classifier_source");
     gate(commonFlags.includes("--pids-limit=64") && !commonFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(producerFlags.includes("--user=\"$HOST_UID:$HOST_GID\"") && !producerFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(runtimeFlags.includes("--user=65532:65532") && runtimeFlags.includes("--ulimit=nproc=64:64"), "nproc_policy_source");
@@ -2310,6 +2340,7 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(!launcher.includes("--reporter=silent") && (launcher.match(/--reporter=ndjson/gu) ?? []).length === 2, "pnpm_classifier_source");
     gate((launcher.match(/--classify-pnpm/gu) ?? []).length === 2, "pnpm_classifier_source");
     gate((launcher.match(/--env CI=true/gu) ?? []).length === 2, "pnpm_classifier_source");
+    gate(launcher.includes('[[ "$pnpm_suffix" =~ ^[a-z0-9_]{1,40}$ ]]') && launcher.includes('[ "${#classification}" -le 64 ]'), "pnpm_classifier_source");
     const selfCheckBranch = launcher.slice(launcher.indexOf('  "--self-check")'), launcher.indexOf('  "--shell-self-check")'));
     gate(selfCheckBranch.includes('node_bounded 25s "$VERIFIER" --self-check'), "static_self_check_source");
     for (const forbidden of ["docker", "RUNNER_TEMP", "mktemp", "ROOT="]) {
@@ -2402,18 +2433,47 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(classifyPnpmText("fetch", knownRootPnpm, "") === "pnpm_fetch_outdated_lockfile", "pnpm_classifier_self_test");
     gate(classifyPnpmText("install", "", knownNestedPnpm) === "pnpm_install_tarball_integrity", "pnpm_classifier_self_test");
     gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY"}), "") === "pnpm_fetch_aborted_remove_modules_dir_no_tty", "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_PRIVATE_UNKNOWN"}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", "{\n", "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
-    const privatePnpm = ndjson({level: "error", code: "ERR_PNPM_FETCH_404", path: "/private/path", message: "private\ncontrol", url: "https://private.invalid"});
+    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_FUTURE_123"}), "") === "pnpm_fetch_future_123", "pnpm_classifier_self_test");
+    const maximumPnpmIdentifier = `ERR_PNPM_${"A".repeat(40)}`;
+    gate(classifyPnpmText("install", ndjson({code: maximumPnpmIdentifier}), "") === `pnpm_install_${"a".repeat(40)}`, "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "", "") === "pnpm_fetch_diagnostic_empty", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({level: "error", message: "private"}), "") === "pnpm_fetch_diagnostic_no_code", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "{\n", "") === "pnpm_fetch_diagnostic_non_ndjson", "pnpm_classifier_self_test");
+    const privatePnpm = ndjson({
+        level: "error",
+        code: "ERR_PNPM_FETCH_404",
+        path: "/private/path",
+        message: "private\ncontrol",
+        package: "@private/package",
+        url: "https://private.invalid",
+        hash: "private-hash",
+        count: 42,
+        timing: 99,
+    });
     const privatePnpmCode = classifyPnpmText("fetch", privatePnpm, "");
-    gate(privatePnpmCode === "pnpm_fetch_fetch_404" && !pnpmFailureToken(privatePnpmCode).includes("private"), "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", knownRootPnpm + knownRootPnpm, "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", '{ "code": "ERR_PNPM_FETCH_404" }\n', "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", '{"code":"ERR_PNPM_FETCH_404","code":"ERR_PNPM_FETCH_404"}\n', "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_FETCH_404"}, {err: {code: "ERR_PNPM_TARBALL_INTEGRITY"}}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_/PRIVATE"}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", "x".repeat(PNPM_DIAGNOSTIC_MAX_BYTES + 1), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
-    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_FETCH_404", message: "x".repeat(PNPM_DIAGNOSTIC_LINE_MAX_BYTES)}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    const privatePnpmToken = pnpmFailureToken(privatePnpmCode);
+    gate(privatePnpmCode === "pnpm_fetch_fetch_404", "pnpm_classifier_self_test");
+    for (const forbidden of ["private", "package", "hash", "42", "99", "http", "/"]) gate(!privatePnpmToken.includes(forbidden), "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({path: "/private/ERR_PNPM_PATH_INJECTION", message: "ERR_PNPM_MESSAGE_INJECTION"}), "") === "pnpm_fetch_diagnostic_no_code", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "broken /private/ERR_PNPM_PATH_INJECTION?token=secret\n", "") === "pnpm_fetch_path_injection", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", knownRootPnpm + knownRootPnpm, "") === "pnpm_fetch_outdated_lockfile", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", '{ "code": "ERR_PNPM_FETCH_404" }\n', "") === "pnpm_fetch_fetch_404", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", '{"code":"ERR_PNPM_FETCH_404","code":"ERR_PNPM_FETCH_404"}\n', "") === "pnpm_fetch_fetch_404", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_FETCH_404"}, {err: {code: "ERR_PNPM_TARBALL_INTEGRITY"}}), "") === "pnpm_fetch_multiple_codes", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "ERR_PNPM_FETCH_404 ERR_PNPM_TARBALL_INTEGRITY\n", "") === "pnpm_fetch_multiple_codes", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "ERR_PNPM_FETCH_404 ERR_PNPM_FETCH_404\n", "") === "pnpm_fetch_fetch_404", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: "err_pnpm_lowercase"}), "") === "pnpm_fetch_diagnostic_no_code", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "err_pnpm_lowercase\n", "") === "pnpm_fetch_diagnostic_non_ndjson", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: `ERR_PNPM_${"A".repeat(41)}`}), "") === "pnpm_fetch_diagnostic_no_code", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", `ERR_PNPM_${"A".repeat(41)}\n`, "") === "pnpm_fetch_diagnostic_non_ndjson", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "XERR_PNPM_FETCH_404\n", "") === "pnpm_fetch_diagnostic_non_ndjson", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "ERR_PNPM_FETCH_404lower\n", "") === "pnpm_fetch_diagnostic_non_ndjson", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "ERR_PNPM_CON\u0000TROL\n", "") === "pnpm_fetch_con", "pnpm_classifier_self_test");
+    const controlledPnpm = classifyPnpmText("fetch", "\u0001ERR_PNPM_CONTROL_SAFE\u0002/private/path\n", "");
+    gate(controlledPnpm === "pnpm_fetch_control_safe" && !/[\u0000-\u001f/]/u.test(controlledPnpm), "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "x".repeat(PNPM_DIAGNOSTIC_MAX_BYTES + 1), "") === "pnpm_fetch_diagnostic_oversize", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({message: "x".repeat(PNPM_DIAGNOSTIC_LINE_MAX_BYTES)}), "") === "pnpm_fetch_diagnostic_oversize", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_FETCH_404", message: "x".repeat(PNPM_DIAGNOSTIC_LINE_MAX_BYTES)}), "") === "pnpm_fetch_fetch_404", "pnpm_classifier_self_test");
     const diagnosticFiles = new Map([
         ["stdout", Buffer.from(knownRootPnpm)],
         ["stderr", Buffer.alloc(0)],
@@ -2429,28 +2489,43 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(classifyPnpmFiles("fetch", "stdout", "stderr", {
         ...regularDiagnosticDependencies,
         lstatSync() { return {isFile: () => false, isSymbolicLink: () => true, nlink: 1, size: 1}; },
-    }) === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    }) === "pnpm_fetch_diagnostic_non_ndjson", "pnpm_classifier_self_test");
+    gate(classifyPnpmFiles("fetch", "stdout", "stderr", {
+        ...regularDiagnosticDependencies,
+        lstatSync() { return {isFile: () => true, isSymbolicLink: () => false, nlink: 2, size: 1}; },
+    }) === "pnpm_fetch_diagnostic_non_ndjson", "pnpm_classifier_self_test");
     gate(classifyPnpmFiles("install", "stdout", "stderr", {
         ...regularDiagnosticDependencies,
         lstatSync() { return {isFile: () => true, isSymbolicLink: () => false, nlink: 1, size: PNPM_DIAGNOSTIC_MAX_BYTES + 1}; },
-    }) === "pnpm_install_failed", "pnpm_classifier_self_test");
-    for (const code of PNPM_STAGE_FAILURE_CODES) {
+    }) === "pnpm_install_diagnostic_oversize", "pnpm_classifier_self_test");
+    for (const code of [
+        ...PNPM_FIXED_STAGE_FAILURE_CODES,
+        "pnpm_fetch_future_123",
+        `pnpm_install_${"a".repeat(40)}`,
+    ]) {
         const phase = code.startsWith("pnpm_fetch_") ? "fetch" : "install";
         const token = pnpmFailureToken(code);
+        gate(code.length <= 64 && Buffer.byteLength(token, "utf8") <= 256, "pnpm_classifier_self_test");
         gate(pnpmFailureClassification(phase, token) === code, "pnpm_classifier_self_test");
         gate(classifyStageStart(phase, 1, 0, token, startState({ExitCode: 1})) === code, "pnpm_classifier_self_test");
     }
+    for (const code of [
+        "pnpm_fetch_UPPERCASE",
+        `pnpm_fetch_${"a".repeat(41)}`,
+        "pnpm_fetch_private/path",
+        "pnpm_fetch_private\npath",
+    ]) gate(!allowedPnpmFailureCode(code), "pnpm_classifier_self_test");
     const malformedPnpmFailures = [
         "{",
-        pnpmFailureToken("pnpm_fetch_failed").trimEnd(),
-        `${pnpmFailureToken("pnpm_fetch_failed")}\n`,
-        JSON.stringify({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_failed"}) + "\n",
-        canonical({schema: "wrong", result: "fail", failure_code: "pnpm_fetch_failed"}) + "\n",
-        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_install_failed"}) + "\n",
+        pnpmFailureToken("pnpm_fetch_diagnostic_non_ndjson").trimEnd(),
+        `${pnpmFailureToken("pnpm_fetch_diagnostic_non_ndjson")}\n`,
+        JSON.stringify({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_diagnostic_non_ndjson"}) + "\n",
+        canonical({schema: "wrong", result: "fail", failure_code: "pnpm_fetch_diagnostic_non_ndjson"}) + "\n",
+        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_install_diagnostic_non_ndjson"}) + "\n",
         canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_/private/path"}) + "\n",
-        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_\nfailed"}) + "\n",
-        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_failed", path: "/private/path"}) + "\n",
-        '{"failure_code":"pnpm_fetch_failed","failure_code":"pnpm_fetch_failed","result":"fail","schema":"true-family-pass-b0-pnpm-failure-v1"}\n',
+        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_\ndiagnostic_no_code"}) + "\n",
+        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_diagnostic_no_code", path: "/private/path"}) + "\n",
+        '{"failure_code":"pnpm_fetch_diagnostic_no_code","failure_code":"pnpm_fetch_diagnostic_no_code","result":"fail","schema":"true-family-pass-b0-pnpm-failure-v1"}\n',
         "x".repeat(257),
     ];
     for (const output of malformedPnpmFailures) {
@@ -2598,7 +2673,7 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(packageFailure.status === 1 && packageFailure.stdout === packageDownloadFailureToken("download_arguments") && packageFailure.stderr === "", "package_download_self_test");
     gate(!packageFailure.stdout.includes(VERIFIER_FAILURE_SCHEMA) && packageFailure.stdout.split("\n").length === 2, "package_download_self_test");
     const pnpmFailure = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--classify-pnpm"], {encoding: "utf8"});
-    gate(pnpmFailure.status === 1 && pnpmFailure.stdout === pnpmFailureToken("pnpm_failed") && pnpmFailure.stderr === "", "pnpm_classifier_self_test");
+    gate(pnpmFailure.status === 1 && pnpmFailure.stdout === pnpmFailureToken("pnpm_fetch_diagnostic_non_ndjson") && pnpmFailure.stderr === "", "pnpm_classifier_self_test");
     gate(!pnpmFailure.stdout.includes(VERIFIER_FAILURE_SCHEMA) && pnpmFailure.stdout.split("\n").length === 2, "pnpm_classifier_self_test");
     const timeoutResult = spawnSync("timeout", ["0.1s", process.execPath, "-e", "setTimeout(()=>{}, 10000)"], {stdio: "ignore"});
     gate(timeoutResult.status === 124, "timeout_self_test");
@@ -2635,7 +2710,7 @@ async function main() {
         return;
     }
     if (mode === "--classify-pnpm") {
-        const code = args.length === 3 ? classifyPnpmFiles(...args) : "pnpm_failed";
+        const code = args.length === 3 ? classifyPnpmFiles(...args) : "pnpm_fetch_diagnostic_non_ndjson";
         process.stdout.write(pnpmFailureToken(code));
         process.exitCode = 1;
         return;
