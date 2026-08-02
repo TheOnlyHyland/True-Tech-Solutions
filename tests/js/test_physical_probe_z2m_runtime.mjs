@@ -172,6 +172,13 @@ function validateManifest(manifest) {
     gate(same(manifest.trust_boundary, TRUST_BOUNDARY), "manifest_trust_boundary");
     gate(manifest.container.image === "docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8", "manifest_image");
     gate(manifest.container.platform === "linux/amd64" && manifest.container.fetch_host_allowlist_enforced === false, "manifest_container");
+    gate(same(manifest.container.log_policy, {
+        driver: "local",
+        options: {"max-file": "1", "max-size": "1m"},
+        attach_required: true,
+        uploaded_artifacts: false,
+        containers_removed_before_pass: true,
+    }), "manifest_log_policy");
     gate(manifest.runtime.node.version === "20.19.2" && manifest.runtime.zigbee2mqtt.version === "2.12.1", "manifest_runtime");
     gate(manifest.runtime.zigbee_herdsman.version === "10.6.1" && manifest.runtime.zigbee_herdsman_converters.version === "26.76.0", "manifest_runtime");
     gate(manifest.expected.closure_package_count === 148, "manifest_closure");

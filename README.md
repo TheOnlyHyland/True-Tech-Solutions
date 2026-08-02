@@ -200,6 +200,12 @@ the full Controller, connect MQTT, construct/start Zigbee or herdsman, open
 serial/radio devices, or use Home Assistant. Device and endpoint behavior remains
 synthetic.
 
+Every attached container uses Docker's `local` log driver with exact
+`max-size=1m` and `max-file=1` bounds. Attached stdout and stderr are redirected
+only to private temporary files; no PASS B0 logs or evidence are uploaded as
+workflow artifacts. Each container is removed immediately after its bounded use,
+and label-based container and network cleanup is verified before pass output.
+
 The raw extension source is necessarily seen inside the process through
 Zigbee2MQTT's in-memory retained inventory. It is not emitted in CI or final
 evidence, and no broker delivery is exercised or claimed.

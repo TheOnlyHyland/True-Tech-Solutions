@@ -17,6 +17,16 @@
     "platform": "linux/amd64",
     "producer_user": "host-runner-numeric-nonroot",
     "runtime_user": "65532:65532",
+    "log_policy": {
+      "driver": "local",
+      "options": {
+        "max-file": "1",
+        "max-size": "1m"
+      },
+      "attach_required": true,
+      "uploaded_artifacts": false,
+      "containers_removed_before_pass": true
+    },
     "fetch_host_allowlist_enforced": false,
     "explicit_fetch_targets": [
       "registry.npmjs.org",
@@ -80,9 +90,9 @@
   },
   "verifier": {
     "launcher_normalization": "sha256 of launcher UTF-8 bytes after replacing only EXPECTED_LAUNCHER_SHA256=\"<64 lowercase hex>\" with the same assignment containing 64 zeroes",
-    "launcher_normalized_sha256": "5cddc4f2dbce67470fa94d40cefaea2f647694f8c6e82376ccf3c7ebf6b145dd",
-    "harness_sha256": "2d42a841c36e7649dde97cf9a4973c5bf82ae7f9cf3bf212a72e29b6dc5945da",
-    "verifier_sha256": "7dfb60773862a56de44c7ae7b22e9369a1540b4a4894b41127d39b6a38c9b40d"
+    "launcher_normalized_sha256": "7f6d3273896cc5bdff8d634bd08942a82a7af5bdc1ca9ee96e809486c7bb796d",
+    "harness_sha256": "75bdd85b6dca7aba73e57a2b4a3ea2ffb434feb4dc57e9e4045af94f251eb8bd",
+    "verifier_sha256": "166ea0c66526ce4b48b287cff6ea9361ba829e12a7dccb2780cf71c6d23207a6"
   },
   "test_scope": {
     "cases": [

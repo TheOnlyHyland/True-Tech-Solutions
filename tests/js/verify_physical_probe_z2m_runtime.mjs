@@ -219,6 +219,7 @@ function validateManifest(manifest) {
         "platform",
         "producer_user",
         "runtime_user",
+        "log_policy",
         "fetch_host_allowlist_enforced",
         "explicit_fetch_targets",
         "limits",
@@ -226,6 +227,13 @@ function validateManifest(manifest) {
     gate(manifest.container.image === IMAGE && manifest.container.index_reference_sha256 === IMAGE_INDEX, "manifest_image");
     gate(manifest.container.platform === "linux/amd64" && manifest.container.fetch_host_allowlist_enforced === false, "manifest_platform");
     gate(manifest.container.producer_user === "host-runner-numeric-nonroot" && manifest.container.runtime_user === "65532:65532", "manifest_users");
+    gate(same(manifest.container.log_policy, {
+        driver: "local",
+        options: {"max-file": "1", "max-size": "1m"},
+        attach_required: true,
+        uploaded_artifacts: false,
+        containers_removed_before_pass: true,
+    }), "manifest_log_policy");
     gate(same(manifest.container.explicit_fetch_targets, ["registry.npmjs.org", "github.com"]), "manifest_fetch_targets");
     gate(same(manifest.container.limits, {
         memory_bytes: 805306368,
@@ -869,6 +877,13 @@ function validateRaw(raw, manifest, stage) {
     gate(same(raw.claim_limits, CLAIM_LIMITS) && same(raw.claim_limits, manifest.evidence.claim_limits), "raw_claim_limits");
 }
 
+function validateAttachLogConfig(logConfig) {
+    gate(same(logConfig, {
+        Type: "local",
+        Config: {"max-file": "1", "max-size": "1m"},
+    }), "inspect_log_policy");
+}
+
 function validateInspect(inspect, manifest) {
     gate(Array.isArray(inspect) && inspect.length === 1, "inspect_shape");
     const item = inspect[0];
@@ -884,7 +899,8 @@ function validateInspect(inspect, manifest) {
     gate(host.PidsLimit === 64 && host.Memory === 805306368 && host.MemorySwap === 805306368 && host.NanoCpus === 1000000000, "inspect_limits");
     const ulimits = Object.fromEntries((host.Ulimits ?? []).map((item) => [item.Name, [item.Soft, item.Hard]]));
     gate(same(ulimits, {core: [0, 0], fsize: [268435456, 268435456], nofile: [1024, 1024], nproc: [64, 64]}), "inspect_ulimits");
-    gate(host.Init === true && host.LogConfig?.Type === "none", "inspect_process");
+    gate(host.Init === true, "inspect_process");
+    validateAttachLogConfig(host.LogConfig);
     gate(Array.isArray(host.CapDrop) && host.CapDrop.map((item) => item.toUpperCase()).includes("ALL"), "inspect_caps");
     gate(!host.CapAdd || host.CapAdd.length === 0, "inspect_caps");
     gate(Array.isArray(host.SecurityOpt) && host.SecurityOpt.some((item) => item === "no-new-privileges" || item === "no-new-privileges:true"), "inspect_nnp");
@@ -1417,6 +1433,25 @@ async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
     const launcher = fs.readFileSync(launcherPath, "utf8");
     const original = normalizedLauncherDigestBytes(launcher).digest;
     gate(normalizedLauncherDigestBytes(`${launcher}\n# mutation\n`).digest !== original, "launcher_mutation_self_test");
+    const exactLogFlags = "LOG_FLAGS=(\n  --log-driver=local\n  --log-opt=max-size=1m\n  --log-opt=max-file=1\n)";
+    gate(launcher.includes(exactLogFlags) && !launcher.includes("--log-driver=none"), "attach_log_policy_source");
+    gate((launcher.match(/\$\{LOG_FLAGS\[@\]\}/gu) ?? []).length === 3, "attach_log_policy_source");
+    gate((launcher.match(/start -a/gu) ?? []).length === 3, "attach_log_policy_source");
+    validateAttachLogConfig({Type: "local", Config: {"max-file": "1", "max-size": "1m"}});
+    for (const invalidLogConfig of [
+        {Type: "none", Config: {}},
+        {Type: "local", Config: {"max-file": "1", "max-size": "2m"}},
+        {Type: "local", Config: {"max-file": "2", "max-size": "1m"}},
+        {Type: "local", Config: {"max-file": "1", "max-size": "1m", extra: "true"}},
+    ]) {
+        let rejected = false;
+        try {
+            validateAttachLogConfig(invalidLogConfig);
+        } catch (error) {
+            rejected = error instanceof VerifyError;
+        }
+        gate(rejected, "attach_log_policy_self_test");
+    }
     const launcherLines = launcher.split("\n");
     for (let index = 0; index < launcherLines.length; index += 1) {
         if (launcherLines[index].trim() !== "set +e") continue;

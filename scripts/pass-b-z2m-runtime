@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="5cddc4f2dbce67470fa94d40cefaea2f647694f8c6e82376ccf3c7ebf6b145dd"
+EXPECTED_LAUNCHER_SHA256="7f6d3273896cc5bdff8d634bd08942a82a7af5bdc1ca9ee96e809486c7bb796d"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -21,6 +21,11 @@ FULL_RUN_SECONDS=2040
 ACTIVE_FAILURE_CODE="launcher_failure"
 declare -a CONTAINERS=()
 declare -a NETWORKS=()
+LOG_FLAGS=(
+  --log-driver=local
+  --log-opt=max-size=1m
+  --log-opt=max-file=1
+)
 
 emit_failure() {
   local code="$1"
@@ -457,7 +462,7 @@ permission_self_check() {
     --ulimit=nproc=16:16 \
     --ipc=private \
     --cgroupns=private \
-    --log-driver=none \
+    "${LOG_FLAGS[@]}" \
     --init \
     --user="$HOST_UID:$HOST_GID" \
     --restart=no \
@@ -496,7 +501,7 @@ permission_self_check() {
     --ulimit=nproc=16:16 \
     --ipc=private \
     --cgroupns=private \
-    --log-driver=none \
+    "${LOG_FLAGS[@]}" \
     --init \
     --user=65532:65532 \
     --restart=no \
@@ -675,7 +680,7 @@ COMMON_FLAGS=(
   --ulimit=nproc=64:64
   --ipc=private
   --cgroupns=private
-  --log-driver=none
+  "${LOG_FLAGS[@]}"
   --init
   --restart=no
 )
