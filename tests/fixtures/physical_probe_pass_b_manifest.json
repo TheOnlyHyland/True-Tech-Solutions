@@ -1,0 +1,162 @@
+{
+  "schema": "true-family-pass-b0-manifest-v2",
+  "manifest_version": 2,
+  "pass": "B0",
+  "classification": "ci-only-non-authoritative-reviewed-source-smoke",
+  "authoritative": false,
+  "trust_boundary": {
+    "same_repo_reviewed_source": true,
+    "malicious_source_resistant": false,
+    "independently_attested": false,
+    "branch_protected_evidence": false,
+    "cryptographically_unforgeable": false
+  },
+  "container": {
+    "image": "docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8",
+    "index_reference_sha256": "sha256:7cd3fbc830c75c92256fe1122002add9a1c025831af8770cd0bf8e45688ef661",
+    "platform": "linux/amd64",
+    "producer_user": "host-runner-numeric-nonroot",
+    "runtime_user": "65532:65532",
+    "fetch_host_allowlist_enforced": false,
+    "explicit_fetch_targets": [
+      "registry.npmjs.org",
+      "github.com"
+    ],
+    "limits": {
+      "memory_bytes": 805306368,
+      "memory_swap_bytes": 805306368,
+      "nano_cpus": 1000000000,
+      "pids": 64,
+      "nofile": 1024,
+      "nproc": 64,
+      "fsize_bytes": 268435456,
+      "full_run_seconds": 2040,
+      "workflow_timeout_minutes": 45,
+      "runtime_seconds": 240,
+      "raw_output_bytes": 32768
+    }
+  },
+  "runtime": {
+    "node": {
+      "version": "20.19.2"
+    },
+    "zigbee2mqtt": {
+      "version": "2.12.1",
+      "npm_integrity": "sha512-OucrVP2raFmMEKK+4r7qHOSamAmaM4WI0WYLbLRhZ1s73frVDcppzD/6BHGPWFIalJrxGrdKHYSbRmpQqLUt5w==",
+      "compressed_size": 349915
+    },
+    "zigbee_herdsman": {
+      "version": "10.6.1",
+      "npm_integrity": "sha512-BXy2jai1R6OkJ7gWFwS8J6vKJ7Mm+vfReDcuN+IPCmHdT65oiaZ6oZDY/thjG7ePMHD2m0YD8AZvi7o5LBNPpQ=="
+    },
+    "zigbee_herdsman_converters": {
+      "version": "26.76.0",
+      "npm_integrity": "sha512-JSgW/9Yn5xdfUHvyXunKSqoPk7w6wY+0OEzOiqBs/hr67o9YSXKc4joUr/dbRMXJcv7fNlDNDRvIDS41b2758Q=="
+    },
+    "pnpm": {
+      "version": "10.18.3",
+      "npm_integrity": "sha512-u9FubXKG/X4B9rPAs8kyzaKWXAapCDKPdGY/EKmupR8RKe6mFRNL+ZKDGwCeq+Fn7LcAi1l/QP+bx1lGqt+wjQ==",
+      "compressed_size": 4155290
+    }
+  },
+  "upstream": {
+    "repository": "Koenkk/zigbee2mqtt",
+    "commit": "aa909a8a62f76e2dd98ace3a172bca88ee56f5fe",
+    "tree": "fd134890cc89e628caa48f6f235862b0bfe40c45",
+    "package_json_sha256": "c9b0593136090da7aad27aeea97afbffc11de0c23f8717281ced2d9f95045323",
+    "pnpm_lock_sha256": "b432429b5c07e0824e52d23b3186c181f4904ec6a288232b71a07c20446a32f6",
+    "identity_claim": "exact-content-only-not-signature-or-provenance"
+  },
+  "artifact": {
+    "filename": "true_family_brt_probe.mjs",
+    "class_name": "TrueFamilyBrtProbeExtension",
+    "byte_length": 164691,
+    "sha256": "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1"
+  },
+  "expected": {
+    "closure_package_count": 148,
+    "closure_sha256": "de77c8dea2c3a531c3af9331147426d708ad83435072aa4aec228cdcf10c9e52",
+    "dist_sha256": "b69100d9ec7992eb47ee756d4cbaf540996e30e12b24b8dbb348c05356c72ff2"
+  },
+  "verifier": {
+    "launcher_normalization": "sha256 of launcher UTF-8 bytes after replacing only EXPECTED_LAUNCHER_SHA256=\"<64 lowercase hex>\" with the same assignment containing 64 zeroes",
+    "launcher_normalized_sha256": "5cddc4f2dbce67470fa94d40cefaea2f647694f8c6e82376ccf3c7ebf6b145dd",
+    "harness_sha256": "2d42a841c36e7649dde97cf9a4973c5bf82ae7f9cf3bf212a72e29b6dc5945da",
+    "verifier_sha256": "7dfb60773862a56de44c7ae7b22e9369a1540b4a4894b41127d39b6a38c9b40d"
+  },
+  "test_scope": {
+    "cases": [
+      "input",
+      "cold",
+      "prearm",
+      "armed",
+      "control_rename",
+      "control_group",
+      "collision",
+      "stop_remove"
+    ],
+    "same_repo_reviewed_source_trusted": true,
+    "malicious_source_resistant": false,
+    "full_controller_lifecycle": false,
+    "fetch_host_allowlist_enforced": false
+  },
+  "prohibited": {
+    "guarded_surfaces": [
+      "node_child_process",
+      "node_dgram",
+      "node_http",
+      "node_https",
+      "node_net",
+      "node_tls",
+      "mqtt_connect_subscribe_unsubscribe",
+      "controller_start",
+      "zigbee_start"
+    ],
+    "static_not_used_surfaces": [
+      "controller_constructor",
+      "controller_full_start_stop",
+      "mqtt_positive_connect_path",
+      "zigbee_constructor",
+      "zigbee_herdsman_controller",
+      "serial_open"
+    ],
+    "containment_only_surfaces": [
+      "home_assistant",
+      "household_mqtt",
+      "coordinator",
+      "serial_usb_radio",
+      "docker_socket",
+      "host_devices"
+    ]
+  },
+  "evidence": {
+    "raw_schema": "true-family-pass-b0-runtime-raw-v2",
+    "final_schema": "true-family-pass-b0-smoke-v2",
+    "failure_schema": "true-family-pass-b0-launcher-failure-v2",
+    "max_raw_bytes": 32768,
+    "raw_source_seen_in_process_retained_inventory": true,
+    "raw_source_emitted_to_ci_evidence": false,
+    "broker_delivery_exercised": false,
+    "comparison_scope": "normalized-verifier-output-only",
+    "raw_runtime_bytes_reproducible": false,
+    "claim_limits": [
+      "same_repo_reviewed_source_trusted",
+      "malicious_source_resistance_not_proven",
+      "independent_attestation_not_proven",
+      "branch_protection_not_proven",
+      "full_controller_lifecycle_not_exercised",
+      "runtime_collision_enforcement_not_proven",
+      "callback_registry_cleanup_not_proven",
+      "broker_not_exercised",
+      "broker_delivery_not_proven",
+      "acl_not_proven",
+      "radio_not_exercised",
+      "coordinator_not_exercised",
+      "physical_provenance_not_proven",
+      "actual_spare_not_exercised",
+      "fetch_host_allowlist_not_enforced",
+      "runtime_byte_reproducibility_not_claimed",
+      "syscall_tracing_not_performed"
+    ]
+  }
+}

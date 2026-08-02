@@ -48,6 +48,16 @@ below is unreleased, unwired, and absent from that installed release.
   canonicalization, digest, request, record, result, and frame vectors.
 - `tests/fixtures/physical_probe_preflight_vectors.json`: canonical good
   deployment, pre-arm, request, report, and permit-candidate digests.
+- `tests/fixtures/physical_probe_pass_b_manifest.json`: exact non-authoritative
+  PASS B0 container, package, verifier, limit, and claim contract.
+- `tests/js/test_physical_probe_z2m_runtime.mjs`: brokerless real-loader smoke
+  cases for the disposable runtime container.
+- `tests/js/verify_physical_probe_z2m_runtime.mjs`: strict tar, binding, Docker
+  inspect, sanitizer, and canonical evidence verifier.
+- `scripts/pass-b-z2m-runtime`: Docker-only two-pass CI orchestrator; normal
+  execution deliberately fails when Docker or the amd64 CI runner is absent.
+- `.github/workflows/pass-b0-runtime.yaml`: main-branch-only non-authoritative
+  PASS B0 smoke workflow.
 - `custom_components/true_family/reference_projection.py`: strict semantic
   entity-reference projection for scalar fields and allowlisted Jinja helpers.
 - `custom_components/true_family/reference_journal_remote.py`: signed client for
@@ -133,6 +143,90 @@ passes 610 Home Assistant runtime tests, 300 pure Python protocol, persistence,
 deployment-preflight, release, and static contract tests, and 130 zero-dependency
 Node tests, for 1,040 total.
 
+### PASS B0 CI-Only Runtime Smoke
+
+PASS B0 is implemented as a same-repository, reviewed-source, non-authoritative
+GitHub Actions smoke gate in `.github/workflows/pass-b0-runtime.yaml`. It is not
+malicious-source-resistant, independently attested, branch-protection evidence,
+or an authorization input. No successful CI run is recorded here yet, so there is
+no dated result or current evidence digest. Those may be added only after the
+actual `ubuntu-24.04` workflow completes successfully.
+
+The gate pins the Linux amd64 child image to
+`docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8`.
+The multi-platform index digest
+`sha256:7cd3fbc830c75c92256fe1122002add9a1c025831af8770cd0bf8e45688ef661`
+is recorded only as a reference and is not the pulled child identity. The gate
+performs two fresh acquisition, offline-install, and runtime passes, then requires
+byte-identical normalized verifier output. This is not runtime-byte
+reproducibility: raw journals, boot IDs, command sequences, and other private
+runtime bytes may differ. The expected 148-package closure digest is
+`de77c8dea2c3a531c3af9331147426d708ad83435072aa4aec228cdcf10c9e52`, and the
+published Zigbee2MQTT `dist` digest is
+`b69100d9ec7992eb47ee756d4cbaf540996e30e12b24b8dbb348c05356c72ff2`.
+These are content checks, not provenance or signature claims. The exact Git
+commit and tree establish content identity only; the gate does not verify a Git
+signature or independent build provenance.
+
+`npm pack` and the downloaded verified pnpm program execute only in disposable
+containers. pnpm fetch has network access and receives only the exact upstream
+package and lock inputs. Every fetch, install, extraction, and verifier container
+that writes a host bind output runs under the runner's captured numeric UID/GID,
+which must both be nonzero. Installation copies the sealed upstream inputs into a
+mode-`0700` writable `/work` tree, recursively normalizes regular files to
+mode `0600`, verifies the copied package is writable, and verifies the read-only
+source snapshot did not change. A separate install uses a copied store with
+Docker networking disabled, lifecycle scripts disabled, and the exact frozen
+lock. The fetch commands explicitly target `registry.npmjs.org` and GitHub, but
+Docker's default egress is used: `fetch_host_allowlist_enforced` is deliberately
+`false`. This smoke gate does not prove host-level destination filtering. The
+separately downloaded zigbee-herdsman and zigbee-herdsman-converters tarballs
+provide only independent direct-pin SRI evidence; the installed production
+closure comes from the exact lock file in the pinned Git tree.
+
+The runtime container remains the distinct numeric UID/GID `65532:65532`. It is
+networkless, read-only, non-root, capability-free, resource-bounded, and receives
+only read-only input mounts plus private tmpfs data and temporary directories.
+Immutable mount directories are mode `0555` and their files are mode `0444`,
+except the read-only runner which is mode `0555`. Ownership, traversal,
+readability, and nonwritability are asserted before mounting. Docker-backed
+self-check additionally has the host-UID producer create an output and proves
+UID 65532 can read but cannot modify its sealed result. Dedicated writable work,
+output, and store trees contain no verifier source. It exercises the real
+Zigbee2MQTT EventBus,
+disconnected Mqtt object, ExternalExtensions/ExternalJS loader, and only the
+Controller add/remove/get/enable API shell. It does not construct, start, or stop
+the full Controller, connect MQTT, construct/start Zigbee or herdsman, open
+serial/radio devices, or use Home Assistant. Device and endpoint behavior remains
+synthetic.
+
+The raw extension source is necessarily seen inside the process through
+Zigbee2MQTT's in-memory retained inventory. It is not emitted in CI or final
+evidence, and no broker delivery is exercised or claimed.
+
+The duplicate-source case intentionally records that the test preflight rejects
+the byte-identical collision while the real loader sequentially replaces the same
+class. The real EventEmitter functions are measured as removed on stop, but
+EventBus bookkeeping retains the four same-class callback records; after the
+sequential replacement it contains eight records under the shared class key.
+Callback-registry cleanup and runtime collision enforcement are therefore
+explicitly not proven, and no authority is granted. The gate also does not prove
+a broker, ACL enforcement, retained replay, physical frame provenance,
+coordinator or radio ordering, actual-spare behavior, external permit authority,
+or the single-writer fence. Even a successful CI result remains smoke evidence
+only.
+
+Every Docker info, image, create, start, inspect, removal, network, and cleanup
+query has an explicit timeout and fixed failure classification. The launcher has
+a 2,040-second full-run watchdog, while the workflow allows 45 minutes so bounded
+cleanup can complete and report failures without being killed by the runner.
+
+The HAOS development host has no Docker and is not an amd64 GitHub runner. Normal
+local execution therefore exits before network or temporary-file creation with a
+fixed `inherited_environment`, `docker_required`, or `ci_runner_required` result;
+it never falls back to unshare, DAC permissions, or Landlock. Local validation
+is limited to `scripts/pass-b-z2m-runtime --self-check` and static project tests.
+
 The physical-probe source is offline and unwired: integration setup does not
 import or register it, and this project contains no automatic external-extension
 deployment, save, or removal path. The pure preflight module validates only
@@ -198,8 +292,9 @@ Endpoint timeout. Before every request resolution, command, and acknowledgement,
 the selected endpoint and every available endpoint on the candidate device must
 expose `hasPendingRequests()` and report an empty queue. This is read-only: the
 probe never clears or mutates herdsman queues. Immediate send, disabled recovery,
-and empty queues are necessary but do not prove final adapter/radio ordering;
-that still requires the pinned runtime harness and actual-spare physical proof.
+and empty queues are necessary but do not prove final adapter/radio ordering. The
+CI-only PASS B0 smoke cannot establish that ordering; it still requires a future
+authoritative broker/coordinator harness and actual-spare physical proof.
 
 The writer monitor deliberately covers the exact candidate friendly-name and IEEE
 publish subtrees more broadly than Zigbee2MQTT's documented aliases. It recognizes
@@ -349,10 +444,11 @@ real candidate-alias ownership, obtains authoritative broker/lifecycle evidence,
 and continuously holds the external fence lease. Two point-in-time mappings do
 not acquire or hold a lease. Actual broker ACL
 installation and read-back, atomic permit consumption, cross-instance lifecycle
-enforcement, retained-source privacy proof, deployment/removal workflow, pinned
-runtime disposable harness, final adapter/radio ordering, and actual-spare
-physical bench proof all remain blocked. These offline reports do not establish
-bench or deployment readiness.
+enforcement, retained-source privacy proof, deployment/removal workflow, an
+authoritative full-runtime harness, final adapter/radio ordering, and actual-spare
+physical bench proof all remain blocked. PASS B0 provides only a CI smoke of the
+reviewed loader/adapter shell and does not satisfy any of these gates. These
+offline reports do not establish bench or deployment readiness.
 
 ## Preview Frontend
 

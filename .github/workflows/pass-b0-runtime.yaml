@@ -1,0 +1,71 @@
+name: Non-Authoritative PASS B0 Runtime Smoke
+
+# This is a same-repository reviewed-source smoke gate. It is not independent,
+# authoritative, malicious-source-resistant, or physical-device evidence.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/pass-b0-runtime.yaml
+      - scripts/pass-b-z2m-runtime
+      - tests/js/test_physical_probe_z2m_runtime.mjs
+      - tests/js/verify_physical_probe_z2m_runtime.mjs
+      - tests/fixtures/physical_probe_pass_b_manifest.json
+      - tests/fixtures/physical_probe_preflight_vectors.json
+      - custom_components/true_family/probe/true_family_brt_probe.mjs
+      - custom_components/true_family/probe/true_family_brt_probe.manifest.json
+      - README.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pass-b0-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pass-b0-smoke:
+    name: CI-only non-authoritative PASS B0 smoke
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out reviewed source without credentials
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate static syntax and contracts
+        shell: bash
+        run: |
+          bash -n scripts/pass-b-z2m-runtime
+          node --check tests/js/test_physical_probe_z2m_runtime.mjs
+          node --check tests/js/verify_physical_probe_z2m_runtime.mjs
+          jq -e 'type == "object"' tests/fixtures/physical_probe_pass_b_manifest.json >/dev/null
+          yq -e 'type == "!!map"' .github/workflows/pass-b0-runtime.yaml >/dev/null
+
+      - name: Validate hashes, adversarial vectors, and mount readability
+        shell: bash
+        run: |
+          env -i \
+            PATH="$PATH" \
+            scripts/pass-b-z2m-runtime --shell-self-check >/dev/null
+          exec env -i \
+            PATH="$PATH" \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            CI="true" \
+            GITHUB_REF="$GITHUB_REF" \
+            scripts/pass-b-z2m-runtime --self-check >/dev/null
+
+      - name: Run the sanitized disposable-container smoke gate
+        shell: bash
+        run: |
+          exec env -i \
+            PATH="$PATH" \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            CI="true" \
+            GITHUB_REF="$GITHUB_REF" \
+            scripts/pass-b-z2m-runtime

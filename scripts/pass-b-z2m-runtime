@@ -1,0 +1,1233 @@
+#!/bin/bash
+set -Eeuo pipefail
+umask 077
+
+# CI-only same-repository reviewed-source smoke. This launcher deliberately does
+# not produce authoritative, independently attested, or malicious-source-resistant evidence.
+
+EXPECTED_LAUNCHER_SHA256="5cddc4f2dbce67470fa94d40cefaea2f647694f8c6e82376ccf3c7ebf6b145dd"
+FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
+IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
+PLATFORM="linux/amd64"
+ROOT=""
+RUN_TOKEN=""
+WATCHDOG_PID=""
+FAILURE_EMITTED="false"
+HOST_UID=""
+HOST_GID=""
+DEADLINE_ACTIVE="false"
+RUN_START_SECONDS=0
+FULL_RUN_SECONDS=2040
+ACTIVE_FAILURE_CODE="launcher_failure"
+declare -a CONTAINERS=()
+declare -a NETWORKS=()
+
+emit_failure() {
+  local code="$1"
+  [[ "$code" =~ ^[a-z0-9_]{1,64}$ ]] || code="launcher_failure"
+  printf '{"failure_code":"%s","result":"fail","schema":"%s"}\n' "$code" "$FAILURE_SCHEMA"
+}
+
+close_fds_exec() (
+  local descriptor
+  for descriptor_path in "/proc/$BASHPID/fd/"*; do
+    descriptor="${descriptor_path##*/}"
+    if [[ "$descriptor" =~ ^[0-9]+$ ]] && [ "$descriptor" -gt 2 ]; then
+      eval "exec ${descriptor}>&-"
+    fi
+  done
+  exec "$@"
+)
+
+docker_bounded() {
+  local seconds="$1"
+  local requested remaining
+  shift
+  requested="${seconds%s}"
+  [[ "$requested" =~ ^[0-9]+$ ]] || return 2
+  if [ "$DEADLINE_ACTIVE" = "true" ]; then
+    remaining=$((FULL_RUN_SECONDS - (SECONDS - RUN_START_SECONDS)))
+    if [ "$remaining" -le 0 ]; then
+      return 124
+    fi
+    if [ "$requested" -gt "$remaining" ]; then
+      seconds="${remaining}s"
+    fi
+  fi
+  close_fds_exec timeout --foreground --signal=TERM --kill-after=10s "$seconds" \
+    env -i \
+      PATH="$PATH" \
+      HOME="$ROOT/docker-home" \
+      DOCKER_CONFIG="$ROOT/docker-config" \
+      LANG="C.UTF-8" \
+      LC_ALL="C.UTF-8" \
+      docker "$@"
+}
+
+docker_info_pre_root() {
+  close_fds_exec timeout --foreground --signal=TERM --kill-after=5s 15s \
+    env -i PATH="$PATH" LANG="C.UTF-8" LC_ALL="C.UTF-8" docker info
+}
+
+capture_expected_status() {
+  local variable="$1"
+  local captured
+  shift
+  if "$@"; then
+    captured=0
+  else
+    captured="$?"
+  fi
+  printf -v "$variable" '%s' "$captured"
+}
+
+docker_checked() {
+  local failure_code="$1"
+  local timeout_code="$2"
+  local seconds="$3"
+  local stdout_file="$4"
+  local stderr_file="$5"
+  local status
+  shift 5
+  capture_expected_status status docker_bounded "$seconds" "$@" >"$stdout_file" 2>"$stderr_file"
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    fail "$timeout_code"
+  fi
+  if [ "$status" -ne 0 ]; then
+    fail "$failure_code"
+  fi
+}
+
+node_bounded() {
+  local seconds="$1"
+  shift
+  close_fds_exec timeout --foreground --signal=TERM --kill-after=5s "$seconds" \
+    env -i PATH="$PATH" LANG="C.UTF-8" LC_ALL="C.UTF-8" node "$@"
+}
+
+host_bounded_checked() {
+  local failure_code="$1"
+  local timeout_code="$2"
+  local seconds="$3"
+  local stdout_file="$4"
+  local stderr_file="$5"
+  local status
+  shift 5
+  capture_expected_status status close_fds_exec timeout --foreground --signal=TERM --kill-after=10s "$seconds" "$@" >"$stdout_file" 2>"$stderr_file"
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    fail "$timeout_code"
+  fi
+  if [ "$status" -ne 0 ]; then
+    fail "$failure_code"
+  fi
+}
+
+capture_host_identity() {
+  HOST_UID="$(id -u)"
+  HOST_GID="$(id -g)"
+  if ! [[ "$HOST_UID" =~ ^[0-9]+$ ]] || ! [[ "$HOST_GID" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+  if [ "$HOST_UID" -le 0 ] || [ "$HOST_GID" -le 0 ]; then
+    return 1
+  fi
+}
+
+assert_host_owned_tree() {
+  local root="$1"
+  local entry owner
+  while IFS= read -r -d '' entry; do
+    owner="$(stat -c '%u:%g' "$entry")"
+    if [ "$owner" != "$HOST_UID:$HOST_GID" ]; then
+      return 1
+    fi
+  done < <(find "$root" -xdev -print0)
+}
+
+assert_writable_root() {
+  local root="$1"
+  [ -d "$root" ]
+  [ "$(stat -c '%u:%g' "$root")" = "$HOST_UID:$HOST_GID" ]
+  [ "$(stat -c '%a' "$root")" = "700" ]
+  if [ ! -r "$root" ] || [ ! -w "$root" ] || [ ! -x "$root" ]; then
+    return 1
+  fi
+}
+
+assert_writable_work_tree() {
+  local root="$1"
+  local entry owner mode
+  while IFS= read -r -d '' entry; do
+    owner="$(stat -c '%u:%g' "$entry")"
+    if [ "$owner" != "$HOST_UID:$HOST_GID" ]; then
+      return 1
+    fi
+    mode="$(stat -c '%a' "$entry")"
+    if [ -d "$entry" ]; then
+      if [ "$mode" != "700" ] || [ ! -r "$entry" ] || [ ! -w "$entry" ] || [ ! -x "$entry" ]; then
+        return 1
+      fi
+    elif [ -f "$entry" ] && [ ! -L "$entry" ]; then
+      if [ "$mode" != "600" ] || [ ! -r "$entry" ] || [ ! -w "$entry" ]; then
+        return 1
+      fi
+    else
+      return 1
+    fi
+  done < <(find "$root" -xdev -print0)
+}
+
+assert_private_writable_tree() {
+  local root="$1"
+  local absolute_root entry owner mode target
+  absolute_root="$(readlink -f -- "$root")"
+  while IFS= read -r -d '' entry; do
+    owner="$(stat -c '%u:%g' "$entry")"
+    if [ "$owner" != "$HOST_UID:$HOST_GID" ]; then
+      return 1
+    fi
+    if [ -L "$entry" ]; then
+      target="$(readlink -f -- "$entry")"
+      if [[ "$target" != "$absolute_root"/* ]]; then
+        return 1
+      fi
+      continue
+    fi
+    mode="$(stat -c '%a' "$entry")"
+    if [ -d "$entry" ]; then
+      if [ "$mode" != "700" ] || [ ! -r "$entry" ] || [ ! -w "$entry" ] || [ ! -x "$entry" ]; then
+        return 1
+      fi
+    elif [ -f "$entry" ]; then
+      if [ "$mode" != "600" ] || [ ! -r "$entry" ] || [ ! -w "$entry" ]; then
+        return 1
+      fi
+    else
+      return 1
+    fi
+  done < <(find "$root" -xdev -print0)
+}
+
+assert_sealed_tree() {
+  local root="$1"
+  local executable="${2:-}"
+  local absolute_root absolute_executable entry owner mode target
+  absolute_root="$(readlink -f -- "$root")"
+  absolute_executable=""
+  if [ -n "$executable" ]; then
+    absolute_executable="$(readlink -f -- "$executable")"
+  fi
+  while IFS= read -r -d '' entry; do
+    owner="$(stat -c '%u:%g' "$entry")"
+    if [ "$owner" != "$HOST_UID:$HOST_GID" ]; then
+      return 1
+    fi
+    if [ -L "$entry" ]; then
+      target="$(readlink -f -- "$entry")"
+      if [[ "$target" != "$absolute_root"/* ]] || [ ! -r "$target" ]; then
+        return 1
+      fi
+      continue
+    fi
+    mode="$(stat -c '%a' "$entry")"
+    if [ -d "$entry" ]; then
+      if [ "$mode" != "555" ] || [ ! -r "$entry" ] || [ ! -x "$entry" ] || [ -w "$entry" ]; then
+        return 1
+      fi
+    elif [ -f "$entry" ]; then
+      if [ "$(readlink -f -- "$entry")" = "$absolute_executable" ]; then
+        if [ "$mode" != "555" ]; then
+          return 1
+        fi
+      else
+        if [ "$mode" != "444" ]; then
+          return 1
+        fi
+      fi
+      if [ ! -r "$entry" ] || [ -w "$entry" ]; then
+        return 1
+      fi
+    else
+      return 1
+    fi
+  done < <(find "$root" -xdev -print0)
+}
+
+seal_readonly_tree() {
+  local root="$1"
+  local executable="${2:-}"
+  find "$root" -xdev -type d -exec chmod 0555 {} +
+  find "$root" -xdev -type f -exec chmod 0444 {} +
+  if [ -n "$executable" ]; then
+    chmod 0555 "$executable"
+  fi
+  assert_sealed_tree "$root" "$executable"
+}
+
+seal_readonly_file() {
+  local file="$1"
+  chmod 0444 "$file"
+  [ "$(stat -c '%u:%g' "$file")" = "$HOST_UID:$HOST_GID" ]
+  [ "$(stat -c '%a' "$file")" = "444" ]
+  if [ ! -r "$file" ] || [ -w "$file" ]; then
+    return 1
+  fi
+}
+
+remove_container() {
+  local name="$1"
+  if command -v docker >/dev/null 2>&1 && [ -n "$ROOT" ]; then
+    docker_bounded 20s rm -f "$name" >/dev/null 2>&1 || true
+  fi
+}
+
+cleanup() {
+  local name
+  set +e
+  DEADLINE_ACTIVE="false"
+  if [ -n "$WATCHDOG_PID" ]; then
+    kill "$WATCHDOG_PID" >/dev/null 2>&1 || true
+    wait "$WATCHDOG_PID" >/dev/null 2>&1 || true
+    WATCHDOG_PID=""
+  fi
+  for name in "${CONTAINERS[@]}"; do
+    remove_container "$name"
+  done
+  if command -v docker >/dev/null 2>&1 && [ -n "$ROOT" ]; then
+    for name in "${NETWORKS[@]}"; do
+      docker_bounded 20s network rm "$name" >/dev/null 2>&1 || true
+    done
+    if [ -n "$RUN_TOKEN" ]; then
+      while IFS= read -r name; do
+        if [ -n "$name" ]; then
+          docker_bounded 20s rm -f "$name" >/dev/null 2>&1 || true
+        fi
+      done < <(docker_bounded 20s ps -aq --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)
+      while IFS= read -r name; do
+        if [ -n "$name" ]; then
+          docker_bounded 20s network rm "$name" >/dev/null 2>&1 || true
+        fi
+      done < <(docker_bounded 20s network ls -q --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)
+    fi
+  fi
+  if [ -n "$ROOT" ]; then
+    case "$ROOT" in
+      "$RUNNER_TEMP"/true-family-pass-b0.*)
+        rm -rf -- "$ROOT"
+        ;;
+    esac
+  fi
+}
+
+fail() {
+  local code="$1"
+  trap - ERR
+  set +e
+  FAILURE_EMITTED="true"
+  cleanup
+  trap - EXIT HUP INT TERM ERR
+  emit_failure "$code"
+  exit 1
+}
+
+run_with_fixed_failure() {
+  local code="$1"
+  shift
+  ACTIVE_FAILURE_CODE="$code"
+  "$@"
+  ACTIVE_FAILURE_CODE="launcher_failure"
+}
+
+on_exit() {
+  local status="$?"
+  trap - EXIT HUP INT TERM ERR
+  set +e
+  cleanup
+  if [ "$status" -ne 0 ] && [ "$FAILURE_EMITTED" != "true" ]; then
+    emit_failure "launcher_failure"
+  fi
+  exit "$status"
+}
+
+on_signal() {
+  fail "full_run_timeout"
+}
+
+trap on_exit EXIT
+trap on_signal HUP INT TERM
+trap 'fail "$ACTIVE_FAILURE_CODE"' ERR
+exec 2>/dev/null
+
+SCRIPT_PATH="$(readlink -f -- "$0")"
+SCRIPT_DIR="$(dirname -- "$SCRIPT_PATH")"
+PROJECT="$(dirname -- "$SCRIPT_DIR")"
+MANIFEST="$PROJECT/tests/fixtures/physical_probe_pass_b_manifest.json"
+HARNESS="$PROJECT/tests/js/test_physical_probe_z2m_runtime.mjs"
+VERIFIER="$PROJECT/tests/js/verify_physical_probe_z2m_runtime.mjs"
+ARTIFACT="$PROJECT/custom_components/true_family/probe/true_family_brt_probe.mjs"
+PASS_A_MANIFEST="$PROJECT/custom_components/true_family/probe/true_family_brt_probe.manifest.json"
+PREFLIGHT_FIXTURE="$PROJECT/tests/fixtures/physical_probe_preflight_vectors.json"
+
+classify_inherited_fds() {
+  local descriptor target kind
+  for descriptor_path in "/proc/$BASHPID/fd/"*; do
+    descriptor="${descriptor_path##*/}"
+    if ! [[ "$descriptor" =~ ^[0-9]+$ ]]; then
+      return 1
+    fi
+    if [ "$descriptor" -le 2 ]; then
+      continue
+    fi
+    target="$(readlink -- "$descriptor_path" 2>/dev/null || true)"
+    kind="$(stat -Lc '%F' "$descriptor_path" 2>/dev/null || true)"
+    if [ "$kind" = "regular file" ] && [ "$(readlink -f -- "$target" 2>/dev/null || true)" = "$SCRIPT_PATH" ]; then
+      continue
+    fi
+    if [ "$kind" = "fifo" ]; then
+      continue
+    fi
+    return 1
+  done
+  return 0
+}
+
+run_with_fixed_failure "inherited_fd" classify_inherited_fds
+
+permission_self_check() {
+  local simulation_root producer_output runtime_output producer_name runtime_name output
+  local docker_status remaining_containers remaining_networks query_status
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  capture_expected_status docker_status docker_info_pre_root >/dev/null 2>&1
+  if [ "$docker_status" -eq 124 ] || [ "$docker_status" -eq 137 ]; then
+    fail "permission_docker_info_timeout"
+  fi
+  if [ "$docker_status" -ne 0 ]; then
+    return 0
+  fi
+  capture_host_identity
+  if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$RUNNER_TEMP" ] || [[ "$RUNNER_TEMP" != /* ]] || [[ "$RUNNER_TEMP" = *","* ]]; then
+    return 1
+  fi
+  ROOT="$(mktemp -d "$RUNNER_TEMP/true-family-pass-b0.XXXXXXXX")"
+  chmod 0700 "$ROOT"
+  [ "$(stat -c '%a' "$ROOT")" = "700" ]
+  mkdir -m 0700 "$ROOT/docker-home" "$ROOT/docker-config" "$ROOT/log"
+  printf '{}\n' >"$ROOT/docker-config/config.json"
+  RUN_TOKEN="$(node_bounded 5s -e 'process.stdout.write(require("node:crypto").randomBytes(16).toString("hex"))')"
+  simulation_root="$ROOT/permission-simulation"
+  producer_output="$simulation_root/producer-output"
+  runtime_output="$simulation_root/runtime-output"
+  mkdir -m 0700 "$simulation_root" "$producer_output"
+  mkdir -m 0777 "$runtime_output"
+  assert_writable_root "$producer_output"
+  [ "$(stat -c '%u:%g' "$runtime_output")" = "$HOST_UID:$HOST_GID" ]
+  [ "$(stat -c '%a' "$runtime_output")" = "777" ]
+
+  capture_expected_status docker_status docker_bounded 15s image inspect "$IMAGE" >/dev/null 2>"$ROOT/log/permission-image-inspect.log"
+  if [ "$docker_status" -eq 124 ] || [ "$docker_status" -eq 137 ]; then
+    fail "permission_image_inspect_timeout"
+  fi
+  if [ "$docker_status" -ne 0 ]; then
+    docker_checked "permission_image_pull" "permission_image_pull_timeout" 120s \
+      "$ROOT/log/permission-image-pull.out" "$ROOT/log/permission-image-pull.err" \
+      pull --platform="$PLATFORM" "$IMAGE"
+  fi
+
+  producer_name="tf-pass-b0-$RUN_TOKEN-permission-producer"
+  docker_checked "permission_producer_create" "permission_producer_create_timeout" 20s \
+    "$ROOT/log/permission-producer-create.out" "$ROOT/log/permission-producer-create.err" \
+    create \
+    --name "$producer_name" \
+    --label "true-family-pass-b0=$RUN_TOKEN" \
+    --platform="$PLATFORM" \
+    --pull=never \
+    --network=none \
+    --read-only \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --pids-limit=16 \
+    --memory=128m \
+    --memory-swap=128m \
+    --cpus=1 \
+    --ulimit=core=0:0 \
+    --ulimit=fsize=1048576:1048576 \
+    --ulimit=nofile=64:64 \
+    --ulimit=nproc=16:16 \
+    --ipc=private \
+    --cgroupns=private \
+    --log-driver=none \
+    --init \
+    --user="$HOST_UID:$HOST_GID" \
+    --restart=no \
+    --tmpfs="/tmp:rw,noexec,nosuid,nodev,size=8388608,mode=1777,uid=$HOST_UID,gid=$HOST_GID" \
+    --mount "type=bind,source=$producer_output,target=/producer" \
+    --entrypoint=/usr/local/bin/node \
+    "$IMAGE" -e 'const fs=require("node:fs");if(process.getuid()!==Number(process.argv[1]))process.exit(1);fs.writeFileSync("/producer/output","producer\n");process.stdout.write("producer-pass")' "$HOST_UID"
+  CONTAINERS+=("$producer_name")
+  output="$ROOT/log/permission-producer.out"
+  docker_checked "permission_producer_start" "permission_producer_start_timeout" 30s \
+    "$output" "$ROOT/log/permission-producer.err" start -a "$producer_name"
+  [ "$(<"$output")" = "producer-pass" ]
+  [ "$(<"$producer_output/output")" = "producer" ]
+  assert_host_owned_tree "$producer_output"
+  seal_readonly_tree "$producer_output"
+
+  runtime_name="tf-pass-b0-$RUN_TOKEN-permission-runtime"
+  docker_checked "permission_runtime_create" "permission_runtime_create_timeout" 20s \
+    "$ROOT/log/permission-runtime-create.out" "$ROOT/log/permission-runtime-create.err" \
+    create \
+    --name "$runtime_name" \
+    --label "true-family-pass-b0=$RUN_TOKEN" \
+    --platform="$PLATFORM" \
+    --pull=never \
+    --network=none \
+    --read-only \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --pids-limit=16 \
+    --memory=128m \
+    --memory-swap=128m \
+    --cpus=1 \
+    --ulimit=core=0:0 \
+    --ulimit=fsize=1048576:1048576 \
+    --ulimit=nofile=64:64 \
+    --ulimit=nproc=16:16 \
+    --ipc=private \
+    --cgroupns=private \
+    --log-driver=none \
+    --init \
+    --user=65532:65532 \
+    --restart=no \
+    --tmpfs=/tmp:rw,noexec,nosuid,nodev,size=8388608,mode=1777,uid=65532,gid=65532 \
+    --mount "type=bind,source=$producer_output,target=/input,readonly" \
+    --mount "type=bind,source=$runtime_output,target=/runtime-output" \
+    --entrypoint=/usr/local/bin/node \
+    "$IMAGE" -e 'const fs=require("node:fs");if(process.getuid()!==65532||fs.readFileSync("/input/output","utf8")!=="producer\n")process.exit(1);let blocked=false;try{fs.writeFileSync("/input/blocked","x")}catch(e){blocked=["EACCES","EPERM","EROFS"].includes(e.code)}if(!blocked)process.exit(1);fs.writeFileSync("/runtime-output/written","runtime\n");process.stdout.write("runtime-pass")'
+  CONTAINERS+=("$runtime_name")
+  output="$ROOT/log/permission-runtime.out"
+  docker_checked "permission_runtime_start" "permission_runtime_start_timeout" 30s \
+    "$output" "$ROOT/log/permission-runtime.err" start -a "$runtime_name"
+  [ "$(<"$output")" = "runtime-pass" ]
+  [ "$(<"$runtime_output/written")" = "runtime" ]
+  [ "$(stat -c '%u:%g' "$runtime_output/written")" = "65532:65532" ]
+  [ ! -e "$producer_output/blocked" ]
+
+  docker_checked "permission_cleanup" "permission_cleanup_timeout" 15s \
+    /dev/null "$ROOT/log/permission-producer-remove.err" rm -f "$producer_name"
+  docker_checked "permission_cleanup" "permission_cleanup_timeout" 15s \
+    /dev/null "$ROOT/log/permission-runtime-remove.err" rm -f "$runtime_name"
+  cleanup
+  set -e
+  if remaining_containers="$(close_fds_exec timeout --foreground --kill-after=5s 15s env -i PATH="$PATH" docker ps -aq --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)"; then
+    query_status=0
+  else
+    query_status="$?"
+  fi
+  if [ "$query_status" -eq 124 ] || [ "$query_status" -eq 137 ]; then
+    fail "permission_cleanup_query_timeout"
+  fi
+  [ "$query_status" -eq 0 ]
+  if remaining_networks="$(close_fds_exec timeout --foreground --kill-after=5s 15s env -i PATH="$PATH" docker network ls -q --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)"; then
+    query_status=0
+  else
+    query_status="$?"
+  fi
+  if [ "$query_status" -eq 124 ] || [ "$query_status" -eq 137 ]; then
+    fail "permission_cleanup_query_timeout"
+  fi
+  [ "$query_status" -eq 0 ]
+  [ -z "$remaining_containers" ]
+  [ -z "$remaining_networks" ]
+  [ ! -e "$ROOT" ]
+  ROOT=""
+  RUN_TOKEN=""
+}
+
+case "${1:-}" in
+  "--fd-probe")
+    fail "fd_probe_failed"
+    ;;
+  "--self-check")
+    if [ "$#" -ne 1 ]; then
+      fail "user_input_forbidden"
+    fi
+    for input in "$MANIFEST" "$HARNESS" "$VERIFIER" "$ARTIFACT"; do
+      if [ ! -f "$input" ]; then
+        fail "self_check_input"
+      fi
+    done
+    ACTIVE_FAILURE_CODE="self_check_failed"
+    SELF_CHECK="$(node_bounded 30s "$VERIFIER" --self-check "$MANIFEST" "$SCRIPT_PATH" "$HARNESS" "$VERIFIER" "$ARTIFACT" 2>/dev/null)"
+    [ "$(printf '%s' "$SELF_CHECK" | wc -c)" -le 2048 ]
+    ACTIVE_FAILURE_CODE="launcher_failure"
+    run_with_fixed_failure "permission_self_check_failed" permission_self_check
+    trap - EXIT HUP INT TERM ERR
+    printf '%s\n' "$SELF_CHECK"
+    exit 0
+    ;;
+  "--shell-self-check")
+    if [ "$#" -ne 1 ]; then
+      fail "user_input_forbidden"
+    fi
+    SHELL_PROBE_STATUS=0
+    capture_expected_status SHELL_PROBE_STATUS false
+    if [ "$SHELL_PROBE_STATUS" -ne 1 ]; then
+      fail "shell_self_check_failed"
+    fi
+    trap - EXIT HUP INT TERM ERR
+    printf '%s\n' '{"result":"pass","schema":"true-family-pass-b0-shell-self-check-v1"}'
+    exit 0
+    ;;
+  "")
+    if [ "$#" -ne 0 ]; then
+      fail "user_input_forbidden"
+    fi
+    ;;
+  *)
+    fail "user_input_forbidden"
+    ;;
+esac
+
+while IFS= read -r inherited_name; do
+  case "$inherited_name" in
+    PATH|LANG|LC_ALL|LC_CTYPE|PWD|SHLVL|_|RUNNER_TEMP|CI|GITHUB_REF)
+      ;;
+    *)
+      fail "inherited_environment"
+      ;;
+  esac
+done < <(compgen -e)
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export LANG="C.UTF-8"
+export LC_ALL="C.UTF-8"
+
+for required_command in bash cat chmod cmp cp dirname docker find git id mkdir mktemp node readlink rm sha256sum stat timeout uname wc; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    if [ "$required_command" = "docker" ]; then
+      fail "docker_required"
+    fi
+    fail "required_command_missing"
+  fi
+done
+capture_expected_status DOCKER_INFO_STATUS docker_info_pre_root >/dev/null 2>&1
+if [ "$DOCKER_INFO_STATUS" -eq 124 ] || [ "$DOCKER_INFO_STATUS" -eq 137 ]; then
+  fail "docker_info_timeout"
+fi
+if [ "$DOCKER_INFO_STATUS" -ne 0 ]; then
+  fail "docker_required"
+fi
+if [ "$(uname -m)" != "x86_64" ]; then
+  fail "ci_runner_required"
+fi
+if [ "${CI:-}" != "true" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+  fail "ci_runner_required"
+fi
+if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$RUNNER_TEMP" ] || [[ "$RUNNER_TEMP" != /* ]] || [[ "$RUNNER_TEMP" = *","* ]]; then
+  fail "runner_temp_required"
+fi
+run_with_fixed_failure "host_identity" capture_host_identity
+
+for input in "$MANIFEST" "$HARNESS" "$VERIFIER" "$ARTIFACT" "$PASS_A_MANIFEST" "$PREFLIGHT_FIXTURE"; do
+  if [ ! -f "$input" ]; then
+    fail "project_input_missing"
+  fi
+done
+
+ACTIVE_FAILURE_CODE="self_check_failed"
+node_bounded 30s "$VERIFIER" --self-check "$MANIFEST" "$SCRIPT_PATH" "$HARNESS" "$VERIFIER" "$ARTIFACT" >/dev/null 2>&1
+ACTIVE_FAILURE_CODE="launcher_failure"
+
+ROOT="$(mktemp -d "$RUNNER_TEMP/true-family-pass-b0.XXXXXXXX")"
+chmod 0700 "$ROOT"
+if [ "$(stat -c '%a' "$ROOT")" != "700" ]; then
+  fail "temp_root_mode"
+fi
+assert_writable_root "$ROOT"
+RUN_TOKEN="$(node_bounded 5s -e 'process.stdout.write(require("node:crypto").randomBytes(16).toString("hex"))')"
+if ! [[ "$RUN_TOKEN" =~ ^[0-9a-f]{32}$ ]]; then
+  fail "run_token"
+fi
+mkdir -m 0700 "$ROOT/docker-home" "$ROOT/docker-config" "$ROOT/log"
+printf '{}\n' >"$ROOT/docker-config/config.json"
+RUN_START_SECONDS="$SECONDS"
+DEADLINE_ACTIVE="true"
+
+PARENT_PID="$$"
+close_fds_exec node -e 'setTimeout(() => process.kill(Number(process.argv[1]), "SIGTERM"), 2040000)' "$PARENT_PID" >/dev/null 2>&1 &
+WATCHDOG_PID="$!"
+
+COMMON_FLAGS=(
+  --platform="$PLATFORM"
+  --pull=never
+  --read-only
+  --cap-drop=ALL
+  --security-opt=no-new-privileges
+  --pids-limit=64
+  --memory=768m
+  --memory-swap=768m
+  --cpus=1
+  --ulimit=core=0:0
+  --ulimit=fsize=268435456:268435456
+  --ulimit=nofile=1024:1024
+  --ulimit=nproc=64:64
+  --ipc=private
+  --cgroupns=private
+  --log-driver=none
+  --init
+  --restart=no
+)
+PRODUCER_FLAGS=(
+  --user="$HOST_UID:$HOST_GID"
+  --tmpfs="/tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777,uid=$HOST_UID,gid=$HOST_GID"
+)
+RUNTIME_FLAGS=(
+  --user=65532:65532
+  --tmpfs=/tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777,uid=65532,gid=65532
+)
+
+create_container() {
+  local role="$1"
+  local name="$2"
+  local log="$3"
+  local -a identity_flags
+  shift 3
+  case "$role" in
+    producer)
+      identity_flags=("${PRODUCER_FLAGS[@]}")
+      ;;
+    runtime)
+      identity_flags=("${RUNTIME_FLAGS[@]}")
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  docker_checked "container_create" "container_create_timeout" 20s "$log.out" "$log.err" \
+    create --name "$name" --label "true-family-pass-b0=$RUN_TOKEN" \
+    "${COMMON_FLAGS[@]}" "${identity_flags[@]}" "$@"
+  CONTAINERS+=("$name")
+}
+
+start_container() {
+  local name="$1"
+  local seconds="$2"
+  local output="$3"
+  local log="$4"
+  docker_checked "container_start" "container_start_timeout" "$seconds" "$output" "$log" start -a "$name"
+}
+
+remove_container_checked() {
+  local name="$1"
+  local log="$2"
+  docker_checked "container_remove" "container_remove_timeout" 15s /dev/null "$log" rm -f "$name"
+}
+
+run_disposable() {
+  local name="$1"
+  local seconds="$2"
+  local output="$3"
+  local log="$4"
+  shift 4
+  create_container producer "$name" "$log.create" "$@"
+  start_container "$name" "$seconds" "$output" "$log.run"
+  remove_container_checked "$name" "$log.remove"
+}
+
+capture_expected_status IMAGE_PROBE_STATUS docker_bounded 15s image inspect "$IMAGE" >/dev/null 2>"$ROOT/log/image-probe.log"
+if [ "$IMAGE_PROBE_STATUS" -eq 124 ] || [ "$IMAGE_PROBE_STATUS" -eq 137 ]; then
+  fail "image_inspect_timeout"
+fi
+if [ "$IMAGE_PROBE_STATUS" -ne 0 ]; then
+  docker_checked "image_pull" "image_pull_timeout" 180s \
+    "$ROOT/log/image-pull.out" "$ROOT/log/image-pull.err" pull --platform="$PLATFORM" "$IMAGE"
+fi
+docker_checked "image_inspect" "image_inspect_timeout" 15s \
+  "$ROOT/image-inspect.json" "$ROOT/log/image-inspect.log" image inspect "$IMAGE"
+ACTIVE_FAILURE_CODE="image_identity"
+node_bounded 15s "$VERIFIER" --validate-image-inspect "$ROOT/image-inspect.json" "$MANIFEST" >/dev/null 2>&1
+ACTIVE_FAILURE_CODE="launcher_failure"
+
+write_runtime_runner() {
+  local file="$1"
+  cat >"$file" <<'RUNNER'
+#!/bin/sh
+set -eu
+umask 077
+mkdir -p /tmp/home /data/cases /data/results
+for case_name in input cold prearm armed control_rename control_group collision stop_remove; do
+  case_root="/data/cases/$case_name"
+  data_root="$case_root/data"
+  result_file="/data/results/$case_name.json"
+  mkdir -m 0700 "$case_root" "$data_root" "$data_root/external_extensions"
+  cp "/input/true_family_brt_probe.mjs" "$data_root/external_extensions/true_family_brt_probe.mjs"
+  chmod 0600 "$data_root/external_extensions/true_family_brt_probe.mjs"
+  {
+    printf '%s\n' 'version: 5'
+    printf '%s\n' 'mqtt:'
+    printf '%s\n' "  base_topic: $PASS_B_BASE_TOPIC"
+    printf '%s\n' '  server: mqtt://127.0.0.1:1'
+    printf '%s\n' '  force_disable_retain: false'
+    printf '%s\n' 'frontend:' '  enabled: false'
+    printf '%s\n' 'homeassistant:' '  enabled: false'
+    printf '%s\n' 'advanced:' '  enable_external_js: true' '  log_level: error'
+    printf '%s\n' '  log_output:' '    - console' '  log_debug_to_mqtt_frontend: false'
+  } >"$data_root/configuration.yaml"
+  chmod 0600 "$data_root/configuration.yaml"
+  if ! /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 30s \
+    /usr/bin/env -i \
+      PATH="/usr/local/bin:/usr/bin:/bin" \
+      HOME="/tmp/home" \
+      LANG="C.UTF-8" \
+      LC_ALL="C.UTF-8" \
+      TZ="UTC" \
+      NODE_VERSION="20.19.2" \
+      YARN_VERSION="1.22.22" \
+      ZIGBEE2MQTT_DATA="$data_root" \
+      PASS_B_CASE="$case_name" \
+      PASS_B_RUNTIME_ROOT="/data" \
+      PASS_B_Z2M_ROOT="/z2m" \
+      PASS_B_DATA_ROOT="$data_root" \
+      PASS_B_INPUT_ROOT="/input" \
+      PASS_B_BASE_TOPIC="$PASS_B_BASE_TOPIC" \
+      /usr/local/bin/node "/harness/test_physical_probe_z2m_runtime.mjs" >"$result_file"; then
+    if [ -s "$result_file" ] && [ "$(wc -c <"$result_file")" -le 32768 ]; then
+      cat "$result_file"
+    else
+      printf '%s\n' '{"failure_code":"case_failed","result":"fail","schema":"true-family-pass-b0-runtime-failure-v2"}'
+    fi
+    exit 1
+  fi
+  if [ "$(wc -c <"$result_file")" -gt 32768 ]; then
+    exit 1
+  fi
+  rm -rf "$case_root"
+done
+if [ -n "$(find /data/cases -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+  exit 1
+fi
+/usr/bin/timeout --foreground --signal=TERM --kill-after=5s 30s \
+  /usr/bin/env -i \
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    HOME="/tmp/home" \
+    LANG="C.UTF-8" \
+    LC_ALL="C.UTF-8" \
+    TZ="UTC" \
+    NODE_VERSION="20.19.2" \
+    YARN_VERSION="1.22.22" \
+    PASS_B_CASE="aggregate" \
+    PASS_B_RUNTIME_ROOT="/data" \
+    PASS_B_Z2M_ROOT="/z2m" \
+    PASS_B_INPUT_ROOT="/input" \
+    PASS_B_RESULTS_ROOT="/data/results" \
+    PASS_B_CASES_ROOT="/data/cases" \
+    /usr/local/bin/node "/harness/test_physical_probe_z2m_runtime.mjs"
+RUNNER
+  chmod 0755 "$file"
+}
+
+make_network() {
+  local name="$1"
+  docker_checked "network_create" "network_create_timeout" 15s /dev/null "$ROOT/log/network-create.err" \
+    network create --label "true-family-pass-b0=$RUN_TOKEN" "$name"
+  NETWORKS+=("$name")
+}
+
+remove_network() {
+  local name="$1"
+  docker_checked "network_remove" "network_remove_timeout" 15s /dev/null "$ROOT/log/network-remove.err" network rm "$name"
+}
+
+run_tar_tool() {
+  local run_root="$1"
+  local mode="$2"
+  local kind="$3"
+  local archive="$4"
+  local destination="${5:-}"
+  local name="tf-pass-b0-$RUN_TOKEN-${run_root##*/}-tar-$kind-${mode#--}"
+  local -a args=(
+    --network=none
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly"
+    --mount "type=bind,source=$run_root/tool-input,target=/input,readonly"
+    --mount "type=bind,source=$archive,target=/archive.tgz,readonly"
+    --entrypoint=/usr/local/bin/node
+  )
+  if [ "$mode" = "--extract-tar" ]; then
+    args+=(--mount "type=bind,source=$destination,target=/output")
+  fi
+  args+=("$IMAGE" "/verifier/verify_physical_probe_z2m_runtime.mjs" "$mode" "$kind" "/archive.tgz")
+  if [ "$mode" = "--extract-tar" ]; then
+    args+=("/output")
+  fi
+  args+=("/input/physical_probe_pass_b_manifest.json")
+  run_disposable "$name" 45s "$run_root/log/tar-$kind-${mode#--}.out" "$run_root/log/tar-$kind-${mode#--}" "${args[@]}"
+}
+
+rehash_run() {
+  local ordinal="$1"
+  local run_root="$ROOT/run-$ordinal"
+  node_bounded 90s "$VERIFIER" --rehash-stage \
+    "$run_root/mount/input/runtime_stage.json" \
+    "$run_root/mount/input/physical_probe_pass_b_manifest.json" \
+    "$run_root/mount/launcher/pass-b-z2m-runtime" \
+    "$run_root/mount/harness/test_physical_probe_z2m_runtime.mjs" \
+    "$run_root/mount/verifier/verify_physical_probe_z2m_runtime.mjs" \
+    "$run_root/mount/input/true_family_brt_probe.mjs" \
+    "$run_root/mount/input/true_family_brt_probe.manifest.json" \
+    "$run_root/mount/input/physical_probe_preflight_vectors.json" \
+    "$run_root/mount/runtime/run.sh" \
+    "$run_root/runtime-hashes.json" \
+    "$run_root/mount/upstream/package.json" \
+    "$run_root/mount/upstream/pnpm-lock.yaml" \
+    "$run_root/mount/z2m/package.json" \
+    "$run_root/mount/z2m/dist" \
+    "$run_root/mount/z2m/node_modules" >/dev/null 2>&1
+}
+
+acquire_run() {
+  local ordinal="$1"
+  local run_root="$ROOT/run-$ordinal"
+  local network="tf-pass-b0-${RUN_TOKEN:0:12}-$ordinal"
+  local upstream_git="$run_root/upstream-git"
+  local fetch="$run_root/fetch"
+  local store_fetch="$run_root/store-fetch"
+  local store_install="$run_root/store-install"
+  local install="$run_root/install"
+  local name output
+  mkdir -m 0700 "$run_root" "$run_root/log" "$run_root/mount" "$run_root/mount/input" "$run_root/mount/harness" \
+    "$run_root/mount/verifier" "$run_root/mount/launcher" "$run_root/mount/upstream" "$run_root/mount/runtime" \
+    "$run_root/mount/z2m" "$fetch" "$store_fetch" "$store_install" "$install" "$upstream_git" "$run_root/git-home" \
+    "$run_root/extract-z2m" "$run_root/extract-pnpm" "$run_root/tool-input"
+  cp "$MANIFEST" "$run_root/mount/input/physical_probe_pass_b_manifest.json"
+  cp "$HARNESS" "$run_root/mount/harness/test_physical_probe_z2m_runtime.mjs"
+  cp "$VERIFIER" "$run_root/mount/verifier/verify_physical_probe_z2m_runtime.mjs"
+  cp "$SCRIPT_PATH" "$run_root/mount/launcher/pass-b-z2m-runtime"
+  cp "$ARTIFACT" "$run_root/mount/input/true_family_brt_probe.mjs"
+  cp "$PASS_A_MANIFEST" "$run_root/mount/input/true_family_brt_probe.manifest.json"
+  cp "$PREFLIGHT_FIXTURE" "$run_root/mount/input/physical_probe_preflight_vectors.json"
+  cp "$MANIFEST" "$run_root/tool-input/physical_probe_pass_b_manifest.json"
+  : >"$run_root/empty-user-npmrc"
+  : >"$run_root/empty-global-npmrc"
+  seal_readonly_file "$run_root/empty-user-npmrc"
+  seal_readonly_file "$run_root/empty-global-npmrc"
+  for writable_root in "$fetch" "$store_fetch" "$store_install" "$install" "$run_root/extract-z2m" "$run_root/extract-pnpm"; do
+    assert_writable_root "$writable_root"
+  done
+  write_runtime_runner "$run_root/mount/runtime/run.sh"
+  seal_readonly_tree "$run_root/mount/harness"
+  seal_readonly_tree "$run_root/mount/verifier"
+  seal_readonly_tree "$run_root/mount/launcher"
+  seal_readonly_tree "$run_root/mount/runtime" "$run_root/mount/runtime/run.sh"
+  seal_readonly_tree "$run_root/tool-input"
+
+  host_bounded_checked "git_init" "git_init_timeout" 20s /dev/null "$run_root/log/git-init.log" env -i \
+    PATH="$PATH" HOME="$run_root/git-home" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+    git init -q "$upstream_git"
+  host_bounded_checked "git_fetch" "git_fetch_timeout" 120s /dev/null "$run_root/log/git-fetch.log" env -i \
+    PATH="$PATH" HOME="$run_root/git-home" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+    git -C "$upstream_git" -c credential.helper= fetch --depth=1 \
+      "https://github.com/Koenkk/zigbee2mqtt.git" "aa909a8a62f76e2dd98ace3a172bca88ee56f5fe"
+  host_bounded_checked "git_checkout" "git_checkout_timeout" 30s /dev/null "$run_root/log/git-checkout.log" env -i \
+    PATH="$PATH" HOME="$run_root/git-home" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+    git -C "$upstream_git" checkout -q --detach FETCH_HEAD
+  host_bounded_checked "git_identity" "git_identity_timeout" 15s "$run_root/git-head" "$run_root/log/git-head.log" \
+    env -i PATH="$PATH" git -C "$upstream_git" rev-parse HEAD
+  host_bounded_checked "git_identity" "git_identity_timeout" 15s "$run_root/git-tree" "$run_root/log/git-tree.log" \
+    env -i PATH="$PATH" git -C "$upstream_git" rev-parse 'HEAD^{tree}'
+  [ "$(<"$run_root/git-head")" = "aa909a8a62f76e2dd98ace3a172bca88ee56f5fe" ]
+  [ "$(<"$run_root/git-tree")" = "fd134890cc89e628caa48f6f235862b0bfe40c45" ]
+  for upstream_file in package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc; do
+    if [ -f "$upstream_git/$upstream_file" ]; then
+      cp "$upstream_git/$upstream_file" "$run_root/mount/upstream/$upstream_file"
+    fi
+  done
+  seal_readonly_tree "$run_root/mount/upstream"
+
+  make_network "$network"
+  for package in "zigbee2mqtt@2.12.1" "zigbee-herdsman@10.6.1" "zigbee-herdsman-converters@26.76.0" "pnpm@10.18.3"; do
+    name="tf-pass-b0-$RUN_TOKEN-r$ordinal-npm-${package%%@*}"
+    run_disposable "$name" 60s "$run_root/log/npm-${package%%@*}.out" "$run_root/log/npm-${package%%@*}" \
+      --network="$network" \
+      --workdir=/out \
+      --mount "type=bind,source=$fetch,target=/out" \
+      --mount "type=bind,source=$run_root/empty-user-npmrc,target=/config/user-npmrc,readonly" \
+      --mount "type=bind,source=$run_root/empty-global-npmrc,target=/config/global-npmrc,readonly" \
+      --env HOME=/tmp/home \
+      --env NPM_CONFIG_USERCONFIG=/config/user-npmrc \
+      --env NPM_CONFIG_GLOBALCONFIG=/config/global-npmrc \
+      --env NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
+      --env NPM_CONFIG_AUDIT=false \
+      --env NPM_CONFIG_FUND=false \
+      --env NPM_CONFIG_UPDATE_NOTIFIER=false \
+      --entrypoint=/usr/local/bin/npm \
+       "$IMAGE" pack "$package" --ignore-scripts --pack-destination=/out \
+         --registry=https://registry.npmjs.org/ --userconfig=/config/user-npmrc \
+        --globalconfig=/config/global-npmrc --loglevel=silent
+  done
+
+  local z2m_tar="$fetch/zigbee2mqtt-2.12.1.tgz"
+  local herdsman_tar="$fetch/zigbee-herdsman-10.6.1.tgz"
+  local converters_tar="$fetch/zigbee-herdsman-converters-26.76.0.tgz"
+  local pnpm_tar="$fetch/pnpm-10.18.3.tgz"
+  for archive in "$z2m_tar" "$herdsman_tar" "$converters_tar" "$pnpm_tar"; do
+    [ -f "$archive" ]
+    [ "$(stat -c '%u:%g' "$archive")" = "$HOST_UID:$HOST_GID" ]
+    seal_readonly_file "$archive"
+  done
+  run_tar_tool "$run_root" --validate-tar z2m "$z2m_tar"
+  run_tar_tool "$run_root" --validate-tar herdsman "$herdsman_tar"
+  run_tar_tool "$run_root" --validate-tar converters "$converters_tar"
+  run_tar_tool "$run_root" --validate-tar pnpm "$pnpm_tar"
+  run_tar_tool "$run_root" --extract-tar z2m "$z2m_tar" "$run_root/extract-z2m"
+  run_tar_tool "$run_root" --extract-tar pnpm "$pnpm_tar" "$run_root/extract-pnpm"
+  assert_host_owned_tree "$run_root/extract-z2m"
+  assert_host_owned_tree "$run_root/extract-pnpm"
+  seal_readonly_tree "$run_root/extract-z2m"
+  seal_readonly_tree "$run_root/extract-pnpm"
+
+  name="tf-pass-b0-$RUN_TOKEN-r$ordinal-upstream-verify"
+  run_disposable "$name" 60s "$run_root/log/upstream-verify.out" "$run_root/log/upstream-verify" \
+    --network=none \
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
+    --mount "type=bind,source=$run_root/tool-input,target=/input,readonly" \
+    --mount "type=bind,source=$run_root/mount/upstream,target=/upstream,readonly" \
+    --mount "type=bind,source=$run_root/extract-z2m,target=/published,readonly" \
+    --entrypoint=/usr/local/bin/node \
+    "$IMAGE" /verifier/verify_physical_probe_z2m_runtime.mjs --verify-upstream \
+      /input/physical_probe_pass_b_manifest.json /upstream/package.json /upstream/pnpm-lock.yaml /published/package.json
+
+  name="tf-pass-b0-$RUN_TOKEN-r$ordinal-pnpm-fetch"
+  run_disposable "$name" 180s "$run_root/log/pnpm-fetch.out" "$run_root/log/pnpm-fetch" \
+    --network="$network" \
+    --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
+    --mount "type=bind,source=$run_root/mount/upstream,target=/source,readonly" \
+    --mount "type=bind,source=$store_fetch,target=/store" \
+    --mount "type=bind,source=$run_root/empty-user-npmrc,target=/config/user-npmrc,readonly" \
+    --mount "type=bind,source=$run_root/empty-global-npmrc,target=/config/global-npmrc,readonly" \
+    --env HOME=/tmp/home \
+    --env npm_config_userconfig=/config/user-npmrc \
+    --env npm_config_globalconfig=/config/global-npmrc \
+    --env npm_config_registry=https://registry.npmjs.org/ \
+    --env npm_config_audit=false \
+    --env npm_config_fund=false \
+    --env npm_config_update_notifier=false \
+    --entrypoint=/bin/sh \
+    "$IMAGE" -eu -c 'mkdir -p /tmp/project; cp /source/package.json /source/pnpm-lock.yaml /tmp/project/; if [ -f /source/pnpm-workspace.yaml ]; then cp /source/pnpm-workspace.yaml /tmp/project/; fi; if [ -f /source/.npmrc ]; then cp /source/.npmrc /tmp/project/; fi; exec /usr/local/bin/node /tool/bin/pnpm.cjs fetch --dir=/tmp/project --prod --no-optional --frozen-lockfile --ignore-scripts --store-dir=/store --reporter=silent'
+
+  assert_host_owned_tree "$store_fetch"
+  cp -a --no-preserve=ownership "$store_fetch/." "$store_install/"
+  find "$store_install" -xdev -type d -exec chmod 0700 {} +
+  find "$store_install" -xdev -type f -exec chmod 0600 {} +
+  assert_private_writable_tree "$store_install"
+  name="tf-pass-b0-$RUN_TOKEN-r$ordinal-prepare-install"
+  run_disposable "$name" 60s "$run_root/log/prepare-install.out" "$run_root/log/prepare-install" \
+    --network=none \
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
+    --mount "type=bind,source=$run_root/mount/upstream,target=/source,readonly" \
+    --mount "type=bind,source=$install,target=/work" \
+    --entrypoint=/usr/local/bin/node \
+    "$IMAGE" /verifier/verify_physical_probe_z2m_runtime.mjs --prepare-install /source /work
+  assert_writable_work_tree "$install"
+
+  name="tf-pass-b0-$RUN_TOKEN-r$ordinal-pnpm-install"
+  run_disposable "$name" 180s "$run_root/log/pnpm-install.out" "$run_root/log/pnpm-install" \
+    --network=none \
+    --workdir=/work \
+    --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
+    --mount "type=bind,source=$install,target=/work" \
+    --mount "type=bind,source=$store_install,target=/store" \
+    --mount "type=bind,source=$run_root/empty-user-npmrc,target=/config/user-npmrc,readonly" \
+    --mount "type=bind,source=$run_root/empty-global-npmrc,target=/config/global-npmrc,readonly" \
+    --env HOME=/tmp/home \
+    --env npm_config_userconfig=/config/user-npmrc \
+    --env npm_config_globalconfig=/config/global-npmrc \
+    --entrypoint=/usr/local/bin/node \
+    "$IMAGE" /tool/bin/pnpm.cjs install --prod --no-optional --offline --frozen-lockfile \
+      --ignore-scripts --package-import-method=copy --store-dir=/store --reporter=silent
+  [ ! -e "$install/lifecycle-canary" ]
+  assert_host_owned_tree "$install"
+
+  name="tf-pass-b0-$RUN_TOKEN-r$ordinal-normalize-closure"
+  run_disposable "$name" 60s "$run_root/log/normalize-closure.out" "$run_root/log/normalize-closure" \
+    --network=none \
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
+    --mount "type=bind,source=$install/node_modules,target=/closure" \
+    --entrypoint=/usr/local/bin/node \
+    "$IMAGE" /verifier/verify_physical_probe_z2m_runtime.mjs --normalize-closure /closure
+  assert_host_owned_tree "$install/node_modules"
+
+  cp -a --no-preserve=ownership "$run_root/extract-z2m/dist" "$run_root/mount/z2m/dist"
+  cp "$run_root/extract-z2m/package.json" "$run_root/mount/z2m/package.json"
+  cp -a --no-preserve=ownership "$install/node_modules" "$run_root/mount/z2m/node_modules"
+  seal_readonly_tree "$run_root/mount/z2m"
+
+  name="tf-pass-b0-$RUN_TOKEN-r$ordinal-runtime-hashes"
+  run_disposable "$name" 60s "$run_root/runtime-hashes.json" "$run_root/log/runtime-hashes" \
+    --network=none \
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
+    --entrypoint=/usr/local/bin/node \
+    "$IMAGE" /verifier/verify_physical_probe_z2m_runtime.mjs --runtime-hashes
+
+  node_bounded 120s "$VERIFIER" --write-stage \
+    "$run_root/mount/input/physical_probe_pass_b_manifest.json" \
+    "$run_root/mount/launcher/pass-b-z2m-runtime" \
+    "$run_root/mount/harness/test_physical_probe_z2m_runtime.mjs" \
+    "$run_root/mount/verifier/verify_physical_probe_z2m_runtime.mjs" \
+    "$run_root/mount/input/true_family_brt_probe.mjs" \
+    "$run_root/mount/input/true_family_brt_probe.manifest.json" \
+    "$run_root/mount/input/physical_probe_preflight_vectors.json" \
+    "$run_root/mount/runtime/run.sh" \
+    "$run_root/runtime-hashes.json" \
+    "$run_root/mount/upstream/package.json" \
+    "$run_root/mount/upstream/pnpm-lock.yaml" \
+    "$run_root/mount/z2m/package.json" \
+    "$run_root/mount/z2m/dist" \
+    "$run_root/mount/z2m/node_modules" \
+    "$run_root/mount/input/runtime_stage.json" >/dev/null 2>&1
+  seal_readonly_tree "$run_root/mount/input"
+
+  local base_topic
+  base_topic="tf_pass_b/$(node_bounded 5s -e 'process.stdout.write(require("node:crypto").randomBytes(16).toString("hex"))')"
+  [[ "$base_topic" =~ ^tf_pass_b/[0-9a-f]{32}$ ]]
+  name="tf-pass-b0-$RUN_TOKEN-r$ordinal-runtime"
+  create_container runtime "$name" "$run_root/log/runtime-create" \
+    --network=none \
+    --tmpfs=/data:rw,nosuid,nodev,size=268435456,mode=0700,uid=65532,gid=65532 \
+    --mount "type=bind,source=$run_root/mount/input,target=/input,readonly" \
+    --mount "type=bind,source=$run_root/mount/z2m,target=/z2m,readonly" \
+    --mount "type=bind,source=$run_root/mount/harness,target=/harness,readonly" \
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
+    --mount "type=bind,source=$run_root/mount/launcher,target=/launcher,readonly" \
+    --mount "type=bind,source=$run_root/mount/upstream,target=/upstream,readonly" \
+    --mount "type=bind,source=$run_root/mount/runtime,target=/runtime,readonly" \
+    --env "PASS_B_BASE_TOPIC=$base_topic" \
+    --entrypoint=/usr/bin/timeout \
+    "$IMAGE" --foreground --signal=TERM --kill-after=10s 240s /runtime/run.sh
+  start_container "$name" 270s "$run_root/runtime-raw.json" "$run_root/log/runtime-run.log"
+  docker_checked "runtime_inspect" "runtime_inspect_timeout" 20s \
+    "$run_root/runtime-inspect.json" "$run_root/log/runtime-inspect.log" inspect "$name"
+  [ -s "$run_root/runtime-raw.json" ]
+  [ "$(wc -c <"$run_root/runtime-raw.json")" -le 32768 ]
+
+  mkdir -m 0755 "$run_root/verification-input"
+  cp "$run_root/runtime-raw.json" "$run_root/verification-input/runtime-raw.json"
+  cp "$run_root/runtime-inspect.json" "$run_root/verification-input/runtime-inspect.json"
+  cp "$run_root/runtime-hashes.json" "$run_root/verification-input/runtime-hashes.json"
+  seal_readonly_tree "$run_root/verification-input"
+
+  node_bounded 30s "$VERIFIER" --self-check "$MANIFEST" "$SCRIPT_PATH" "$HARNESS" "$VERIFIER" "$ARTIFACT" >/dev/null 2>&1
+  node_bounded 90s "$VERIFIER" --rehash-stage \
+    "$run_root/mount/input/runtime_stage.json" \
+    "$run_root/mount/input/physical_probe_pass_b_manifest.json" \
+    "$run_root/mount/launcher/pass-b-z2m-runtime" \
+    "$run_root/mount/harness/test_physical_probe_z2m_runtime.mjs" \
+    "$run_root/mount/verifier/verify_physical_probe_z2m_runtime.mjs" \
+    "$run_root/mount/input/true_family_brt_probe.mjs" \
+    "$run_root/mount/input/true_family_brt_probe.manifest.json" \
+    "$run_root/mount/input/physical_probe_preflight_vectors.json" \
+    "$run_root/mount/runtime/run.sh" \
+    "$run_root/runtime-hashes.json" \
+    "$run_root/mount/upstream/package.json" \
+    "$run_root/mount/upstream/pnpm-lock.yaml" \
+    "$run_root/mount/z2m/package.json" \
+    "$run_root/mount/z2m/dist" \
+    "$run_root/mount/z2m/node_modules" >/dev/null 2>&1
+
+  local verifier_name="tf-pass-b0-$RUN_TOKEN-r$ordinal-final-verifier"
+  run_disposable "$verifier_name" 90s "$run_root/final-evidence.json" "$run_root/log/final-verifier" \
+    --network=none \
+    --mount "type=bind,source=$run_root/mount/input,target=/input,readonly" \
+    --mount "type=bind,source=$run_root/mount/harness,target=/harness,readonly" \
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
+    --mount "type=bind,source=$run_root/mount/launcher,target=/launcher,readonly" \
+    --mount "type=bind,source=$run_root/mount/upstream,target=/upstream,readonly" \
+    --mount "type=bind,source=$run_root/mount/runtime,target=/runtime,readonly" \
+    --mount "type=bind,source=$run_root/mount/z2m,target=/z2m,readonly" \
+    --mount "type=bind,source=$run_root/verification-input,target=/verification-input,readonly" \
+    --entrypoint=/usr/local/bin/node \
+    "$IMAGE" /verifier/verify_physical_probe_z2m_runtime.mjs --verify-run \
+      /verification-input/runtime-raw.json /verification-input/runtime-inspect.json /input/physical_probe_pass_b_manifest.json /input/runtime_stage.json \
+      /launcher/pass-b-z2m-runtime /harness/test_physical_probe_z2m_runtime.mjs \
+      /verifier/verify_physical_probe_z2m_runtime.mjs /input/true_family_brt_probe.mjs \
+      /input/true_family_brt_probe.manifest.json /input/physical_probe_preflight_vectors.json \
+      /runtime/run.sh /verification-input/runtime-hashes.json /upstream/package.json /upstream/pnpm-lock.yaml \
+      /z2m/package.json /z2m/dist /z2m/node_modules
+  [ -s "$run_root/final-evidence.json" ]
+  [ "$(wc -c <"$run_root/final-evidence.json")" -le 32768 ]
+  node_bounded 30s "$VERIFIER" --validate-final "$run_root/final-evidence.json" "$MANIFEST" "$ARTIFACT" "$run_root/mount/input/runtime_stage.json" >/dev/null 2>&1
+  node_bounded 90s "$VERIFIER" --rehash-stage \
+    "$run_root/mount/input/runtime_stage.json" \
+    "$run_root/mount/input/physical_probe_pass_b_manifest.json" \
+    "$run_root/mount/launcher/pass-b-z2m-runtime" \
+    "$run_root/mount/harness/test_physical_probe_z2m_runtime.mjs" \
+    "$run_root/mount/verifier/verify_physical_probe_z2m_runtime.mjs" \
+    "$run_root/mount/input/true_family_brt_probe.mjs" \
+    "$run_root/mount/input/true_family_brt_probe.manifest.json" \
+    "$run_root/mount/input/physical_probe_preflight_vectors.json" \
+    "$run_root/mount/runtime/run.sh" \
+    "$run_root/runtime-hashes.json" \
+    "$run_root/mount/upstream/package.json" \
+    "$run_root/mount/upstream/pnpm-lock.yaml" \
+    "$run_root/mount/z2m/package.json" \
+    "$run_root/mount/z2m/dist" \
+    "$run_root/mount/z2m/node_modules" >/dev/null 2>&1
+  remove_container_checked "$name" "$run_root/log/runtime-remove.log"
+  remove_network "$network"
+  RUN_EVIDENCE="$run_root/final-evidence.json"
+}
+
+RUN_EVIDENCE=""
+run_with_fixed_failure "run_one_failed" acquire_run 1
+EVIDENCE_ONE="$RUN_EVIDENCE"
+run_with_fixed_failure "run_two_failed" acquire_run 2
+EVIDENCE_TWO="$RUN_EVIDENCE"
+run_with_fixed_failure "final_stage_rehash" rehash_run 1
+run_with_fixed_failure "final_stage_rehash" rehash_run 2
+ACTIVE_FAILURE_CODE="non_reproducible_evidence"
+cmp -s "$EVIDENCE_ONE" "$EVIDENCE_TWO"
+ACTIVE_FAILURE_CODE="final_self_check"
+node_bounded 30s "$VERIFIER" --self-check "$MANIFEST" "$SCRIPT_PATH" "$HARNESS" "$VERIFIER" "$ARTIFACT" >/dev/null 2>&1
+ACTIVE_FAILURE_CODE="final_evidence"
+node_bounded 30s "$VERIFIER" --validate-final "$EVIDENCE_ONE" "$MANIFEST" "$ARTIFACT" "$ROOT/run-1/mount/input/runtime_stage.json" >/dev/null 2>&1
+node_bounded 30s "$VERIFIER" --validate-final "$EVIDENCE_TWO" "$MANIFEST" "$ARTIFACT" "$ROOT/run-2/mount/input/runtime_stage.json" >/dev/null 2>&1
+ACTIVE_FAILURE_CODE="launcher_failure"
+FINAL_EVIDENCE="$(<"$EVIDENCE_ONE")"
+
+FINAL_ROOT="$ROOT"
+ACTIVE_FAILURE_CODE="cleanup_incomplete"
+
+if LEFTOVER_CONTAINERS="$(close_fds_exec timeout --foreground --kill-after=5s 15s env -i PATH="$PATH" docker ps -aq --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)"; then
+  CLEANUP_QUERY_STATUS=0
+else
+  CLEANUP_QUERY_STATUS="$?"
+fi
+if [ "$CLEANUP_QUERY_STATUS" -eq 124 ] || [ "$CLEANUP_QUERY_STATUS" -eq 137 ]; then
+  fail "cleanup_query_timeout"
+fi
+if [ "$CLEANUP_QUERY_STATUS" -ne 0 ]; then
+  fail "cleanup_verification_failed"
+fi
+if LEFTOVER_NETWORKS="$(close_fds_exec timeout --foreground --kill-after=5s 15s env -i PATH="$PATH" docker network ls -q --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)"; then
+  CLEANUP_QUERY_STATUS=0
+else
+  CLEANUP_QUERY_STATUS="$?"
+fi
+if [ "$CLEANUP_QUERY_STATUS" -eq 124 ] || [ "$CLEANUP_QUERY_STATUS" -eq 137 ]; then
+  fail "cleanup_query_timeout"
+fi
+if [ "$CLEANUP_QUERY_STATUS" -ne 0 ]; then
+  fail "cleanup_verification_failed"
+fi
+[ -z "$LEFTOVER_CONTAINERS" ]
+[ -z "$LEFTOVER_NETWORKS" ]
+rm -rf -- "$FINAL_ROOT"
+[ ! -e "$FINAL_ROOT" ]
+kill "$WATCHDOG_PID" >/dev/null 2>&1 || true
+wait "$WATCHDOG_PID" >/dev/null 2>&1 || true
+WATCHDOG_PID=""
+ROOT=""
+DEADLINE_ACTIVE="false"
+trap - EXIT HUP INT TERM ERR
+printf '%s\n' "$FINAL_EVIDENCE"
