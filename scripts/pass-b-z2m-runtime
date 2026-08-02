@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="a7fd5302f1ee8d4a6733cac756efb5e3bc94a9de5a1303e5ed970d9fc02f7610"
+EXPECTED_LAUNCHER_SHA256="6b1523bfd3e467efc33bc960c2f086823298e124077b2b8ef502698cbaa39283"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -398,205 +398,6 @@ classify_inherited_fds() {
 
 run_with_fixed_failure "inherited_fd" classify_inherited_fds
 
-permission_start_checked() {
-  local role="$1"
-  local name="$2"
-  local output="$3"
-  local log_prefix="$4"
-  local start_status inspect_status classifier_status code generic
-  case "$role" in
-    producer)
-      generic="permission_producer_start"
-      ;;
-    runtime)
-      generic="permission_runtime_start"
-      ;;
-    *)
-      fail "permission_runtime_start"
-      ;;
-  esac
-  if docker_bounded 45s start -a "$name" >"$output" 2>"$log_prefix.start.err"; then
-    start_status=0
-  else
-    start_status="$?"
-  fi
-  if docker_bounded 15s inspect --format '{{json .State}}' "$name" >"$log_prefix.state.json" 2>"$log_prefix.inspect.err"; then
-    inspect_status=0
-  else
-    inspect_status="$?"
-  fi
-  if code="$(node_bounded 10s "$VERIFIER" --classify-permission-start \
-    "$role" "$start_status" "$inspect_status" "$output" "$log_prefix.state.json" \
-    2>"$log_prefix.classifier.err")"; then
-    classifier_status=0
-  else
-    classifier_status="$?"
-  fi
-  if [ "$classifier_status" -ne 0 ]; then
-    code="$generic"
-  fi
-  case "$code" in
-    pass)
-      return 0
-      ;;
-    permission_producer_start|permission_producer_start_timeout|permission_producer_inspect|permission_producer_inspect_timeout|permission_producer_oom|permission_producer_state_error_rlimit|permission_producer_state_error_mount|permission_producer_state_error_permission|permission_producer_state_error_invalid_argument|permission_producer_state_error_exec|permission_producer_state_error_unknown|permission_producer_uid_mismatch|permission_producer_output_write_eacces|permission_producer_output_write_eperm|permission_producer_output_write_erofs|permission_producer_output_write_other|permission_runtime_start|permission_runtime_start_timeout|permission_runtime_inspect|permission_runtime_inspect_timeout|permission_runtime_oom|permission_runtime_state_error_rlimit|permission_runtime_state_error_mount|permission_runtime_state_error_permission|permission_runtime_state_error_invalid_argument|permission_runtime_state_error_exec|permission_runtime_state_error_unknown|permission_runtime_uid_mismatch|permission_runtime_input_read|permission_runtime_immutable_write_allowed|permission_runtime_immutable_write_error|permission_runtime_output_write_eacces|permission_runtime_output_write_eperm|permission_runtime_output_write_erofs|permission_runtime_output_write_other)
-      fail "$code"
-      ;;
-    *)
-      fail "$generic"
-      ;;
-  esac
-}
-
-permission_self_check() {
-  local simulation_root producer_output runtime_output producer_name runtime_name output
-  local docker_status remaining_containers remaining_networks query_status
-  if ! command -v docker >/dev/null 2>&1; then
-    return 0
-  fi
-  capture_expected_status docker_status docker_info_pre_root >/dev/null 2>&1
-  if [ "$docker_status" -eq 124 ] || [ "$docker_status" -eq 137 ]; then
-    fail "permission_docker_info_timeout"
-  fi
-  if [ "$docker_status" -ne 0 ]; then
-    return 0
-  fi
-  capture_host_identity
-  if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$RUNNER_TEMP" ] || [[ "$RUNNER_TEMP" != /* ]] || [[ "$RUNNER_TEMP" = *","* ]]; then
-    return 1
-  fi
-  ROOT="$(mktemp -d "$RUNNER_TEMP/true-family-pass-b0.XXXXXXXX")"
-  chmod 0700 "$ROOT"
-  [ "$(stat -c '%a' "$ROOT")" = "700" ]
-  mkdir -m 0700 "$ROOT/docker-home" "$ROOT/docker-config" "$ROOT/log"
-  printf '{}\n' >"$ROOT/docker-config/config.json"
-  RUN_TOKEN="$(node_bounded 5s -e 'process.stdout.write(require("node:crypto").randomBytes(16).toString("hex"))')"
-  simulation_root="$ROOT/permission-simulation"
-  producer_output="$simulation_root/producer-output"
-  runtime_output="$simulation_root/runtime-output"
-  mkdir -m 0700 "$simulation_root" "$producer_output"
-  mkdir -m 0777 "$runtime_output"
-  assert_writable_root "$producer_output"
-  [ "$(stat -c '%u:%g' "$runtime_output")" = "$HOST_UID:$HOST_GID" ]
-  [ "$(stat -c '%a' "$runtime_output")" = "777" ]
-
-  capture_expected_status docker_status docker_bounded 15s image inspect "$IMAGE" >/dev/null 2>"$ROOT/log/permission-image-inspect.log"
-  if [ "$docker_status" -eq 124 ] || [ "$docker_status" -eq 137 ]; then
-    fail "permission_image_inspect_timeout"
-  fi
-  if [ "$docker_status" -ne 0 ]; then
-    docker_checked "permission_image_pull" "permission_image_pull_timeout" 120s \
-      "$ROOT/log/permission-image-pull.out" "$ROOT/log/permission-image-pull.err" \
-      pull --platform="$PLATFORM" "$IMAGE"
-  fi
-
-  producer_name="tf-pass-b0-$RUN_TOKEN-permission-producer"
-  docker_checked "permission_producer_create" "permission_producer_create_timeout" 20s \
-    "$ROOT/log/permission-producer-create.out" "$ROOT/log/permission-producer-create.err" \
-    create \
-    --name "$producer_name" \
-    --label "true-family-pass-b0=$RUN_TOKEN" \
-    --platform="$PLATFORM" \
-    --pull=never \
-    --network=none \
-    --read-only \
-    --cap-drop=ALL \
-    --security-opt=no-new-privileges \
-    --pids-limit=64 \
-    --memory=256m \
-    --memory-swap=256m \
-    --cpus=1 \
-    --ulimit=core=0:0 \
-    --ulimit=fsize=1048576:1048576 \
-    --ulimit=nofile=1024:1024 \
-    --ipc=private \
-    --cgroupns=private \
-    "${LOG_FLAGS[@]}" \
-    --init \
-    --user="$HOST_UID:$HOST_GID" \
-    --restart=no \
-    --tmpfs="/tmp:rw,noexec,nosuid,nodev,size=8388608,mode=1777,uid=$HOST_UID,gid=$HOST_GID" \
-    --mount "type=bind,source=$producer_output,target=/producer" \
-    --entrypoint=/usr/local/bin/node \
-    "$IMAGE" -e 'const fs=require("node:fs");const fail=(token)=>{process.stdout.write(token);process.exitCode=1};const writeToken=(error)=>({EACCES:"output-write-EACCES",EPERM:"output-write-EPERM",EROFS:"output-write-EROFS"})[error?.code]??"output-write-other";(()=>{if(process.getuid()!==Number(process.argv[1]))return fail("uid-mismatch");try{fs.writeFileSync("/producer/output","producer\n")}catch(error){return fail(writeToken(error))}process.stdout.write("producer-pass")})()' "$HOST_UID"
-  CONTAINERS+=("$producer_name")
-  output="$ROOT/log/permission-producer.out"
-  permission_start_checked producer "$producer_name" "$output" "$ROOT/log/permission-producer"
-  [ "$(<"$output")" = "producer-pass" ]
-  [ "$(<"$producer_output/output")" = "producer" ]
-  assert_host_owned_tree "$producer_output"
-  seal_readonly_tree "$producer_output"
-
-  runtime_name="tf-pass-b0-$RUN_TOKEN-permission-runtime"
-  docker_checked "permission_runtime_create" "permission_runtime_create_timeout" 20s \
-    "$ROOT/log/permission-runtime-create.out" "$ROOT/log/permission-runtime-create.err" \
-    create \
-    --name "$runtime_name" \
-    --label "true-family-pass-b0=$RUN_TOKEN" \
-    --platform="$PLATFORM" \
-    --pull=never \
-    --network=none \
-    --read-only \
-    --cap-drop=ALL \
-    --security-opt=no-new-privileges \
-    --pids-limit=64 \
-    --memory=256m \
-    --memory-swap=256m \
-    --cpus=1 \
-    --ulimit=core=0:0 \
-    --ulimit=fsize=1048576:1048576 \
-    --ulimit=nofile=1024:1024 \
-    --ulimit=nproc=64:64 \
-    --ipc=private \
-    --cgroupns=private \
-    "${LOG_FLAGS[@]}" \
-    --init \
-    --user=65532:65532 \
-    --restart=no \
-    --tmpfs=/tmp:rw,noexec,nosuid,nodev,size=8388608,mode=1777,uid=65532,gid=65532 \
-    --mount "type=bind,source=$producer_output,target=/input,readonly" \
-    --mount "type=bind,source=$runtime_output,target=/runtime-output" \
-    --entrypoint=/usr/local/bin/node \
-    "$IMAGE" -e 'const fs=require("node:fs");const fail=(token)=>{process.stdout.write(token);process.exitCode=1};const writeToken=(error)=>({EACCES:"output-write-EACCES",EPERM:"output-write-EPERM",EROFS:"output-write-EROFS"})[error?.code]??"output-write-other";(()=>{if(process.getuid()!==65532)return fail("uid-mismatch");let input;try{input=fs.readFileSync("/input/output","utf8")}catch{return fail("input-read-failed")}if(input!=="producer\n")return fail("input-read-failed");try{fs.writeFileSync("/input/blocked","x");return fail("immutable-write-allowed")}catch(error){if(!["EACCES","EPERM","EROFS"].includes(error?.code))return fail("immutable-write-unexpected-code")}try{fs.writeFileSync("/runtime-output/written","runtime\n")}catch(error){return fail(writeToken(error))}process.stdout.write("runtime-pass")})()'
-  CONTAINERS+=("$runtime_name")
-  output="$ROOT/log/permission-runtime.out"
-  permission_start_checked runtime "$runtime_name" "$output" "$ROOT/log/permission-runtime"
-  [ "$(<"$output")" = "runtime-pass" ]
-  [ "$(<"$runtime_output/written")" = "runtime" ]
-  [ "$(stat -c '%u:%g' "$runtime_output/written")" = "65532:65532" ]
-  [ ! -e "$producer_output/blocked" ]
-
-  docker_checked "permission_cleanup" "permission_cleanup_timeout" 15s \
-    /dev/null "$ROOT/log/permission-producer-remove.err" rm -f "$producer_name"
-  docker_checked "permission_cleanup" "permission_cleanup_timeout" 15s \
-    /dev/null "$ROOT/log/permission-runtime-remove.err" rm -f "$runtime_name"
-  cleanup
-  set -e
-  if remaining_containers="$(close_fds_exec timeout --foreground --kill-after=5s 15s env -i PATH="$PATH" docker ps -aq --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)"; then
-    query_status=0
-  else
-    query_status="$?"
-  fi
-  if [ "$query_status" -eq 124 ] || [ "$query_status" -eq 137 ]; then
-    fail "permission_cleanup_query_timeout"
-  fi
-  [ "$query_status" -eq 0 ]
-  if remaining_networks="$(close_fds_exec timeout --foreground --kill-after=5s 15s env -i PATH="$PATH" docker network ls -q --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)"; then
-    query_status=0
-  else
-    query_status="$?"
-  fi
-  if [ "$query_status" -eq 124 ] || [ "$query_status" -eq 137 ]; then
-    fail "permission_cleanup_query_timeout"
-  fi
-  [ "$query_status" -eq 0 ]
-  [ -z "$remaining_containers" ]
-  [ -z "$remaining_networks" ]
-  [ ! -e "$ROOT" ]
-  ROOT=""
-  RUN_TOKEN=""
-}
-
 case "${1:-}" in
   "--fd-probe")
     fail "fd_probe_failed"
@@ -611,10 +412,9 @@ case "${1:-}" in
       fi
     done
     ACTIVE_FAILURE_CODE="self_check_failed"
-    SELF_CHECK="$(node_bounded 30s "$VERIFIER" --self-check "$MANIFEST" "$SCRIPT_PATH" "$HARNESS" "$VERIFIER" "$ARTIFACT" 2>/dev/null)"
+    SELF_CHECK="$(node_bounded 25s "$VERIFIER" --self-check "$MANIFEST" "$SCRIPT_PATH" "$HARNESS" "$VERIFIER" "$ARTIFACT" 2>/dev/null)"
     [ "$(printf '%s' "$SELF_CHECK" | wc -c)" -le 2048 ]
     ACTIVE_FAILURE_CODE="launcher_failure"
-    run_with_fixed_failure "permission_self_check_failed" permission_self_check
     trap - EXIT HUP INT TERM ERR
     printf '%s\n' "$SELF_CHECK"
     exit 0

@@ -194,16 +194,11 @@ networkless, read-only, non-root, capability-free, resource-bounded, and receive
 only read-only input mounts plus private tmpfs data and temporary directories.
 Immutable mount directories are mode `0555` and their files are mode `0444`,
 except the read-only runner which is mode `0555`. Ownership, traversal,
-readability, and nonwritability are asserted before mounting. Docker-backed
-self-check additionally gives both probe containers `pids=64`, 256 MiB
-memory/swap, one CPU, and `nofile=1024`; it is testing ownership and mounts, not
-minimum Node.js resources. The host-UID producer creates an output and UID 65532
-must read but cannot modify its sealed result. If either attached process fails,
-bounded private `.State` inspection maps only allowlisted tokens, status, OOM,
-or fixed `rlimit`, mount, permission, invalid-argument, exec, and unknown
-state-error categories to sanitized codes before cleanup. Raw daemon errors are
-never emitted. Dedicated writable work, output, and store trees contain no
-verifier source. It exercises the real
+readability, and nonwritability are asserted before mounting. During each actual
+full runtime, UID 65532 must read the staged inputs, must fail write attempts to
+all seven immutable mounts and the read-only root, and must report those checks
+in verifier-enforced evidence. Dedicated writable work, output, and store trees
+contain no verifier source. It exercises the real
 Zigbee2MQTT EventBus,
 disconnected Mqtt object, ExternalExtensions/ExternalJS loader, and only the
 Controller add/remove/get/enable API shell. It does not construct, start, or stop
@@ -242,7 +237,9 @@ The HAOS development host has no Docker and is not an amd64 GitHub runner. Norma
 local execution therefore exits before network or temporary-file creation with a
 fixed `inherited_environment`, `docker_required`, or `ci_runner_required` result;
 it never falls back to unshare, DAC permissions, or Landlock. Local validation
-is limited to `scripts/pass-b-z2m-runtime --self-check` and static project tests.
+is limited to the strictly static `--shell-self-check`, `--self-check`, and
+project tests; neither self-check uses Docker, network access, or a temporary
+PASS B0 root.
 
 The physical-probe source is offline and unwired: integration setup does not
 import or register it, and this project contains no automatic external-extension

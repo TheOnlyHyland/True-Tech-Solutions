@@ -2,7 +2,6 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import {spawnSync} from "node:child_process";
@@ -219,7 +218,6 @@ function validateManifest(manifest) {
         "platform",
         "producer_user",
         "runtime_user",
-        "permission_self_check_limits",
         "log_policy",
         "fetch_host_allowlist_enforced",
         "explicit_fetch_targets",
@@ -229,15 +227,6 @@ function validateManifest(manifest) {
     gate(manifest.container.platform === "linux/amd64" && manifest.container.fetch_host_allowlist_enforced === false, "manifest_platform");
     gate(manifest.container.producer_user === "host-runner-numeric-nonroot" && manifest.container.runtime_user === "65532:65532", "manifest_users");
     gate(manifest.container.limits.nproc === 64, "manifest_nproc_limits");
-    gate(same(manifest.container.permission_self_check_limits, {
-        pids: 64,
-        memory_bytes: 268435456,
-        memory_swap_bytes: 268435456,
-        nano_cpus: 1000000000,
-        nofile: 1024,
-        producer_nproc_applied: false,
-        runtime_nproc: 64,
-    }), "manifest_permission_limits");
     gate(same(manifest.container.log_policy, {
         driver: "local",
         options: {"max-file": "1", "max-size": "1m"},
@@ -895,80 +884,6 @@ function validateAttachLogConfig(logConfig) {
     }), "inspect_log_policy");
 }
 
-function permissionStartGeneric(role) {
-    return role === "producer" ? "permission_producer_start" : "permission_runtime_start";
-}
-
-function permissionStateErrorCategory(value) {
-    const normalized = value.toLowerCase();
-    if (/\b(?:rlimit|ulimit|setrlimit)\b|resource limit/u.test(normalized)) return "rlimit";
-    if (/\bmount(?:ed|ing)?\b|\bbind\b|\bvolume\b/u.test(normalized)) return "mount";
-    if (/permission denied|operation not permitted|access denied|\beacces\b|\beperm\b/u.test(normalized)) return "permission";
-    if (/invalid argument|\beinval\b/u.test(normalized)) return "invalid_argument";
-    if (/\bexec\b|executable|entrypoint/u.test(normalized)) return "exec";
-    return "unknown";
-}
-
-function classifyPermissionStart(role, startStatus, inspectStatus, output, stateText) {
-    const generic = permissionStartGeneric(role);
-    if (!new Set(["producer", "runtime"]).has(role)) return "permission_runtime_start";
-    if (!Number.isInteger(startStatus) || startStatus < 0 || !Number.isInteger(inspectStatus) || inspectStatus < 0) return generic;
-    const prefix = `permission_${role}`;
-    if ([124, 137].includes(inspectStatus)) return `${prefix}_inspect_timeout`;
-    if (inspectStatus !== 0) return `${prefix}_inspect`;
-    let state;
-    try {
-        state = JSON.parse(stateText);
-    } catch {
-        return generic;
-    }
-    if (!state || typeof state !== "object" || Array.isArray(state)) return generic;
-    if (typeof state.OOMKilled !== "boolean" || typeof state.Error !== "string" || !Number.isInteger(state.ExitCode)) return generic;
-    if (typeof state.Status !== "string" || typeof state.Running !== "boolean") return generic;
-    if (state.OOMKilled) return `${prefix}_oom`;
-    if (state.Error !== "") return `${prefix}_state_error_${permissionStateErrorCategory(state.Error)}`;
-    if ([124, 137].includes(startStatus)) return `${prefix}_start_timeout`;
-    const commonTokens = new Map([
-        ["uid-mismatch", `${prefix}_uid_mismatch`],
-        ["output-write-EACCES", `${prefix}_output_write_eacces`],
-        ["output-write-EPERM", `${prefix}_output_write_eperm`],
-        ["output-write-EROFS", `${prefix}_output_write_erofs`],
-        ["output-write-other", `${prefix}_output_write_other`],
-    ]);
-    const runtimeTokens = new Map([
-        ["input-read-failed", "permission_runtime_input_read"],
-        ["immutable-write-allowed", "permission_runtime_immutable_write_allowed"],
-        ["immutable-write-unexpected-code", "permission_runtime_immutable_write_error"],
-    ]);
-    if (commonTokens.has(output)) return commonTokens.get(output);
-    if (role === "runtime" && runtimeTokens.has(output)) return runtimeTokens.get(output);
-    if (startStatus !== 0 || state.ExitCode !== 0 || state.Status !== "exited" || state.Running) return generic;
-    return output === `${role}-pass` ? "pass" : generic;
-}
-
-function readPrivateDiagnostic(filePath, maximumBytes) {
-    try {
-        const metadata = fs.lstatSync(filePath);
-        if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1 || metadata.size > maximumBytes) return null;
-        const bytes = fs.readFileSync(filePath);
-        const text = bytes.toString("utf8");
-        return Buffer.from(text, "utf8").equals(bytes) ? text : null;
-    } catch {
-        return null;
-    }
-}
-
-function classifyPermissionStartFiles(role, startStatusText, inspectStatusText, outputPath, statePath) {
-    const parseStatus = (value) => /^(?:0|[1-9][0-9]{0,2})$/u.test(value) ? Number(value) : -1;
-    return classifyPermissionStart(
-        role,
-        parseStatus(startStatusText),
-        parseStatus(inspectStatusText),
-        readPrivateDiagnostic(outputPath, 128),
-        readPrivateDiagnostic(statePath, 4096),
-    );
-}
-
 function validateInspect(inspect, manifest) {
     gate(Array.isArray(inspect) && inspect.length === 1, "inspect_shape");
     const item = inspect[0];
@@ -1472,7 +1387,7 @@ async function fdSelfTest(launcherPath) {
     gate(value.failure_code === "inherited_fd", "fd_self_test");
 }
 
-async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
+async function selfTests(launcherPath, harnessText, sourceText, manifest, manifestDigest) {
     const valid = tarFixture([tarHeader("package/file.txt", "0", Buffer.from("safe"))]);
     gate(parseStrictTarGzip(valid).length === 1, "tar_self_test");
     const bad = [
@@ -1492,36 +1407,13 @@ async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
         }
         gate(rejected, "tar_self_test");
     }
-    const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), "true-family-pass-b0-install-"));
-    try {
-        const source = path.join(installRoot, "source");
-        const work = path.join(installRoot, "work");
-        fs.mkdirSync(source, {mode: 0o700});
-        fs.mkdirSync(work, {mode: 0o700});
-        fs.writeFileSync(path.join(source, "package.json"), `${JSON.stringify({name: "fixture", scripts: {start: "node index.js"}}, null, 4)}\n`, {mode: 0o600});
-        fs.writeFileSync(path.join(source, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", {mode: 0o600});
-        fs.chmodSync(path.join(source, "package.json"), 0o444);
-        fs.chmodSync(path.join(source, "pnpm-lock.yaml"), 0o444);
-        fs.chmodSync(source, 0o555);
-        const sourceBefore = permissionSnapshot(source);
-        prepareInstall(source, work);
-        gate(same(permissionSnapshot(source), sourceBefore), "install_self_test_source");
-        gate((fs.lstatSync(work).mode & 0o777) === 0o700, "install_self_test_mode");
-        gate((fs.lstatSync(path.join(work, "package.json")).mode & 0o777) === 0o600, "install_self_test_mode");
-        const packageFile = fs.openSync(path.join(work, "package.json"), "r+");
-        fs.closeSync(packageFile);
-        gate(readJson(path.join(work, "package.json"), "install_self_test_package").scripts.preinstall.includes("lifecycle-canary"), "install_self_test_package");
-    } finally {
-        normalizeWritableTree(installRoot);
-        fs.rmSync(installRoot, {recursive: true, force: true});
-    }
     const launcher = fs.readFileSync(launcherPath, "utf8");
     const original = normalizedLauncherDigestBytes(launcher).digest;
     gate(normalizedLauncherDigestBytes(`${launcher}\n# mutation\n`).digest !== original, "launcher_mutation_self_test");
     const exactLogFlags = "LOG_FLAGS=(\n  --log-driver=local\n  --log-opt=max-size=1m\n  --log-opt=max-file=1\n)";
     gate(launcher.includes(exactLogFlags) && !launcher.includes("--log-driver=none"), "attach_log_policy_source");
-    gate((launcher.match(/\$\{LOG_FLAGS\[@\]\}/gu) ?? []).length === 3, "attach_log_policy_source");
-    gate((launcher.match(/start -a/gu) ?? []).length === 2, "attach_log_policy_source");
+    gate((launcher.match(/\$\{LOG_FLAGS\[@\]\}/gu) ?? []).length === 1, "attach_log_policy_source");
+    gate((launcher.match(/start -a/gu) ?? []).length === 1, "attach_log_policy_source");
     const shellArray = (name) => {
         const match = launcher.match(new RegExp(`${name}=\\(\\n([\\s\\S]*?)\\n\\)`, "u"));
         gate(match !== null, "nproc_policy_source");
@@ -1533,19 +1425,32 @@ async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
     gate(commonFlags.includes("--pids-limit=64") && !commonFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(producerFlags.includes("--user=\"$HOST_UID:$HOST_GID\"") && !producerFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(runtimeFlags.includes("--user=65532:65532") && runtimeFlags.includes("--ulimit=nproc=64:64"), "nproc_policy_source");
-    gate((launcher.match(/--ulimit=nproc=/gu) ?? []).length === 2, "nproc_policy_source");
-    gate((launcher.match(/--ulimit=nproc=64:64/gu) ?? []).length === 2, "nproc_policy_source");
+    gate((launcher.match(/--ulimit=nproc=/gu) ?? []).length === 1, "nproc_policy_source");
+    gate((launcher.match(/--ulimit=nproc=64:64/gu) ?? []).length === 1, "nproc_policy_source");
     gate(!launcher.includes("--ulimit=nproc=16:16") && !launcher.includes("--pids-limit=16"), "nproc_policy_source");
-    gate((launcher.match(/--pids-limit=64/gu) ?? []).length === 3, "permission_resource_source");
-    gate((launcher.match(/--memory=256m/gu) ?? []).length === 2 && (launcher.match(/--memory-swap=256m/gu) ?? []).length === 2, "permission_resource_source");
-    gate((launcher.match(/--ulimit=nofile=1024:1024/gu) ?? []).length === 3 && (launcher.match(/--cpus=1/gu) ?? []).length === 3, "permission_resource_source");
-    gate(launcher.includes('permission_start_checked producer "$producer_name"') && launcher.includes('permission_start_checked runtime "$runtime_name"'), "permission_diagnostic_source");
-    gate(!launcher.includes('docker_checked "permission_producer_start"') && !launcher.includes('docker_checked "permission_runtime_start"'), "permission_diagnostic_source");
-    gate(launcher.includes("inspect --format '{{json .State}}'") && launcher.includes("--classify-permission-start"), "permission_diagnostic_source");
-    for (const token of ["uid-mismatch", "input-read-failed", "immutable-write-allowed", "immutable-write-unexpected-code", "output-write-EACCES", "output-write-EPERM", "output-write-EROFS", "output-write-other"]) {
-        gate(launcher.includes(token), "permission_diagnostic_source");
+    const selfCheckBranch = launcher.slice(launcher.indexOf('  "--self-check")'), launcher.indexOf('  "--shell-self-check")'));
+    gate(selfCheckBranch.includes('node_bounded 25s "$VERIFIER" --self-check'), "static_self_check_source");
+    for (const forbidden of ["docker", "RUNNER_TEMP", "mktemp", "ROOT="]) {
+        gate(!selfCheckBranch.includes(forbidden), "static_self_check_source");
     }
-    gate(!launcher.includes("error.message"), "permission_diagnostic_source");
+    for (const assertion of [
+        'seal_readonly_file "$archive"',
+        'assert_host_owned_tree "$run_root/extract-z2m"',
+        'assert_host_owned_tree "$run_root/extract-pnpm"',
+        'assert_host_owned_tree "$store_fetch"',
+        'assert_writable_work_tree "$install"',
+        'assert_host_owned_tree "$install"',
+        'assert_host_owned_tree "$install/node_modules"',
+        'seal_readonly_tree "$run_root/mount/z2m"',
+        'seal_readonly_tree "$run_root/mount/input"',
+        'seal_readonly_tree "$run_root/verification-input"',
+    ]) {
+        gate(launcher.includes(assertion), "actual_run_ownership_source");
+    }
+    for (const mount of ["/input", "/z2m", "/harness", "/verifier", "/launcher", "/upstream", "/runtime", "/"]) {
+        gate(harnessText.includes(`"${mount}"`), "actual_run_immutable_source");
+    }
+    gate(harnessText.includes("immutable_write_attempts_blocked: immutableWriteAttemptsBlocked && immutableMountsReadOnly"), "actual_run_immutable_source");
     validateAttachLogConfig({Type: "local", Config: {"max-file": "1", "max-size": "1m"}});
     for (const invalidLogConfig of [
         {Type: "none", Config: {}},
@@ -1561,44 +1466,6 @@ async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
         }
         gate(rejected, "attach_log_policy_self_test");
     }
-    const permissionState = (overrides = {}) => JSON.stringify({
-        Status: "exited",
-        Running: false,
-        OOMKilled: false,
-        ExitCode: 0,
-        Error: "",
-        ...overrides,
-    });
-    const permissionClassifications = [
-        ["producer", 0, 0, "producer-pass", permissionState(), "pass"],
-        ["runtime", 0, 0, "runtime-pass", permissionState(), "pass"],
-        ["producer", 1, 0, "uid-mismatch", permissionState({ExitCode: 1}), "permission_producer_uid_mismatch"],
-        ["runtime", 1, 0, "input-read-failed", permissionState({ExitCode: 1}), "permission_runtime_input_read"],
-        ["runtime", 1, 0, "immutable-write-allowed", permissionState({ExitCode: 1}), "permission_runtime_immutable_write_allowed"],
-        ["runtime", 1, 0, "immutable-write-unexpected-code", permissionState({ExitCode: 1}), "permission_runtime_immutable_write_error"],
-        ["producer", 1, 0, "output-write-EACCES", permissionState({ExitCode: 1}), "permission_producer_output_write_eacces"],
-        ["runtime", 1, 0, "output-write-EPERM", permissionState({ExitCode: 1}), "permission_runtime_output_write_eperm"],
-        ["runtime", 1, 0, "output-write-EROFS", permissionState({ExitCode: 1}), "permission_runtime_output_write_erofs"],
-        ["producer", 1, 0, "output-write-other", permissionState({ExitCode: 1}), "permission_producer_output_write_other"],
-        ["producer", 137, 0, "", permissionState({OOMKilled: true, ExitCode: 137}), "permission_producer_oom"],
-        ["producer", 125, 0, "", permissionState({Status: "created", Error: "error setting rlimit type 6: operation not permitted", ExitCode: 128}), "permission_producer_state_error_rlimit"],
-        ["runtime", 125, 0, "", permissionState({Status: "created", Error: "error mounting private bind", ExitCode: 128}), "permission_runtime_state_error_mount"],
-        ["producer", 125, 0, "", permissionState({Status: "created", Error: "operation not permitted", ExitCode: 128}), "permission_producer_state_error_permission"],
-        ["runtime", 125, 0, "", permissionState({Status: "created", Error: "invalid argument", ExitCode: 128}), "permission_runtime_state_error_invalid_argument"],
-        ["producer", 125, 0, "", permissionState({Status: "created", Error: "exec format error", ExitCode: 128}), "permission_producer_state_error_exec"],
-        ["runtime", 125, 0, "", permissionState({Status: "created", Error: "private daemon detail", ExitCode: 128}), "permission_runtime_state_error_unknown"],
-        ["producer", 124, 0, "", permissionState({Status: "running", Running: true}), "permission_producer_start_timeout"],
-        ["runtime", 1, 124, "", "", "permission_runtime_inspect_timeout"],
-        ["producer", 1, 1, "", "", "permission_producer_inspect"],
-        ["producer", 1, 0, "unknown", permissionState({ExitCode: 1}), "permission_producer_start"],
-        ["producer", 1, 0, "input-read-failed", permissionState({ExitCode: 1}), "permission_producer_start"],
-        ["runtime", 0, 0, "runtime-pass\n", permissionState(), "permission_runtime_start"],
-        ["runtime", 0, 0, "runtime-pass", "{", "permission_runtime_start"],
-    ];
-    for (const [role, startStatus, inspectStatus, output, state, expected] of permissionClassifications) {
-        const actual = classifyPermissionStart(role, startStatus, inspectStatus, output, state);
-        gate(actual === expected && !actual.includes("private daemon detail"), "permission_classifier_self_test");
-    }
     const launcherLines = launcher.split("\n");
     for (let index = 0; index < launcherLines.length; index += 1) {
         if (launcherLines[index].trim() !== "set +e") continue;
@@ -1606,10 +1473,10 @@ async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
     }
     gate(launcher.includes('capture_expected_status() {') && launcher.includes('if "$@"; then'), "expected_status_source");
     gate(launcher.includes('capture_expected_status status docker_bounded') && launcher.includes('capture_expected_status status close_fds_exec timeout'), "expected_status_source");
-    gate(launcher.includes('capture_expected_status docker_status docker_info_pre_root') && launcher.includes('capture_expected_status DOCKER_INFO_STATUS docker_info_pre_root'), "expected_status_source");
+    gate(launcher.includes('capture_expected_status DOCKER_INFO_STATUS docker_info_pre_root'), "expected_status_source");
     gate(launcher.includes('capture_expected_status IMAGE_PROBE_STATUS docker_bounded 15s image inspect'), "expected_status_source");
-    gate(launcher.includes('if remaining_containers="$(close_fds_exec timeout') && launcher.includes('if LEFTOVER_CONTAINERS="$(close_fds_exec timeout'), "expected_status_source");
-    gate(launcher.includes('if remaining_networks="$(close_fds_exec timeout') && launcher.includes('if LEFTOVER_NETWORKS="$(close_fds_exec timeout'), "expected_status_source");
+    gate(launcher.includes('if LEFTOVER_CONTAINERS="$(close_fds_exec timeout'), "expected_status_source");
+    gate(launcher.includes('if LEFTOVER_NETWORKS="$(close_fds_exec timeout'), "expected_status_source");
     gate(launcher.includes('trap \'fail "$ACTIVE_FAILURE_CODE"\' ERR'), "unexpected_failure_source");
     const shellSelfCheck = spawnSync(launcherPath, ["--shell-self-check"], {encoding: "utf8", env: {PATH: process.env.PATH}});
     gate(shellSelfCheck.status === 0 && shellSelfCheck.stderr === "", "shell_self_check");
@@ -1690,13 +1557,8 @@ async function main() {
     if (mode === "--self-check") {
         gate(args.length === 5, "arguments");
         const manifest = validateStaticBindings(...args);
-        await selfTests(args[1], fs.readFileSync(args[4], "utf8"), manifest, sha256File(args[0]));
+        await selfTests(args[1], fs.readFileSync(args[2], "utf8"), fs.readFileSync(args[4], "utf8"), manifest, sha256File(args[0]));
         process.stdout.write(`${canonical({schema: "true-family-pass-b0-self-check-v1", result: "pass", launcher_normalized_sha256: manifest.verifier.launcher_normalized_sha256, harness_sha256: manifest.verifier.harness_sha256, verifier_sha256: manifest.verifier.verifier_sha256})}\n`);
-        return;
-    }
-    if (mode === "--classify-permission-start") {
-        gate(args.length === 5, "arguments");
-        process.stdout.write(`${classifyPermissionStartFiles(...args)}\n`);
         return;
     }
     if (mode === "--validate-tar") {
