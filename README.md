@@ -148,9 +148,14 @@ Node tests, for 1,040 total.
 PASS B0 is implemented as a same-repository, reviewed-source, non-authoritative
 GitHub Actions smoke gate in `.github/workflows/pass-b0-runtime.yaml`. It is not
 malicious-source-resistant, independently attested, branch-protection evidence,
-or an authorization input. No successful CI run is recorded here yet, so there is
-no dated result or current evidence digest. Those may be added only after the
-actual `ubuntu-24.04` workflow completes successfully.
+or an authorization input. The first successful `ubuntu-24.04` result completed
+on 2026-08-02 at commit
+`8e367973fb3875a86a2287945ab59ccd7a4b22ee` in GitHub Actions run
+`30769426275`. That run completed both fresh internal replicas, required
+byte-identical normalized verifier output, validated final evidence, verified
+zero labeled containers and networks, and deleted its private run root before
+emitting pass evidence. No evidence artifact was uploaded or retained by the
+repository.
 
 The gate pins the Linux amd64 child image to
 `docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8`.
@@ -527,7 +532,10 @@ enforcement, retained-source privacy proof, deployment/removal workflow, an
 authoritative full-runtime harness, final adapter/radio ordering, and actual-spare
 physical bench proof all remain blocked. PASS B0 provides only a CI smoke of the
 reviewed loader/adapter shell and does not satisfy any of these gates. These
-offline reports do not establish bench or deployment readiness.
+offline reports do not establish bench or deployment readiness. PASS B1 is the
+next gate and must provide disposable real-broker ACL installation/read-back,
+retained replay and source-privacy evidence, and atomic permit consumption under
+a continuously held writer fence.
 
 ## Preview Frontend
 
