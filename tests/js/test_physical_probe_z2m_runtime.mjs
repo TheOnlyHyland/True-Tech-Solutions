@@ -219,6 +219,17 @@ function validateManifest(manifest) {
         containers_removed_before_pass: true,
         cleanup_verified_before_pass: true,
     }), "manifest_log_policy");
+    gate(same(manifest.container.cleanup_policy, {
+        root_pattern: "$RUNNER_TEMP/true-family-pass-b0.*",
+        directory_prepare_command: "find -P <root> -xdev -type d -exec chmod 0700 {} +",
+        files_chmodded: false,
+        symlinks_followed: false,
+        trap_prepare_best_effort: true,
+        final_prepare_after_zero_containers_networks: true,
+        immutable_until_final_validations: true,
+        evidence_emitted_after_root_deletion_verified: true,
+        failure_codes: ["cleanup_prepare_failed", "cleanup_remove_failed", "cleanup_root_remained"],
+    }), "manifest_cleanup_policy");
     gate(same(manifest.container.package_download_policy, {
         implementation: "node:https",
         method: "GET",
@@ -344,7 +355,11 @@ function validateManifest(manifest) {
     gate(manifest.evidence.raw_source_seen_in_process_retained_inventory === true, "manifest_claims");
     gate(manifest.evidence.raw_source_emitted_to_ci_evidence === false && manifest.evidence.broker_delivery_exercised === false, "manifest_claims");
     const externalJsPolicy = manifest.evidence.external_js_node_modules_policy;
-    gate(manifest.evidence.comparison_scope === "normalized-verifier-output-only" && manifest.evidence.raw_runtime_bytes_reproducible === false && same(externalJsPolicy, {
+    gate(manifest.evidence.comparison_scope === "normalized-verifier-output-only" && manifest.evidence.raw_runtime_bytes_reproducible === false
+        && manifest.evidence.immutable_trees_unsealed_only_for_deletion === true
+        && manifest.evidence.cleanup_unseal_after_final_validations_and_zero_resources === true
+        && manifest.evidence.pass_evidence_emitted_after_root_deletion_verified === true
+        && same(externalJsPolicy, {
         pinned_dist_sha256: "b69100d9ec7992eb47ee756d4cbaf540996e30e12b24b8dbb348c05356c72ff2",
         creation: "lazy-inside-loadFiles-loop",
         positive_source_target: "/z2m/node_modules",

@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="558d36215f36e7d051bc5cf6a4bf685322fcca804ec8b7c97cf74ee56c6bd194"
+EXPECTED_LAUNCHER_SHA256="d3cf8be4af4359364e13a87a269064694671f3fc4ce539a67d50064694f422ed"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -293,6 +293,65 @@ remove_container() {
   fi
 }
 
+prepare_root_for_removal() {
+  local root="$1"
+  local runner_temp="${RUNNER_TEMP:-}"
+  [ -n "$root" ]
+  [ -n "$runner_temp" ]
+  [ -n "${HOST_UID:-}" ] && [[ "$HOST_UID" =~ ^[0-9]+$ ]]
+  [ -n "${HOST_GID:-}" ] && [[ "$HOST_GID" =~ ^[0-9]+$ ]]
+  [ "$(dirname -- "$root")" = "$runner_temp" ]
+  case "$(basename -- "$root")" in
+    true-family-pass-b0.*) ;;
+    *) return 1 ;;
+  esac
+  [ -d "$root" ] && [ ! -L "$root" ]
+  [ "$(stat -c '%u:%g' "$root")" = "$HOST_UID:$HOST_GID" ]
+  find -P "$root" -xdev -type d -exec chmod 0700 {} +
+}
+
+cleanup_helper_self_test() {
+  local original_runner_temp="${RUNNER_TEMP:-}"
+  local parent root outside sealed_file canary ok
+  ok="true"
+  parent="$(mktemp -d "${TMPDIR:-/tmp}/true-family-pass-b0-cleanup-self-check.XXXXXXXX")" || return 1
+  root="$parent/true-family-pass-b0.self-check"
+  outside="$parent/outside"
+  sealed_file="$root/nested/deep/sealed-file"
+  canary="$outside/canary"
+  mkdir -p "$root/nested/deep" "$outside" || ok="false"
+  : >"$sealed_file" || ok="false"
+  : >"$canary" || ok="false"
+  ln -s "$outside" "$root/nested/outward" || ok="false"
+  chmod 0444 "$sealed_file" "$canary" || ok="false"
+  chmod 0555 "$root" "$root/nested" "$root/nested/deep" "$outside" || ok="false"
+  RUNNER_TEMP="$parent"
+  HOST_UID="$(id -u)"
+  HOST_GID="$(id -g)"
+  prepare_root_for_removal "$root" || ok="false"
+  [ "$(stat -c '%a' "$root")" = "700" ] || ok="false"
+  [ "$(stat -c '%a' "$root/nested")" = "700" ] || ok="false"
+  [ "$(stat -c '%a' "$root/nested/deep")" = "700" ] || ok="false"
+  [ "$(stat -c '%a' "$sealed_file")" = "444" ] || ok="false"
+  [ -L "$root/nested/outward" ] || ok="false"
+  [ "$(stat -c '%a' "$outside")" = "555" ] || ok="false"
+  [ "$(stat -c '%a' "$canary")" = "444" ] || ok="false"
+  if prepare_root_for_removal "$outside"; then
+    ok="false"
+  fi
+  rm -rf -- "$root" || ok="false"
+  [ ! -e "$root" ] && [ ! -L "$root" ] || ok="false"
+  chmod 0700 "$outside" >/dev/null 2>&1 || true
+  chmod 0600 "$canary" >/dev/null 2>&1 || true
+  rm -rf -- "$parent" >/dev/null 2>&1 || ok="false"
+  if [ -n "$original_runner_temp" ]; then
+    RUNNER_TEMP="$original_runner_temp"
+  else
+    unset RUNNER_TEMP
+  fi
+  [ "$ok" = "true" ]
+}
+
 cleanup() {
   local name
   set +e
@@ -323,11 +382,7 @@ cleanup() {
     fi
   fi
   if [ -n "$ROOT" ]; then
-    case "$ROOT" in
-      "$RUNNER_TEMP"/true-family-pass-b0.*)
-        rm -rf -- "$ROOT"
-        ;;
-    esac
+    prepare_root_for_removal "$ROOT" >/dev/null 2>&1 && rm -rf -- "$ROOT"
   fi
 }
 
@@ -435,6 +490,9 @@ case "${1:-}" in
     if [ "$SHELL_PROBE_STATUS" -ne 1 ]; then
       fail "shell_self_check_failed"
     fi
+    if ! cleanup_helper_self_test; then
+      fail "shell_self_check_failed"
+    fi
     trap - EXIT HUP INT TERM ERR
     printf '%s\n' '{"result":"pass","schema":"true-family-pass-b0-shell-self-check-v1"}'
     exit 0
@@ -463,7 +521,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export LANG="C.UTF-8"
 export LC_ALL="C.UTF-8"
 
-for required_command in bash cat chmod cmp cp dirname docker find git id mkdir mktemp node readlink rm sha256sum stat timeout uname wc; do
+for required_command in bash basename cat chmod cmp cp dirname docker find git id ln mkdir mktemp node readlink rm sha256sum stat timeout uname wc; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     if [ "$required_command" = "docker" ]; then
       fail "docker_required"
@@ -1107,7 +1165,7 @@ ACTIVE_FAILURE_CODE="launcher_failure"
 FINAL_EVIDENCE="$(<"$EVIDENCE_ONE")"
 
 FINAL_ROOT="$ROOT"
-ACTIVE_FAILURE_CODE="cleanup_incomplete"
+ACTIVE_FAILURE_CODE="cleanup_verification_failed"
 
 if LEFTOVER_CONTAINERS="$(close_fds_exec timeout --foreground --kill-after=5s 15s env -i PATH="$PATH" docker ps -aq --filter "label=true-family-pass-b0=$RUN_TOKEN" 2>/dev/null)"; then
   CLEANUP_QUERY_STATUS=0
@@ -1131,10 +1189,18 @@ fi
 if [ "$CLEANUP_QUERY_STATUS" -ne 0 ]; then
   fail "cleanup_verification_failed"
 fi
-[ -z "$LEFTOVER_CONTAINERS" ]
-[ -z "$LEFTOVER_NETWORKS" ]
-rm -rf -- "$FINAL_ROOT"
-[ ! -e "$FINAL_ROOT" ]
+if [ -n "$LEFTOVER_CONTAINERS" ] || [ -n "$LEFTOVER_NETWORKS" ]; then
+  fail "cleanup_verification_failed"
+fi
+if ! prepare_root_for_removal "$FINAL_ROOT"; then
+  fail "cleanup_prepare_failed"
+fi
+if ! rm -rf -- "$FINAL_ROOT"; then
+  fail "cleanup_remove_failed"
+fi
+if [ -e "$FINAL_ROOT" ] || [ -L "$FINAL_ROOT" ]; then
+  fail "cleanup_root_remained"
+fi
 kill "$WATCHDOG_PID" >/dev/null 2>&1 || true
 wait "$WATCHDOG_PID" >/dev/null 2>&1 || true
 WATCHDOG_PID=""

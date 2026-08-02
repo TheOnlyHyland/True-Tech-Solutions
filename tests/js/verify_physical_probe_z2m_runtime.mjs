@@ -231,7 +231,7 @@ function same(left, right) {
 
 function harnessSmokeFailureCodes(source) {
     const helperNames = ["gate", "exactKeys", "readJson", "checkMode", "strictProxy", "bounded"];
-    const expectedLiteralCalls = {gate: 164, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
+    const expectedLiteralCalls = {gate: 165, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
     const masked = source.replace(/(?:async\s+)?function\s+(?:gate|exactKeys|readJson|checkMode|strictProxy|bounded)\s*\([^)]*\)\s*\{/gu, "");
     const codes = [];
     for (const name of helperNames) {
@@ -502,6 +502,7 @@ function validateManifest(manifest) {
         "producer_user",
         "runtime_user",
         "log_policy",
+        "cleanup_policy",
         "package_download_policy",
         "pnpm_diagnostic_policy",
         "start_diagnostics",
@@ -523,6 +524,17 @@ function validateManifest(manifest) {
         containers_removed_before_pass: true,
         cleanup_verified_before_pass: true,
     }), "manifest_log_policy");
+    gate(same(manifest.container.cleanup_policy, {
+        root_pattern: "$RUNNER_TEMP/true-family-pass-b0.*",
+        directory_prepare_command: "find -P <root> -xdev -type d -exec chmod 0700 {} +",
+        files_chmodded: false,
+        symlinks_followed: false,
+        trap_prepare_best_effort: true,
+        final_prepare_after_zero_containers_networks: true,
+        immutable_until_final_validations: true,
+        evidence_emitted_after_root_deletion_verified: true,
+        failure_codes: ["cleanup_prepare_failed", "cleanup_remove_failed", "cleanup_root_remained"],
+    }), "manifest_cleanup_policy");
     gate(same(manifest.container.package_download_policy, {
         implementation: "node:https",
         method: "GET",
@@ -671,6 +683,9 @@ function validateManifest(manifest) {
         },
         comparison_scope: "normalized-verifier-output-only",
         raw_runtime_bytes_reproducible: false,
+        immutable_trees_unsealed_only_for_deletion: true,
+        cleanup_unseal_after_final_validations_and_zero_resources: true,
+        pass_evidence_emitted_after_root_deletion_verified: true,
         claim_limits: CLAIM_LIMITS,
     }), "manifest_evidence");
 }
@@ -2777,9 +2792,34 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(launcher.includes('capture_expected_status IMAGE_PROBE_STATUS docker_bounded 15s image inspect'), "expected_status_source");
     gate(launcher.includes('if LEFTOVER_CONTAINERS="$(close_fds_exec timeout'), "expected_status_source");
     gate(launcher.includes('if LEFTOVER_NETWORKS="$(close_fds_exec timeout'), "expected_status_source");
+    const cleanupHelperSource = launcher.slice(launcher.indexOf("prepare_root_for_removal() {"), launcher.indexOf("cleanup_helper_self_test() {"));
+    for (const required of [
+        '[ -n "$root" ]',
+        '[ "$(dirname -- "$root")" = "$runner_temp" ]',
+        "true-family-pass-b0.*)",
+        '[ -d "$root" ] && [ ! -L "$root" ]',
+        '"$(stat -c \'%u:%g\' "$root")" = "$HOST_UID:$HOST_GID"',
+        'find -P "$root" -xdev -type d -exec chmod 0700 {} +',
+    ]) gate(cleanupHelperSource.includes(required), "cleanup_prepare_source");
+    for (const forbidden of ["-type f", "chmod -R", "find -L"]) gate(!cleanupHelperSource.includes(forbidden), "cleanup_prepare_source");
+    const cleanupSelfTestSource = launcher.slice(launcher.indexOf("cleanup_helper_self_test() {"), launcher.indexOf("cleanup() {"));
+    for (const required of ["nested/deep/sealed-file", "nested/outward", 'stat -c \'%a\' "$outside"', 'prepare_root_for_removal "$outside"', 'rm -rf -- "$root"', '[ ! -e "$root" ] && [ ! -L "$root" ]']) {
+        gate(cleanupSelfTestSource.includes(required), "cleanup_prepare_source");
+    }
+    const trapCleanupSource = launcher.slice(launcher.indexOf("cleanup() {"), launcher.indexOf("fail() {"));
+    gate(trapCleanupSource.includes('prepare_root_for_removal "$ROOT" >/dev/null 2>&1 && rm -rf -- "$ROOT"'), "cleanup_prepare_source");
+    gate(launcher.includes('if ! cleanup_helper_self_test; then'), "cleanup_prepare_source");
+    gate(!launcher.includes("cleanup_incomplete"), "cleanup_prepare_source");
+    for (const code of ["cleanup_query_timeout", "cleanup_verification_failed", "cleanup_prepare_failed", "cleanup_remove_failed", "cleanup_root_remained"]) {
+        gate(launcher.includes(`"${code}"`), "cleanup_prepare_source");
+    }
+    const finalValidation = launcher.lastIndexOf('--validate-final "$EVIDENCE_TWO"');
+    const zeroResources = launcher.lastIndexOf('if [ -n "$LEFTOVER_CONTAINERS" ] || [ -n "$LEFTOVER_NETWORKS" ]; then');
+    const finalPrepare = launcher.lastIndexOf('if ! prepare_root_for_removal "$FINAL_ROOT"; then');
     const finalRootRemoval = launcher.lastIndexOf('rm -rf -- "$FINAL_ROOT"');
+    const finalRootAbsent = launcher.lastIndexOf('if [ -e "$FINAL_ROOT" ] || [ -L "$FINAL_ROOT" ]; then');
     const finalPassOutput = launcher.lastIndexOf('printf \'%s\\n\' "$FINAL_EVIDENCE"');
-    gate(finalRootRemoval >= 0 && finalPassOutput > finalRootRemoval, "attach_log_policy_source");
+    gate(finalValidation >= 0 && zeroResources > finalValidation && finalPrepare > zeroResources && finalRootRemoval > finalPrepare && finalRootAbsent > finalRootRemoval && finalPassOutput > finalRootAbsent, "attach_log_policy_source");
     gate(launcher.includes('trap \'fail "$ACTIVE_FAILURE_CODE"\' ERR'), "unexpected_failure_source");
     const shellSelfCheck = spawnSync(launcherPath, ["--shell-self-check"], {encoding: "utf8", env: {PATH: process.env.PATH}});
     gate(shellSelfCheck.status === 0 && shellSelfCheck.stderr === "", "shell_self_check");

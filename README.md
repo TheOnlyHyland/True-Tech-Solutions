@@ -269,6 +269,13 @@ and process output remains private and maps to the stage's generic process-exit
 code. Each container and its transient Docker log are removed immediately after
 bounded use or by failure cleanup. Label-based container and network cleanup is
 verified before pass output.
+Sealed immutable directories remain read-only through all container, network,
+and final-validation work. Only then, after exact zero leftover containers and
+networks, the launcher verifies the temporary-root path and owner and uses
+`find -P -xdev -type d` to restore directory mode `0700` solely for deletion;
+files and symlinks are never chmodded. Trap cleanup performs the same preparation
+best-effort. Pass evidence is not emitted until root deletion and absence are
+verified.
 
 The raw extension source is necessarily seen inside the process through
 Zigbee2MQTT's in-memory retained inventory. It is not emitted in CI or final

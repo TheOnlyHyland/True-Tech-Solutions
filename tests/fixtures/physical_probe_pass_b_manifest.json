@@ -30,6 +30,21 @@
       "containers_removed_before_pass": true,
       "cleanup_verified_before_pass": true
     },
+    "cleanup_policy": {
+      "root_pattern": "$RUNNER_TEMP/true-family-pass-b0.*",
+      "directory_prepare_command": "find -P <root> -xdev -type d -exec chmod 0700 {} +",
+      "files_chmodded": false,
+      "symlinks_followed": false,
+      "trap_prepare_best_effort": true,
+      "final_prepare_after_zero_containers_networks": true,
+      "immutable_until_final_validations": true,
+      "evidence_emitted_after_root_deletion_verified": true,
+      "failure_codes": [
+        "cleanup_prepare_failed",
+        "cleanup_remove_failed",
+        "cleanup_root_remained"
+      ]
+    },
     "package_download_policy": {
       "implementation": "node:https",
       "method": "GET",
@@ -266,9 +281,9 @@
       "final_verification_failed",
       "verifier_failed"
     ],
-    "launcher_normalized_sha256": "558d36215f36e7d051bc5cf6a4bf685322fcca804ec8b7c97cf74ee56c6bd194",
-    "harness_sha256": "f0e6452335b744352357dc8e4afb29659a74f83cced0be18677d78f7347ee3be",
-    "verifier_sha256": "b9c81e00135f23fd8a83d636abb21527b0bcf1ab2261a4a235cbac7be10fdcf2"
+    "launcher_normalized_sha256": "d3cf8be4af4359364e13a87a269064694671f3fc4ce539a67d50064694f422ed",
+    "harness_sha256": "e8ef9f8152a12a5c124939b9a59749194f16148f738612a7e9aa63159340d9d2",
+    "verifier_sha256": "39b00e9045c6bac4b2ace57c3b1589a003cd0fcc094546a683160a05865cfabd"
   },
   "test_scope": {
     "cases": [
@@ -332,6 +347,9 @@
     },
     "comparison_scope": "normalized-verifier-output-only",
     "raw_runtime_bytes_reproducible": false,
+    "immutable_trees_unsealed_only_for_deletion": true,
+    "cleanup_unseal_after_final_validations_and_zero_resources": true,
+    "pass_evidence_emitted_after_root_deletion_verified": true,
     "claim_limits": [
       "same_repo_reviewed_source_trusted",
       "malicious_source_resistance_not_proven",
