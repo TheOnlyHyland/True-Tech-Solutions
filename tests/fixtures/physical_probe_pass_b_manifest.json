@@ -209,7 +209,7 @@
     ],
     "launcher_normalized_sha256": "20a20974745d539c21219291cfb6c8f818c713811bbf35682d7b904bca2ebb37",
     "harness_sha256": "728accf7c789a4e3d2ac47b694e8c68188861231047bca0bf7f13f775add4827",
-    "verifier_sha256": "59e4dab129c1fed89dbf8da2f6af85f7968bcf82e5c25863973a6d4aa23b0d00"
+    "verifier_sha256": "985e7f58140f6f8f64a085f95959de2fb769801a5f39d3bffa70d8d28fe05767"
   },
   "test_scope": {
     "cases": [

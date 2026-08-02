@@ -820,6 +820,55 @@ function extractTar(kind, archivePath, destination, manifestPath) {
     }
 }
 
+const PROHIBITED_RESOLUTION_KEYS = Object.freeze(new Set(["tarball", "repo", "directory", "path"]));
+const EXTERNAL_RESOLUTION_PROTOCOL = /(?:^|[\s{,])(?:["'])?(?:https?:\/\/|git\+|file:|link:|workspace:)/iu;
+
+function yamlMappingLine(line) {
+    const match = line.match(/^(\s*)(?:(?:"([a-z_]+)")|(?:'([a-z_]+)')|([a-z_]+)):\s*(.*)$/iu);
+    if (!match) return null;
+    return {
+        indent: match[1].length,
+        key: (match[2] ?? match[3] ?? match[4]).toLowerCase(),
+        value: match[5],
+    };
+}
+
+function externalResolutionValue(value) {
+    if (EXTERNAL_RESOLUTION_PROTOCOL.test(value)) return true;
+    if (/(?:^|[{,]\s*)(?:["']?(?:tarball|repo|directory|path)["']?)\s*:/iu.test(value)) return true;
+    return /(?:^|[{,]\s*)[^,{}:]+:\s*(?:["'])?(?:https?:\/\/|git\+|file:|link:|workspace:)/iu.test(value);
+}
+
+export function validatePackageResolutions(packages) {
+    gate(packages.startsWith("packages:\n"), "lock_packages_section");
+    let inPackage = false;
+    let resolutionIndent = -1;
+    let resolutionCount = 0;
+    for (const line of packages.split("\n").slice(1)) {
+        if (line === "" || /^\s+#/u.test(line)) continue;
+        if (/^  \S.*:\s*$/u.test(line) && !line.startsWith("    ")) {
+            inPackage = true;
+            resolutionIndent = -1;
+            continue;
+        }
+        const mapping = yamlMappingLine(line);
+        if (!inPackage || mapping === null) continue;
+        if (resolutionIndent >= 0 && mapping.indent <= resolutionIndent && mapping.key !== "resolution") resolutionIndent = -1;
+        if (mapping.indent >= 4 && PROHIBITED_RESOLUTION_KEYS.has(mapping.key)) throw new VerifyError("lock_external_resolution");
+        if (mapping.indent === 4 && mapping.key === "resolution") {
+            if (externalResolutionValue(mapping.value)) throw new VerifyError("lock_external_resolution");
+            gate(/^    resolution: \{integrity: sha512-[A-Za-z0-9+/=]+\}$/u.test(line), "lock_resolution_shape");
+            resolutionIndent = mapping.indent;
+            resolutionCount += 1;
+            continue;
+        }
+        if (resolutionIndent >= 0 && mapping.indent > resolutionIndent) {
+            if (PROHIBITED_RESOLUTION_KEYS.has(mapping.key) || externalResolutionValue(mapping.value)) throw new VerifyError("lock_external_resolution");
+        }
+    }
+    gate(resolutionCount > 0, "lock_resolution_shape");
+}
+
 function verifyUpstream(manifestPath, packagePath, lockPath, z2mPackagePath) {
     const manifest = readJson(manifestPath, "manifest_json");
     validateManifest(manifest);
@@ -831,20 +880,22 @@ function verifyUpstream(manifestPath, packagePath, lockPath, z2mPackagePath) {
     gate(pkg.dependencies?.["zigbee-herdsman-converters"] === "26.76.0", "upstream_converters_direct");
     const lock = fs.readFileSync(lockPath, "utf8");
     gate(lock.startsWith("lockfileVersion: '9.0'\n"), "lock_version");
-    gate(!/(?:https?:\/\/|git\+|\btarball:|\brepo:|\bdirectory:|\bpath:)/u.test(lock), "lock_external_resolution");
-    const importer = lock.slice(lock.indexOf("  .:\n"), lock.indexOf("    devDependencies:\n"));
+    const importerStart = lock.indexOf("  .:\n");
+    const importerEnd = lock.indexOf("    devDependencies:\n");
+    const packagesStart = lock.indexOf("packages:\n");
+    const snapshotsStart = lock.indexOf("snapshots:\n");
+    gate(importerStart >= 0 && importerEnd > importerStart && packagesStart > importerEnd && snapshotsStart > packagesStart, "lock_sections");
+    const importer = lock.slice(importerStart, importerEnd);
     gate((importer.match(/      zigbee-herdsman:\n        specifier: 10\.6\.1\n        version: 10\.6\.1\n/gu) ?? []).length === 1, "lock_herdsman_importer");
     gate((importer.match(/      zigbee-herdsman-converters:\n        specifier: 26\.76\.0\n        version: 26\.76\.0\n/gu) ?? []).length === 1, "lock_converters_importer");
-    const packages = lock.slice(lock.indexOf("packages:\n"), lock.indexOf("snapshots:\n"));
+    const packages = lock.slice(packagesStart, snapshotsStart);
+    validatePackageResolutions(packages);
     const herdsman = /^  zigbee-herdsman@10\.6\.1:\n    resolution: \{integrity: (sha512-[A-Za-z0-9+/=]+)\}$/gmu;
     const converters = /^  zigbee-herdsman-converters@26\.76\.0:\n    resolution: \{integrity: (sha512-[A-Za-z0-9+/=]+)\}$/gmu;
     const herdsmanMatches = [...packages.matchAll(herdsman)];
     const converterMatches = [...packages.matchAll(converters)];
     gate(herdsmanMatches.length === 1 && herdsmanMatches[0][1] === manifest.runtime.zigbee_herdsman.sha512_sri, "lock_herdsman_integrity");
     gate(converterMatches.length === 1 && converterMatches[0][1] === manifest.runtime.zigbee_herdsman_converters.sha512_sri, "lock_converters_integrity");
-    for (const line of packages.split("\n").filter((item) => item.trimStart().startsWith("resolution:"))) {
-        gate(/^    resolution: \{integrity: sha512-[A-Za-z0-9+/=]+\}$/u.test(line), "lock_resolution_shape");
-    }
     const published = readJson(z2mPackagePath, "published_package_json");
     gate(published.name === "zigbee2mqtt" && published.version === "2.12.1", "published_package_identity");
 }
@@ -1853,6 +1904,53 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         }
         gate(rejected, "tar_self_test");
     }
+    const resolutionFixture = (resolution, fields = []) => [
+        "packages:",
+        "  file-uri-to-path@2.0.0:",
+        `    resolution: ${resolution}`,
+        ...fields.map((field) => `    ${field}`),
+        "    description: \"an unrelated path: and https://example.invalid word\"",
+        "",
+    ].join("\n");
+    validatePackageResolutions(resolutionFixture("{integrity: sha512-AAAA==}"));
+    validatePackageResolutions([
+        "packages:",
+        "  path:",
+        "    resolution: {integrity: sha512-AAAA==}",
+        "",
+    ].join("\n"));
+    for (const field of ["path: ../local", "tarball: archive.tgz", "repo: owner/repo", "directory: package"]) {
+        let rejected = false;
+        try {
+            validatePackageResolutions(resolutionFixture("{integrity: sha512-AAAA==}", [field]));
+        } catch (error) {
+            rejected = error instanceof VerifyError && error.code === "lock_external_resolution";
+        }
+        gate(rejected, "lock_resolution_self_test");
+    }
+    for (const value of [
+        "http://example.invalid/archive.tgz",
+        "https://example.invalid/archive.tgz",
+        "git+https://example.invalid/repo.git",
+        "file:../local",
+        "link:../local",
+        "workspace:*",
+    ]) {
+        let rejected = false;
+        try {
+            validatePackageResolutions(resolutionFixture(value));
+        } catch (error) {
+            rejected = error instanceof VerifyError && error.code === "lock_external_resolution";
+        }
+        gate(rejected, "lock_resolution_self_test");
+    }
+    let malformedResolutionRejected = false;
+    try {
+        validatePackageResolutions(resolutionFixture("{integrity: sha1-deadbeef}"));
+    } catch (error) {
+        malformedResolutionRejected = error instanceof VerifyError && error.code === "lock_resolution_shape";
+    }
+    gate(malformedResolutionRejected, "lock_resolution_self_test");
     const expectDownloadFailure = async (operation, expected) => {
         let actual = "no_failure";
         try {
