@@ -105,6 +105,39 @@ const VERIFIER_FAILURE_CODES = Object.freeze([
     "final_verification_failed",
     "verifier_failed",
 ]);
+const PNPM_ERROR_CODES = Object.freeze([
+    "ERR_PNPM_BAD_PM_VERSION",
+    "ERR_PNPM_BROKEN_LOCKFILE",
+    "ERR_PNPM_CONFIG_CONFLICT",
+    "ERR_PNPM_DISK_FULL",
+    "ERR_PNPM_FETCH_401",
+    "ERR_PNPM_FETCH_403",
+    "ERR_PNPM_FETCH_404",
+    "ERR_PNPM_FETCHING_GIT_REPOSITORY",
+    "ERR_PNPM_FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE",
+    "ERR_PNPM_INCLUDED_DEPS_CONFLICT",
+    "ERR_PNPM_LOCKFILE_BREAKING_CHANGE",
+    "ERR_PNPM_LOCKFILE_CONFIG_MISMATCH",
+    "ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY",
+    "ERR_PNPM_META_FETCH_FAIL",
+    "ERR_PNPM_NO_MATCHING_VERSION",
+    "ERR_PNPM_NO_MATCHING_VERSION_INSIDE_WORKSPACE",
+    "ERR_PNPM_NO_OFFLINE_TARBALL",
+    "ERR_PNPM_OFFLINE_META_FETCH_FAIL",
+    "ERR_PNPM_OUTDATED_LOCKFILE",
+    "ERR_PNPM_PEER_DEP_ISSUES",
+    "ERR_PNPM_PREPARE_PACKAGE",
+    "ERR_PNPM_REGISTRIES_MISMATCH",
+    "ERR_PNPM_TARBALL_INTEGRITY",
+    "ERR_PNPM_UNEXPECTED_STORE",
+    "ERR_PNPM_UNSUPPORTED_ENGINE",
+    "ERR_PNPM_WORKSPACE_PKG_NOT_FOUND",
+]);
+const PNPM_PHASES = Object.freeze(["fetch", "install"]);
+const PNPM_STAGE_FAILURE_CODES = Object.freeze(PNPM_PHASES.flatMap((phase) => [
+    `pnpm_${phase}_failed`,
+    ...PNPM_ERROR_CODES.map((code) => `pnpm_${phase}_${code.slice("ERR_PNPM_".length).toLowerCase()}`),
+]));
 const STAGE_KEYS = Object.freeze([
     "schema",
     "manifest_sha256",
@@ -216,6 +249,17 @@ function validateManifest(manifest) {
         success_schema: "true-family-pass-b0-package-download-v1",
         failure_schema: "true-family-pass-b0-package-download-failure-v1",
     }), "manifest_package_download_policy");
+    gate(same(manifest.container.pnpm_diagnostic_policy, {
+        schema: "true-family-pass-b0-pnpm-failure-v1",
+        phases: PNPM_PHASES,
+        reporter: "ndjson",
+        max_file_bytes: 1048576,
+        max_line_bytes: 65536,
+        regular_files_only: true,
+        original_exit_status_preserved: true,
+        raw_output_emitted: false,
+        error_codes: PNPM_ERROR_CODES,
+    }), "manifest_pnpm_diagnostic_policy");
     gate(same(manifest.container.start_diagnostics, {
         stages: ["package_fetch", "fetch", "install", "runtime", "verifier"],
         state_inspected_before_removal: true,
@@ -243,6 +287,7 @@ function validateManifest(manifest) {
             "package_fetch_download_cleanup",
             "package_fetch_download_failed",
             ...VERIFIER_FAILURE_CODES.map((code) => `verifier_${code}`),
+            ...PNPM_STAGE_FAILURE_CODES,
             "runtime_case_failed",
         ],
         unknown_process_output_code: "<stage>_process_exit",

@@ -94,6 +94,42 @@ const PACKAGE_DOWNLOAD_FAILURE_SCHEMA = "true-family-pass-b0-package-download-fa
 const PACKAGE_DOWNLOAD_TIMEOUT_MS = 45000;
 const VERIFIER_FAILURE_SCHEMA = "true-family-pass-b0-verifier-failure-v1";
 const VERIFIER_FAILURE_MAX_BYTES = 256;
+const PNPM_FAILURE_SCHEMA = "true-family-pass-b0-pnpm-failure-v1";
+const PNPM_DIAGNOSTIC_MAX_BYTES = 1024 * 1024;
+const PNPM_DIAGNOSTIC_LINE_MAX_BYTES = 64 * 1024;
+const PNPM_ERROR_CODES = Object.freeze([
+    "ERR_PNPM_BAD_PM_VERSION",
+    "ERR_PNPM_BROKEN_LOCKFILE",
+    "ERR_PNPM_CONFIG_CONFLICT",
+    "ERR_PNPM_DISK_FULL",
+    "ERR_PNPM_FETCH_401",
+    "ERR_PNPM_FETCH_403",
+    "ERR_PNPM_FETCH_404",
+    "ERR_PNPM_FETCHING_GIT_REPOSITORY",
+    "ERR_PNPM_FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE",
+    "ERR_PNPM_INCLUDED_DEPS_CONFLICT",
+    "ERR_PNPM_LOCKFILE_BREAKING_CHANGE",
+    "ERR_PNPM_LOCKFILE_CONFIG_MISMATCH",
+    "ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY",
+    "ERR_PNPM_META_FETCH_FAIL",
+    "ERR_PNPM_NO_MATCHING_VERSION",
+    "ERR_PNPM_NO_MATCHING_VERSION_INSIDE_WORKSPACE",
+    "ERR_PNPM_NO_OFFLINE_TARBALL",
+    "ERR_PNPM_OFFLINE_META_FETCH_FAIL",
+    "ERR_PNPM_OUTDATED_LOCKFILE",
+    "ERR_PNPM_PEER_DEP_ISSUES",
+    "ERR_PNPM_PREPARE_PACKAGE",
+    "ERR_PNPM_REGISTRIES_MISMATCH",
+    "ERR_PNPM_TARBALL_INTEGRITY",
+    "ERR_PNPM_UNEXPECTED_STORE",
+    "ERR_PNPM_UNSUPPORTED_ENGINE",
+    "ERR_PNPM_WORKSPACE_PKG_NOT_FOUND",
+]);
+const PNPM_PHASES = Object.freeze(["fetch", "install"]);
+const PNPM_STAGE_FAILURE_CODES = Object.freeze(PNPM_PHASES.flatMap((phase) => [
+    `pnpm_${phase}_failed`,
+    ...PNPM_ERROR_CODES.map((code) => `pnpm_${phase}_${code.slice("ERR_PNPM_".length).toLowerCase()}`),
+]));
 const VERIFIER_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,54}$/u;
 const VERIFIER_MODE_FAILURE_CODES = Object.freeze({
     "--self-check": "self_check_failed",
@@ -228,6 +264,89 @@ function verifierFailureToken(code) {
     return token;
 }
 
+function allowedPnpmFailureCode(code) {
+    return code === "pnpm_failed" || PNPM_STAGE_FAILURE_CODES.includes(code);
+}
+
+function pnpmFailureToken(code) {
+    const safe = allowedPnpmFailureCode(code) ? code : "pnpm_failed";
+    return `${canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: safe})}\n`;
+}
+
+function parsePnpmNdjson(text, seenLines) {
+    gate(typeof text === "string" && Buffer.byteLength(text, "utf8") <= PNPM_DIAGNOSTIC_MAX_BYTES, "pnpm_diagnostic");
+    if (text === "") return [];
+    gate(!text.includes("\r"), "pnpm_diagnostic");
+    const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+    const codes = [];
+    for (const line of lines) {
+        gate(line !== "" && Buffer.byteLength(line, "utf8") <= PNPM_DIAGNOSTIC_LINE_MAX_BYTES, "pnpm_diagnostic");
+        gate(!seenLines.has(line), "pnpm_diagnostic");
+        seenLines.add(line);
+        let value;
+        try {
+            value = JSON.parse(line);
+        } catch {
+            throw new VerifyError("pnpm_diagnostic");
+        }
+        gate(value && typeof value === "object" && !Array.isArray(value) && JSON.stringify(value) === line, "pnpm_diagnostic");
+        if (Object.hasOwn(value, "code")) {
+            gate(typeof value.code === "string" && /^ERR_PNPM_[A-Z0-9_]+$/u.test(value.code), "pnpm_diagnostic");
+            codes.push(value.code);
+        }
+        if (Object.hasOwn(value, "err") && value.err !== null) {
+            gate(typeof value.err === "object" && !Array.isArray(value.err), "pnpm_diagnostic");
+            if (Object.hasOwn(value.err, "code")) {
+                gate(typeof value.err.code === "string" && /^ERR_PNPM_[A-Z0-9_]+$/u.test(value.err.code), "pnpm_diagnostic");
+                codes.push(value.err.code);
+            }
+        }
+    }
+    return codes;
+}
+
+function classifyPnpmText(phase, stdoutText, stderrText) {
+    if (!PNPM_PHASES.includes(phase)) return "pnpm_failed";
+    const generic = `pnpm_${phase}_failed`;
+    try {
+        const seenLines = new Set();
+        const codes = [
+            ...parsePnpmNdjson(stdoutText, seenLines),
+            ...parsePnpmNdjson(stderrText, seenLines),
+        ];
+        const unique = [...new Set(codes)];
+        if (unique.length !== 1 || !PNPM_ERROR_CODES.includes(unique[0])) return generic;
+        return `pnpm_${phase}_${unique[0].slice("ERR_PNPM_".length).toLowerCase()}`;
+    } catch {
+        return generic;
+    }
+}
+
+function readPnpmDiagnosticFile(filePath, dependencies = {}) {
+    const lstat = dependencies.lstatSync ?? fs.lstatSync;
+    const readFile = dependencies.readFileSync ?? fs.readFileSync;
+    const metadata = lstat(filePath);
+    gate(metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1 && metadata.size <= PNPM_DIAGNOSTIC_MAX_BYTES, "pnpm_diagnostic");
+    const bytes = readFile(filePath);
+    gate(Buffer.isBuffer(bytes) && bytes.length === metadata.size && bytes.length <= PNPM_DIAGNOSTIC_MAX_BYTES, "pnpm_diagnostic");
+    const text = bytes.toString("utf8");
+    gate(Buffer.from(text, "utf8").equals(bytes), "pnpm_diagnostic");
+    return text;
+}
+
+function classifyPnpmFiles(phase, stdoutPath, stderrPath, dependencies = {}) {
+    if (!PNPM_PHASES.includes(phase)) return "pnpm_failed";
+    try {
+        return classifyPnpmText(
+            phase,
+            readPnpmDiagnosticFile(stdoutPath, dependencies),
+            readPnpmDiagnosticFile(stderrPath, dependencies),
+        );
+    } catch {
+        return `pnpm_${phase}_failed`;
+    }
+}
+
 function sha256Bytes(value) {
     return crypto.createHash("sha256").update(value).digest("hex");
 }
@@ -330,6 +449,7 @@ function validateManifest(manifest) {
         "runtime_user",
         "log_policy",
         "package_download_policy",
+        "pnpm_diagnostic_policy",
         "start_diagnostics",
         "fetch_host_allowlist_enforced",
         "explicit_fetch_targets",
@@ -364,6 +484,17 @@ function validateManifest(manifest) {
         success_schema: PACKAGE_DOWNLOAD_SCHEMA,
         failure_schema: PACKAGE_DOWNLOAD_FAILURE_SCHEMA,
     }), "manifest_package_download_policy");
+    gate(same(manifest.container.pnpm_diagnostic_policy, {
+        schema: PNPM_FAILURE_SCHEMA,
+        phases: PNPM_PHASES,
+        reporter: "ndjson",
+        max_file_bytes: PNPM_DIAGNOSTIC_MAX_BYTES,
+        max_line_bytes: PNPM_DIAGNOSTIC_LINE_MAX_BYTES,
+        regular_files_only: true,
+        original_exit_status_preserved: true,
+        raw_output_emitted: false,
+        error_codes: PNPM_ERROR_CODES,
+    }), "manifest_pnpm_diagnostic_policy");
     gate(same(manifest.container.start_diagnostics, {
         stages: ["package_fetch", "fetch", "install", "runtime", "verifier"],
         state_inspected_before_removal: true,
@@ -373,6 +504,7 @@ function validateManifest(manifest) {
         known_process_failure_codes: [
             ...PACKAGE_DOWNLOAD_FAILURE_CODES.map((code) => `package_fetch_${code}`),
             ...VERIFIER_FAILURE_CODES.map((code) => `verifier_${code}`),
+            ...PNPM_STAGE_FAILURE_CODES,
             "runtime_case_failed",
         ],
         unknown_process_output_code: "<stage>_process_exit",
@@ -1310,6 +1442,21 @@ function verifierFailureClassification(output) {
     return classification.length <= 64 ? classification : null;
 }
 
+function pnpmFailureClassification(stage, output) {
+    if (!PNPM_PHASES.includes(stage) || typeof output !== "string" || Buffer.byteLength(output, "utf8") > 256) return null;
+    let value;
+    try {
+        value = JSON.parse(output);
+    } catch {
+        return null;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (!same(Object.keys(value).sort(), ["failure_code", "result", "schema"])) return null;
+    if (value.schema !== PNPM_FAILURE_SCHEMA || value.result !== "fail") return null;
+    if (!PNPM_STAGE_FAILURE_CODES.includes(value.failure_code) || !value.failure_code.startsWith(`pnpm_${stage}_`)) return null;
+    return output === pnpmFailureToken(value.failure_code) ? value.failure_code : null;
+}
+
 function stageStateErrorCategory(value) {
     const normalized = value.toLowerCase();
     if (/no such file or directory|\benoent\b/u.test(normalized)) return "no_such_file";
@@ -1349,6 +1496,10 @@ function classifyStageStart(stage, startStatus, inspectStatus, output, stateText
         }
         if (stage === "verifier") {
             const classification = verifierFailureClassification(output);
+            if (classification !== null) return classification;
+        }
+        if (stage === "fetch" || stage === "install") {
+            const classification = pnpmFailureClassification(stage, output);
             if (classification !== null) return classification;
         }
         if (stage === "runtime" && output === RUNTIME_CASE_FAILURE) return "runtime_case_failed";
@@ -2089,10 +2240,10 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(packageDownloadFailureToken("private raw error") === packageDownloadFailureToken("download_failed"), "package_download_self_test");
     const verifierSourceText = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
     const declaredModes = [...verifierSourceText.matchAll(/if \(mode === "(--[a-z-]+)"\)/gu)].map((match) => match[1]).sort();
-    const expectedModes = [...Object.keys(VERIFIER_MODE_FAILURE_CODES), "--download-package"].sort();
+    const expectedModes = [...Object.keys(VERIFIER_MODE_FAILURE_CODES), "--download-package", "--classify-pnpm"].sort();
     gate(same(declaredModes, expectedModes), "verifier_failure_mode_coverage");
     const invokedSource = verifierSourceText.slice(verifierSourceText.lastIndexOf("const invoked = process.argv"));
-    gate(invokedSource.includes('mode !== "--download-package"') && invokedSource.includes("verifierFailureToken(publicVerifierFailureCode(error, mode))"), "verifier_failure_source");
+    gate(invokedSource.includes('mode !== "--download-package" && mode !== "--classify-pnpm"') && invokedSource.includes("verifierFailureToken(publicVerifierFailureCode(error, mode))"), "verifier_failure_source");
     for (const forbidden of ["error.message", "error.stack", "process.stderr", "console."]) gate(!invokedSource.includes(forbidden), "verifier_failure_source");
     const launcher = fs.readFileSync(launcherPath, "utf8");
     const original = normalizedLauncherDigestBytes(launcher).digest;
@@ -2110,6 +2261,8 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const commonFlags = shellArray("COMMON_FLAGS");
     const producerFlags = shellArray("PRODUCER_FLAGS");
     const runtimeFlags = shellArray("RUNTIME_FLAGS");
+    const pnpmFailureSuffixes = shellArray("PNPM_FAILURE_SUFFIXES").split("\n").map((line) => line.trim()).filter(Boolean);
+    gate(same(pnpmFailureSuffixes, ["failed", ...PNPM_ERROR_CODES.map((code) => code.slice("ERR_PNPM_".length).toLowerCase())]), "pnpm_classifier_source");
     gate(commonFlags.includes("--pids-limit=64") && !commonFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(producerFlags.includes("--user=\"$HOST_UID:$HOST_GID\"") && !producerFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(runtimeFlags.includes("--user=65532:65532") && runtimeFlags.includes("--ulimit=nproc=64:64"), "nproc_policy_source");
@@ -2136,6 +2289,23 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     for (const forbidden of ["--env", "HOME=", "target=/source", "--workdir", ".npmrc"]) gate(!packageFetchSource.includes(forbidden), "package_fetch_source");
     gate(launcher.includes("for upstream_file in package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc") && launcher.includes("cp /source/.npmrc /tmp/project/"), "package_fetch_source");
     gate(launcher.includes("/tool/bin/pnpm.cjs fetch") && launcher.includes("/tool/bin/pnpm.cjs install"), "package_fetch_source");
+    const pnpmFetchSource = launcher.slice(launcher.indexOf('name="tf-pass-b0-$RUN_TOKEN-r$ordinal-pnpm-fetch"'), launcher.indexOf('assert_host_owned_tree "$store_fetch"'));
+    const pnpmInstallSource = launcher.slice(launcher.indexOf('name="tf-pass-b0-$RUN_TOKEN-r$ordinal-pnpm-install"'), launcher.indexOf('[ ! -e "$install/lifecycle-canary" ]'));
+    for (const [phase, source] of [["fetch", pnpmFetchSource], ["install", pnpmInstallSource]]) {
+        for (const required of [
+            "target=/verifier,readonly",
+            "--entrypoint=/bin/sh",
+            "--reporter=ndjson",
+            `--classify-pnpm ${phase}`,
+            `pnpm-${phase}.stdout.ndjson`,
+            `pnpm-${phase}.stderr.ndjson`,
+            '>"$stdout" 2>"$stderr"',
+            'status=$?',
+            'exit "$status"',
+        ]) gate(source.includes(required), "pnpm_classifier_source");
+    }
+    gate(!launcher.includes("--reporter=silent") && (launcher.match(/--reporter=ndjson/gu) ?? []).length === 2, "pnpm_classifier_source");
+    gate((launcher.match(/--classify-pnpm/gu) ?? []).length === 2, "pnpm_classifier_source");
     const selfCheckBranch = launcher.slice(launcher.indexOf('  "--self-check")'), launcher.indexOf('  "--shell-self-check")'));
     gate(selfCheckBranch.includes('node_bounded 25s "$VERIFIER" --self-check'), "static_self_check_source");
     for (const forbidden of ["docker", "RUNNER_TEMP", "mktemp", "ROOT="]) {
@@ -2221,6 +2391,66 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     for (const output of malformedVerifierFailures) {
         gate(verifierFailureClassification(output) === null, "verifier_failure_self_test");
         gate(classifyStageStart("verifier", 1, 0, output, startState({ExitCode: 1})) === "verifier_process_exit", "verifier_failure_self_test");
+    }
+    const ndjson = (...values) => `${values.map((value) => JSON.stringify(value)).join("\n")}\n`;
+    const knownRootPnpm = ndjson({level: "error", code: "ERR_PNPM_OUTDATED_LOCKFILE"});
+    const knownNestedPnpm = ndjson({level: "error", err: {code: "ERR_PNPM_TARBALL_INTEGRITY"}});
+    gate(classifyPnpmText("fetch", knownRootPnpm, "") === "pnpm_fetch_outdated_lockfile", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("install", "", knownNestedPnpm) === "pnpm_install_tarball_integrity", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_PRIVATE_UNKNOWN"}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "{\n", "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    const privatePnpm = ndjson({level: "error", code: "ERR_PNPM_FETCH_404", path: "/private/path", message: "private\ncontrol", url: "https://private.invalid"});
+    const privatePnpmCode = classifyPnpmText("fetch", privatePnpm, "");
+    gate(privatePnpmCode === "pnpm_fetch_fetch_404" && !pnpmFailureToken(privatePnpmCode).includes("private"), "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", knownRootPnpm + knownRootPnpm, "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", '{ "code": "ERR_PNPM_FETCH_404" }\n', "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", '{"code":"ERR_PNPM_FETCH_404","code":"ERR_PNPM_FETCH_404"}\n', "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_FETCH_404"}, {err: {code: "ERR_PNPM_TARBALL_INTEGRITY"}}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_/PRIVATE"}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", "x".repeat(PNPM_DIAGNOSTIC_MAX_BYTES + 1), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_FETCH_404", message: "x".repeat(PNPM_DIAGNOSTIC_LINE_MAX_BYTES)}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    const diagnosticFiles = new Map([
+        ["stdout", Buffer.from(knownRootPnpm)],
+        ["stderr", Buffer.alloc(0)],
+    ]);
+    const regularDiagnosticDependencies = {
+        lstatSync(filePath) {
+            const bytes = diagnosticFiles.get(filePath);
+            return {isFile: () => true, isSymbolicLink: () => false, nlink: 1, size: bytes.length};
+        },
+        readFileSync(filePath) { return Buffer.from(diagnosticFiles.get(filePath)); },
+    };
+    gate(classifyPnpmFiles("fetch", "stdout", "stderr", regularDiagnosticDependencies) === "pnpm_fetch_outdated_lockfile", "pnpm_classifier_self_test");
+    gate(classifyPnpmFiles("fetch", "stdout", "stderr", {
+        ...regularDiagnosticDependencies,
+        lstatSync() { return {isFile: () => false, isSymbolicLink: () => true, nlink: 1, size: 1}; },
+    }) === "pnpm_fetch_failed", "pnpm_classifier_self_test");
+    gate(classifyPnpmFiles("install", "stdout", "stderr", {
+        ...regularDiagnosticDependencies,
+        lstatSync() { return {isFile: () => true, isSymbolicLink: () => false, nlink: 1, size: PNPM_DIAGNOSTIC_MAX_BYTES + 1}; },
+    }) === "pnpm_install_failed", "pnpm_classifier_self_test");
+    for (const code of PNPM_STAGE_FAILURE_CODES) {
+        const phase = code.startsWith("pnpm_fetch_") ? "fetch" : "install";
+        const token = pnpmFailureToken(code);
+        gate(pnpmFailureClassification(phase, token) === code, "pnpm_classifier_self_test");
+        gate(classifyStageStart(phase, 1, 0, token, startState({ExitCode: 1})) === code, "pnpm_classifier_self_test");
+    }
+    const malformedPnpmFailures = [
+        "{",
+        pnpmFailureToken("pnpm_fetch_failed").trimEnd(),
+        `${pnpmFailureToken("pnpm_fetch_failed")}\n`,
+        JSON.stringify({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_failed"}) + "\n",
+        canonical({schema: "wrong", result: "fail", failure_code: "pnpm_fetch_failed"}) + "\n",
+        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_install_failed"}) + "\n",
+        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_/private/path"}) + "\n",
+        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_\nfailed"}) + "\n",
+        canonical({schema: PNPM_FAILURE_SCHEMA, result: "fail", failure_code: "pnpm_fetch_failed", path: "/private/path"}) + "\n",
+        '{"failure_code":"pnpm_fetch_failed","failure_code":"pnpm_fetch_failed","result":"fail","schema":"true-family-pass-b0-pnpm-failure-v1"}\n',
+        "x".repeat(257),
+    ];
+    for (const output of malformedPnpmFailures) {
+        gate(pnpmFailureClassification("fetch", output) === null, "pnpm_classifier_self_test");
+        gate(classifyStageStart("fetch", 1, 0, output, startState({ExitCode: 1})) === "fetch_process_exit", "pnpm_classifier_self_test");
     }
     const startClassifications = [
         ["unknown", 0, 0, "", startState(), "verifier_unknown"],
@@ -2362,6 +2592,9 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const packageFailure = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--download-package"], {encoding: "utf8"});
     gate(packageFailure.status === 1 && packageFailure.stdout === packageDownloadFailureToken("download_arguments") && packageFailure.stderr === "", "package_download_self_test");
     gate(!packageFailure.stdout.includes(VERIFIER_FAILURE_SCHEMA) && packageFailure.stdout.split("\n").length === 2, "package_download_self_test");
+    const pnpmFailure = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--classify-pnpm"], {encoding: "utf8"});
+    gate(pnpmFailure.status === 1 && pnpmFailure.stdout === pnpmFailureToken("pnpm_failed") && pnpmFailure.stderr === "", "pnpm_classifier_self_test");
+    gate(!pnpmFailure.stdout.includes(VERIFIER_FAILURE_SCHEMA) && pnpmFailure.stdout.split("\n").length === 2, "pnpm_classifier_self_test");
     const timeoutResult = spawnSync("timeout", ["0.1s", process.execPath, "-e", "setTimeout(()=>{}, 10000)"], {stdio: "ignore"});
     gate(timeoutResult.status === 124, "timeout_self_test");
     await fdSelfTest(launcherPath);
@@ -2394,6 +2627,12 @@ async function main() {
             process.stdout.write(packageDownloadFailureToken(error instanceof VerifyError ? error.code : "download_failed"));
             process.exitCode = 1;
         }
+        return;
+    }
+    if (mode === "--classify-pnpm") {
+        const code = args.length === 3 ? classifyPnpmFiles(...args) : "pnpm_failed";
+        process.stdout.write(pnpmFailureToken(code));
+        process.exitCode = 1;
         return;
     }
     if (mode === "--validate-tar") {
@@ -2478,7 +2717,7 @@ if (invoked) {
         await main();
     } catch (error) {
         const mode = process.argv[2];
-        if (mode !== "--download-package") {
+        if (mode !== "--download-package" && mode !== "--classify-pnpm") {
             process.stdout.write(verifierFailureToken(publicVerifierFailureCode(error, mode)));
         }
         process.exitCode = 1;

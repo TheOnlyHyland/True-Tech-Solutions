@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="20a20974745d539c21219291cfb6c8f818c713811bbf35682d7b904bca2ebb37"
+EXPECTED_LAUNCHER_SHA256="e240cad754f906113641bf4d48d34bb3d47b1e4c178988fab592d5b2cff7ced9"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -25,6 +25,35 @@ LOG_FLAGS=(
   --log-driver=json-file
   --log-opt=max-size=1m
   --log-opt=max-file=1
+)
+PNPM_FAILURE_SUFFIXES=(
+  failed
+  bad_pm_version
+  broken_lockfile
+  config_conflict
+  disk_full
+  fetch_401
+  fetch_403
+  fetch_404
+  fetching_git_repository
+  frozen_lockfile_with_outdated_lockfile
+  included_deps_conflict
+  lockfile_breaking_change
+  lockfile_config_mismatch
+  lockfile_missing_dependency
+  meta_fetch_fail
+  no_matching_version
+  no_matching_version_inside_workspace
+  no_offline_tarball
+  offline_meta_fetch_fail
+  outdated_lockfile
+  peer_dep_issues
+  prepare_package
+  registries_mismatch
+  tarball_integrity
+  unexpected_store
+  unsupported_engine
+  workspace_pkg_not_found
 )
 
 emit_failure() {
@@ -569,7 +598,7 @@ start_container() {
   local seconds="$3"
   local output="$4"
   local log="$5"
-  local start_status inspect_status classification
+  local start_status inspect_status classification pnpm_phase pnpm_suffix allowed_suffix
   case "$stage" in
     package_fetch|fetch|install|runtime|verifier) ;;
     *) fail "container_stage" ;;
@@ -609,6 +638,18 @@ start_container() {
       verifier_stage_write_failed|verifier_stage_rehash_failed|verifier_image_inspect_failed|\
       verifier_run_verification_failed|verifier_final_verification_failed|verifier_verifier_failed)
       fail "$classification"
+      ;;
+    pnpm_fetch_*|pnpm_install_*)
+      pnpm_phase="${classification#pnpm_}"
+      pnpm_phase="${pnpm_phase%%_*}"
+      [ "$pnpm_phase" = "$stage" ] || fail "${stage}_unknown"
+      pnpm_suffix="${classification#pnpm_${pnpm_phase}_}"
+      for allowed_suffix in "${PNPM_FAILURE_SUFFIXES[@]}"; do
+        if [ "$pnpm_suffix" = "$allowed_suffix" ]; then
+          fail "$classification"
+        fi
+      done
+      fail "${stage}_unknown"
       ;;
     *)
       fail "${stage}_unknown"
@@ -892,12 +933,13 @@ acquire_run() {
   name="tf-pass-b0-$RUN_TOKEN-r$ordinal-pnpm-fetch"
   run_disposable fetch "$name" 180s "$run_root/log/pnpm-fetch.out" "$run_root/log/pnpm-fetch" \
     --network="$network" \
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
     --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
     --mount "type=bind,source=$run_root/mount/upstream,target=/source,readonly" \
     --mount "type=bind,source=$store_fetch,target=/store" \
     --env HOME=/tmp/home \
     --entrypoint=/bin/sh \
-    "$IMAGE" -eu -c 'mkdir -p /tmp/project; cp /source/package.json /source/pnpm-lock.yaml /tmp/project/; if [ -f /source/pnpm-workspace.yaml ]; then cp /source/pnpm-workspace.yaml /tmp/project/; fi; if [ -f /source/.npmrc ]; then cp /source/.npmrc /tmp/project/; fi; exec /usr/local/bin/node /tool/bin/pnpm.cjs fetch --dir=/tmp/project --prod --no-optional --frozen-lockfile --ignore-scripts --store-dir=/store --reporter=silent'
+    "$IMAGE" -eu -c 'mkdir -p /tmp/project; cp /source/package.json /source/pnpm-lock.yaml /tmp/project/; if [ -f /source/pnpm-workspace.yaml ]; then cp /source/pnpm-workspace.yaml /tmp/project/; fi; if [ -f /source/.npmrc ]; then cp /source/.npmrc /tmp/project/; fi; stdout=/tmp/pnpm-fetch.stdout.ndjson; stderr=/tmp/pnpm-fetch.stderr.ndjson; set +e; /usr/local/bin/node /tool/bin/pnpm.cjs fetch --dir=/tmp/project --prod --no-optional --frozen-lockfile --ignore-scripts --store-dir=/store --reporter=ndjson >"$stdout" 2>"$stderr"; status=$?; set -e; if [ "$status" -ne 0 ]; then set +e; /usr/local/bin/node /verifier/verify_physical_probe_z2m_runtime.mjs --classify-pnpm fetch "$stdout" "$stderr"; set -e; exit "$status"; fi'
 
   assert_host_owned_tree "$store_fetch"
   cp -a --no-preserve=ownership "$store_fetch/." "$store_install/"
@@ -919,12 +961,12 @@ acquire_run() {
     --network=none \
     --workdir=/work \
     --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
+    --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
     --mount "type=bind,source=$install,target=/work" \
     --mount "type=bind,source=$store_install,target=/store" \
     --env HOME=/tmp/home \
-    --entrypoint=/usr/local/bin/node \
-    "$IMAGE" /tool/bin/pnpm.cjs install --prod --no-optional --offline --frozen-lockfile \
-      --ignore-scripts --package-import-method=copy --store-dir=/store --reporter=silent
+    --entrypoint=/bin/sh \
+    "$IMAGE" -eu -c 'stdout=/tmp/pnpm-install.stdout.ndjson; stderr=/tmp/pnpm-install.stderr.ndjson; set +e; /usr/local/bin/node /tool/bin/pnpm.cjs install --prod --no-optional --offline --frozen-lockfile --ignore-scripts --package-import-method=copy --store-dir=/store --reporter=ndjson >"$stdout" 2>"$stderr"; status=$?; set -e; if [ "$status" -ne 0 ]; then set +e; /usr/local/bin/node /verifier/verify_physical_probe_z2m_runtime.mjs --classify-pnpm install "$stdout" "$stderr"; set -e; exit "$status"; fi'
   [ ! -e "$install/lifecycle-canary" ]
   assert_host_owned_tree "$install"
 

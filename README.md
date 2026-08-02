@@ -182,6 +182,13 @@ It emits only fixed sanitized pass or failure records.
 The downloaded and strictly validated pnpm program executes later in its
 constrained fetch stage. That stage has network access and receives only the
 exact upstream package, lock, workspace, and optional project `.npmrc` inputs.
+Fetch and offline install retain their existing commands and exit statuses but
+use pnpm's machine `ndjson` reporter redirected to private tmpfs files. On a
+nonzero exit, the verifier reads only regular, non-symlinked files bounded to
+1 MiB each, inspects only allowlisted root `code` or nested `err.code` values,
+and emits one canonical `true-family-pass-b0-pnpm-failure-v1` record. Unknown or
+malformed diagnostics become `pnpm_fetch_failed` or `pnpm_install_failed`; raw
+messages, paths, package names, and URLs are never emitted.
 Every package fetch, dependency fetch, install, extraction, and verifier container
 that writes a host bind output runs under the runner's captured numeric UID/GID,
 which must both be nonzero. No `nproc` limit is applied to these producers because
@@ -197,7 +204,11 @@ scripts disabled, and the exact frozen lock. Package URLs and dependency fetches
 target `registry.npmjs.org` and GitHub, but
 Docker's default egress is used: `fetch_host_allowlist_enforced` is deliberately
 `false`. This smoke gate does not prove host-level destination filtering. The
-separately downloaded zigbee-herdsman and zigbee-herdsman-converters tarballs
+lock's `packages` section requires every resolution to be one exact inline
+SHA-512 integrity mapping. Structural resolution fields and external protocols
+are rejected without scanning package names such as `file-uri-to-path` for raw
+substrings. The separately downloaded zigbee-herdsman and
+zigbee-herdsman-converters tarballs
 provide only independent direct-pin SRI evidence; the installed production
 closure comes from the exact lock file in the pinned Git tree.
 
