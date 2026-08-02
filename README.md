@@ -229,11 +229,15 @@ fixed timeout, OOM, process-exit, malformed-inspect, unknown, or OCI `rlimit`,
 mount, permission, invalid-argument, exec, `no_such_file`, `not_directory`,
 `readonly`, cgroup, and security categories. The runtime wrapper's exact
 `case_failed` record and the downloader's exact failure records receive more
-specific process-exit codes. All other package, Node, Docker, and process output
-remains private and maps to the stage's generic process-exit code. Each container
-and its transient Docker log are removed immediately after bounded use or by
-failure cleanup. Label-based container and network cleanup is verified before
-pass output.
+specific process-exit codes. Every other invoked verifier mode emits at most one
+bounded canonical `true-family-pass-b0-verifier-failure-v1` record. It exposes
+only an allowlisted mode-level `failure_code`; unknown exceptions become
+`verifier_failed`. The start classifier accepts only that exact canonical schema
+and otherwise retains `verifier_process_exit`. All other package, Node, Docker,
+and process output remains private and maps to the stage's generic process-exit
+code. Each container and its transient Docker log are removed immediately after
+bounded use or by failure cleanup. Label-based container and network cleanup is
+verified before pass output.
 
 The raw extension source is necessarily seen inside the process through
 Zigbee2MQTT's in-memory retained inventory. It is not emitted in CI or final

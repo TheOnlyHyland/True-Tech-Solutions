@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="8b88560e5567e817efed4ba84295050b4b14c5e4035f543f1476cce0eafc4fce"
+EXPECTED_LAUNCHER_SHA256="20a20974745d539c21219291cfb6c8f818c713811bbf35682d7b904bca2ebb37"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -601,6 +601,13 @@ start_container() {
       package_fetch_download_truncated|package_fetch_download_integrity|package_fetch_download_response|\
       package_fetch_download_write|package_fetch_download_sync|package_fetch_download_cleanup|\
       package_fetch_download_failed)
+      fail "$classification"
+      ;;
+    verifier_arguments|verifier_mode|verifier_self_check_failed|verifier_classifier_failed|\
+      verifier_tar_failed|verifier_upstream_failed|verifier_install_prepare_failed|\
+      verifier_closure_normalize_failed|verifier_tree_evidence_failed|verifier_runtime_hashes_failed|\
+      verifier_stage_write_failed|verifier_stage_rehash_failed|verifier_image_inspect_failed|\
+      verifier_run_verification_failed|verifier_final_verification_failed|verifier_verifier_failed)
       fail "$classification"
       ;;
     *)

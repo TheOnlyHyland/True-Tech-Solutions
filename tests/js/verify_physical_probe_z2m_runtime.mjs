@@ -92,6 +92,31 @@ const TRUST_BOUNDARY = Object.freeze({
 const PACKAGE_DOWNLOAD_SCHEMA = "true-family-pass-b0-package-download-v1";
 const PACKAGE_DOWNLOAD_FAILURE_SCHEMA = "true-family-pass-b0-package-download-failure-v1";
 const PACKAGE_DOWNLOAD_TIMEOUT_MS = 45000;
+const VERIFIER_FAILURE_SCHEMA = "true-family-pass-b0-verifier-failure-v1";
+const VERIFIER_FAILURE_MAX_BYTES = 256;
+const VERIFIER_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,54}$/u;
+const VERIFIER_MODE_FAILURE_CODES = Object.freeze({
+    "--self-check": "self_check_failed",
+    "--classify-container-start": "classifier_failed",
+    "--validate-tar": "tar_failed",
+    "--extract-tar": "tar_failed",
+    "--verify-upstream": "upstream_failed",
+    "--prepare-install": "install_prepare_failed",
+    "--normalize-closure": "closure_normalize_failed",
+    "--tree-evidence": "tree_evidence_failed",
+    "--runtime-hashes": "runtime_hashes_failed",
+    "--write-stage": "stage_write_failed",
+    "--rehash-stage": "stage_rehash_failed",
+    "--validate-image-inspect": "image_inspect_failed",
+    "--verify-run": "run_verification_failed",
+    "--validate-final": "final_verification_failed",
+});
+const VERIFIER_FAILURE_CODES = Object.freeze([
+    "arguments",
+    "mode",
+    ...new Set(Object.values(VERIFIER_MODE_FAILURE_CODES)),
+    "verifier_failed",
+]);
 const PACKAGE_DOWNLOAD_FAILURE_CODES = Object.freeze([
     "download_arguments",
     "download_kind",
@@ -179,6 +204,28 @@ function canonical(value) {
 
 function same(left, right) {
     return canonical(left) === canonical(right);
+}
+
+function allowedVerifierFailureCode(code) {
+    return typeof code === "string"
+        && VERIFIER_FAILURE_CODE_PATTERN.test(code)
+        && VERIFIER_FAILURE_CODES.includes(code)
+        && `verifier_${code}`.length <= 64;
+}
+
+function publicVerifierFailureCode(error, mode) {
+    if (!(error instanceof VerifyError) || typeof error.code !== "string" || !FAILURE_CODE_PATTERN.test(error.code)) return "verifier_failed";
+    let code;
+    if (error.code === "arguments" || error.code === "mode") code = error.code;
+    else code = VERIFIER_MODE_FAILURE_CODES[mode] ?? "verifier_failed";
+    return allowedVerifierFailureCode(code) ? code : "verifier_failed";
+}
+
+function verifierFailureToken(code) {
+    const safe = allowedVerifierFailureCode(code) ? code : "verifier_failed";
+    const token = `${canonical({schema: VERIFIER_FAILURE_SCHEMA, result: "fail", failure_code: safe})}\n`;
+    gate(Buffer.byteLength(token, "utf8") <= VERIFIER_FAILURE_MAX_BYTES, "verifier_failure_token");
+    return token;
 }
 
 function sha256Bytes(value) {
@@ -323,7 +370,11 @@ function validateManifest(manifest) {
         state_inspect_seconds: 10,
         classifier_seconds: 5,
         state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "no_such_file", "not_directory", "readonly", "cgroup", "security", "unknown"],
-        known_process_failure_codes: [...PACKAGE_DOWNLOAD_FAILURE_CODES.map((code) => `package_fetch_${code}`), "runtime_case_failed"],
+        known_process_failure_codes: [
+            ...PACKAGE_DOWNLOAD_FAILURE_CODES.map((code) => `package_fetch_${code}`),
+            ...VERIFIER_FAILURE_CODES.map((code) => `verifier_${code}`),
+            "runtime_case_failed",
+        ],
         unknown_process_output_code: "<stage>_process_exit",
         raw_output_emitted: false,
     }), "manifest_start_diagnostics");
@@ -366,8 +417,18 @@ function validateManifest(manifest) {
         closure_sha256: CLOSURE_SHA256,
         dist_sha256: DIST_SHA256,
     }), "manifest_expected");
-    exactKeys(manifest.verifier, ["launcher_normalization", "launcher_normalized_sha256", "harness_sha256", "verifier_sha256"], "manifest_verifier_shape");
+    exactKeys(manifest.verifier, [
+        "launcher_normalization",
+        "failure_schema",
+        "failure_max_bytes",
+        "failure_codes",
+        "launcher_normalized_sha256",
+        "harness_sha256",
+        "verifier_sha256",
+    ], "manifest_verifier_shape");
     gate(manifest.verifier.launcher_normalization === "sha256 of launcher UTF-8 bytes after replacing only EXPECTED_LAUNCHER_SHA256=\"<64 lowercase hex>\" with the same assignment containing 64 zeroes", "manifest_launcher_rule");
+    gate(manifest.verifier.failure_schema === VERIFIER_FAILURE_SCHEMA && manifest.verifier.failure_max_bytes === VERIFIER_FAILURE_MAX_BYTES, "manifest_verifier_failure");
+    gate(same(manifest.verifier.failure_codes, VERIFIER_FAILURE_CODES), "manifest_verifier_failure");
     for (const key of ["launcher_normalized_sha256", "harness_sha256", "verifier_sha256"]) {
         gate(SHA256_PATTERN.test(manifest.verifier[key]), "manifest_verifier_digest");
     }
@@ -1182,6 +1243,22 @@ function packageFetchFailureClassification(output) {
     return null;
 }
 
+function verifierFailureClassification(output) {
+    if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > VERIFIER_FAILURE_MAX_BYTES) return null;
+    let value;
+    try {
+        value = JSON.parse(output);
+    } catch {
+        return null;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (!same(Object.keys(value).sort(), ["failure_code", "result", "schema"])) return null;
+    if (value.schema !== VERIFIER_FAILURE_SCHEMA || value.result !== "fail" || !allowedVerifierFailureCode(value.failure_code)) return null;
+    if (output !== verifierFailureToken(value.failure_code)) return null;
+    const classification = `verifier_${value.failure_code}`;
+    return classification.length <= 64 ? classification : null;
+}
+
 function stageStateErrorCategory(value) {
     const normalized = value.toLowerCase();
     if (/no such file or directory|\benoent\b/u.test(normalized)) return "no_such_file";
@@ -1217,6 +1294,10 @@ function classifyStageStart(stage, startStatus, inspectStatus, output, stateText
     if (startStatus !== 0 || state.ExitCode !== 0) {
         if (stage === "package_fetch") {
             const classification = packageFetchFailureClassification(output);
+            if (classification !== null) return classification;
+        }
+        if (stage === "verifier") {
+            const classification = verifierFailureClassification(output);
             if (classification !== null) return classification;
         }
         if (stage === "runtime" && output === RUNTIME_CASE_FAILURE) return "runtime_case_failed";
@@ -1908,6 +1989,13 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(PACKAGE_DOWNLOAD_SUCCESS_TOKEN === '{"result":"pass","schema":"true-family-pass-b0-package-download-v1"}\n', "package_download_self_test");
     gate(packageDownloadFailureToken("download_status") === '{"failure_code":"download_status","result":"fail","schema":"true-family-pass-b0-package-download-failure-v1"}\n', "package_download_self_test");
     gate(packageDownloadFailureToken("private raw error") === packageDownloadFailureToken("download_failed"), "package_download_self_test");
+    const verifierSourceText = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+    const declaredModes = [...verifierSourceText.matchAll(/if \(mode === "(--[a-z-]+)"\)/gu)].map((match) => match[1]).sort();
+    const expectedModes = [...Object.keys(VERIFIER_MODE_FAILURE_CODES), "--download-package"].sort();
+    gate(same(declaredModes, expectedModes), "verifier_failure_mode_coverage");
+    const invokedSource = verifierSourceText.slice(verifierSourceText.lastIndexOf("const invoked = process.argv"));
+    gate(invokedSource.includes('mode !== "--download-package"') && invokedSource.includes("verifierFailureToken(publicVerifierFailureCode(error, mode))"), "verifier_failure_source");
+    for (const forbidden of ["error.message", "error.stack", "process.stderr", "console."]) gate(!invokedSource.includes(forbidden), "verifier_failure_source");
     const launcher = fs.readFileSync(launcherPath, "utf8");
     const original = normalizedLauncherDigestBytes(launcher).digest;
     gate(normalizedLauncherDigestBytes(`${launcher}\n# mutation\n`).digest !== original, "launcher_mutation_self_test");
@@ -2006,6 +2094,36 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         gate(classifyStageStart("package_fetch", 1, 0, packageDownloadFailureToken(code), startState({ExitCode: 1})) === `package_fetch_${code}`, "container_start_classifier_self_test");
     }
     gate(classifyStageStart("package_fetch", 1, 0, `${packageDownloadFailureToken("download_status")}spoof`, startState({ExitCode: 1})) === "package_fetch_process_exit", "container_start_classifier_self_test");
+    for (const code of VERIFIER_FAILURE_CODES) {
+        const token = verifierFailureToken(code);
+        gate(Buffer.byteLength(token, "utf8") <= VERIFIER_FAILURE_MAX_BYTES, "verifier_failure_self_test");
+        gate(verifierFailureClassification(token) === `verifier_${code}`, "verifier_failure_self_test");
+        gate(classifyStageStart("verifier", 1, 0, token, startState({ExitCode: 1})) === `verifier_${code}`, "verifier_failure_self_test");
+    }
+    gate(publicVerifierFailureCode(new VerifyError("arguments"), "--validate-final") === "arguments", "verifier_failure_self_test");
+    gate(publicVerifierFailureCode(new VerifyError("private_internal_code"), "--validate-final") === "final_verification_failed", "verifier_failure_self_test");
+    gate(publicVerifierFailureCode(new VerifyError("private_internal_code"), "--unknown") === "verifier_failed", "verifier_failure_self_test");
+    gate(publicVerifierFailureCode(new VerifyError("/private/path"), "--validate-final") === "verifier_failed", "verifier_failure_self_test");
+    gate(publicVerifierFailureCode(new VerifyError("a".repeat(65)), "--validate-final") === "verifier_failed", "verifier_failure_self_test");
+    gate(publicVerifierFailureCode(new Error("private raw message"), "--validate-final") === "verifier_failed", "verifier_failure_self_test");
+    const malformedVerifierFailures = [
+        "{",
+        verifierFailureToken("tar_failed").trimEnd(),
+        `${verifierFailureToken("tar_failed")}\n`,
+        JSON.stringify({schema: VERIFIER_FAILURE_SCHEMA, result: "fail", failure_code: "tar_failed"}) + "\n",
+        canonical({schema: "wrong", result: "fail", failure_code: "tar_failed"}) + "\n",
+        canonical({schema: VERIFIER_FAILURE_SCHEMA, result: "fail", failure_code: "unknown"}) + "\n",
+        canonical({schema: VERIFIER_FAILURE_SCHEMA, result: "fail", failure_code: "/private/path"}) + "\n",
+        canonical({schema: VERIFIER_FAILURE_SCHEMA, result: "fail", failure_code: "a".repeat(56)}) + "\n",
+        canonical({schema: VERIFIER_FAILURE_SCHEMA, result: "fail", failure_code: "tar\nfailed"}) + "\n",
+        canonical({schema: VERIFIER_FAILURE_SCHEMA, result: "fail", failure_code: "tar_failed", path: "/private/path"}) + "\n",
+        '{"failure_code":"tar_failed","failure_code":"tar_failed","result":"fail","schema":"true-family-pass-b0-verifier-failure-v1"}\n',
+        "x".repeat(VERIFIER_FAILURE_MAX_BYTES + 1),
+    ];
+    for (const output of malformedVerifierFailures) {
+        gate(verifierFailureClassification(output) === null, "verifier_failure_self_test");
+        gate(classifyStageStart("verifier", 1, 0, output, startState({ExitCode: 1})) === "verifier_process_exit", "verifier_failure_self_test");
+    }
     const startClassifications = [
         ["unknown", 0, 0, "", startState(), "verifier_unknown"],
         ["runtime", -1, 0, "", startState(), "runtime_unknown"],
@@ -2056,6 +2174,7 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         gate(launcher.includes(stageCall), "container_start_source");
     }
     for (const code of PACKAGE_DOWNLOAD_FAILURE_CODES) gate(launcher.includes(`package_fetch_${code}`), "container_start_source");
+    for (const code of VERIFIER_FAILURE_CODES) gate(launcher.includes(`verifier_${code}`), "container_start_source");
     const launcherLines = launcher.split("\n");
     for (let index = 0; index < launcherLines.length; index += 1) {
         if (launcherLines[index].trim() !== "set +e") continue;
@@ -2139,7 +2258,12 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     }
     gate(reorderedRejected, "reordered_final_self_test");
     const missingStage = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--validate-final", "final", "manifest", "artifact"], {encoding: "utf8"});
-    gate(missingStage.status === 1 && missingStage.stdout === "" && missingStage.stderr === "", "validate_final_arguments_self_test");
+    gate(missingStage.status === 1 && missingStage.stdout === verifierFailureToken("arguments") && missingStage.stderr === "", "validate_final_arguments_self_test");
+    const invalidMode = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--invalid-mode"], {encoding: "utf8"});
+    gate(invalidMode.status === 1 && invalidMode.stdout === verifierFailureToken("mode") && invalidMode.stderr === "", "verifier_failure_self_test");
+    const packageFailure = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--download-package"], {encoding: "utf8"});
+    gate(packageFailure.status === 1 && packageFailure.stdout === packageDownloadFailureToken("download_arguments") && packageFailure.stderr === "", "package_download_self_test");
+    gate(!packageFailure.stdout.includes(VERIFIER_FAILURE_SCHEMA) && packageFailure.stdout.split("\n").length === 2, "package_download_self_test");
     const timeoutResult = spawnSync("timeout", ["0.1s", process.execPath, "-e", "setTimeout(()=>{}, 10000)"], {stdio: "ignore"});
     gate(timeoutResult.status === 124, "timeout_self_test");
     await fdSelfTest(launcherPath);
@@ -2255,6 +2379,10 @@ if (invoked) {
     try {
         await main();
     } catch (error) {
+        const mode = process.argv[2];
+        if (mode !== "--download-package") {
+            process.stdout.write(verifierFailureToken(publicVerifierFailureCode(error, mode)));
+        }
         process.exitCode = 1;
     }
 }

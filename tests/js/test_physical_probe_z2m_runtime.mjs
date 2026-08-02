@@ -87,6 +87,24 @@ const TRUST_BOUNDARY = Object.freeze({
     branch_protected_evidence: false,
     cryptographically_unforgeable: false,
 });
+const VERIFIER_FAILURE_CODES = Object.freeze([
+    "arguments",
+    "mode",
+    "self_check_failed",
+    "classifier_failed",
+    "tar_failed",
+    "upstream_failed",
+    "install_prepare_failed",
+    "closure_normalize_failed",
+    "tree_evidence_failed",
+    "runtime_hashes_failed",
+    "stage_write_failed",
+    "stage_rehash_failed",
+    "image_inspect_failed",
+    "run_verification_failed",
+    "final_verification_failed",
+    "verifier_failed",
+]);
 const STAGE_KEYS = Object.freeze([
     "schema",
     "manifest_sha256",
@@ -224,11 +242,14 @@ function validateManifest(manifest) {
             "package_fetch_download_sync",
             "package_fetch_download_cleanup",
             "package_fetch_download_failed",
+            ...VERIFIER_FAILURE_CODES.map((code) => `verifier_${code}`),
             "runtime_case_failed",
         ],
         unknown_process_output_code: "<stage>_process_exit",
         raw_output_emitted: false,
     }), "manifest_start_diagnostics");
+    gate(manifest.verifier.failure_schema === "true-family-pass-b0-verifier-failure-v1", "manifest_verifier_failure");
+    gate(manifest.verifier.failure_max_bytes === 256 && same(manifest.verifier.failure_codes, VERIFIER_FAILURE_CODES), "manifest_verifier_failure");
     gate(manifest.runtime.node.version === "20.19.2", "manifest_runtime");
     gate(same(manifest.runtime.zigbee2mqtt, {
         version: "2.12.1",
