@@ -17,6 +17,8 @@ const FAILURE_SCHEMA = "true-family-pass-b0-runtime-failure-v2";
 const STAGE_SCHEMA = "true-family-pass-b0-runtime-stage-v2";
 const MANIFEST_SCHEMA = "true-family-pass-b0-manifest-v2";
 const CLASSIFICATION = "ci-only-non-authoritative-reviewed-source-smoke";
+const TMPFS_TMP_BYTES = 256 * 1024 * 1024;
+const PNPM_FETCH_VIRTUAL_STORE_MEASURED_BYTES = 88 * 1024 * 1024;
 const ARTIFACT_NAME = "true_family_brt_probe.mjs";
 const ARTIFACT_CLASS = "TrueFamilyBrtProbeExtension";
 const ARTIFACT_BYTES = 164_691;
@@ -202,6 +204,9 @@ function validateManifest(manifest) {
     gate(manifest.container.image === "docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8", "manifest_image");
     gate(manifest.container.platform === "linux/amd64" && manifest.container.fetch_host_allowlist_enforced === false, "manifest_container");
     gate(manifest.container.limits.nproc === 64, "manifest_nproc_limits");
+    gate(manifest.container.limits.memory_bytes === 805306368 && manifest.container.limits.memory_swap_bytes === 805306368, "manifest_memory_limits");
+    gate(manifest.container.limits.tmpfs_tmp_bytes === TMPFS_TMP_BYTES, "manifest_tmpfs_limits");
+    gate(manifest.container.limits.pnpm_fetch_virtual_store_measured_bytes === PNPM_FETCH_VIRTUAL_STORE_MEASURED_BYTES && PNPM_FETCH_VIRTUAL_STORE_MEASURED_BYTES < TMPFS_TMP_BYTES, "manifest_tmpfs_capacity");
     gate(same(manifest.container.log_policy, {
         driver: "json-file",
         options: {"max-file": "1", "max-size": "1m"},

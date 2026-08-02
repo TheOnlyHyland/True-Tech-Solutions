@@ -195,6 +195,11 @@ identifiers become `multiple_codes`, and no identifier becomes only
 `diagnostic_empty`, `diagnostic_oversize`, `diagnostic_non_ndjson`, or
 `diagnostic_no_code`. Raw messages, paths, package names, URLs, hashes, counts,
 and timing are never emitted.
+The common `/tmp` tmpfs is exactly 256 MiB with
+`rw,noexec,nosuid,nodev,mode=1777`; producer containers use the captured host
+UID/GID and the runtime uses `65532:65532`. This bounded ceiling accommodates
+the measured 88 MiB temporary pnpm virtual store while the memory cgroup remains
+exactly 768 MiB.
 Every package fetch, dependency fetch, install, extraction, and verifier container
 that writes a host bind output runs under the runner's captured numeric UID/GID,
 which must both be nonzero. No `nproc` limit is applied to these producers because

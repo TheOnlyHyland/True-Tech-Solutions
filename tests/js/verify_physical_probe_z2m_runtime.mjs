@@ -24,6 +24,8 @@ const CLOSURE_SHA256 = "de77c8dea2c3a531c3af9331147426d708ad83435072aa4aec228cdc
 const CLOSURE_COUNT = 148;
 const MAX_RAW_BYTES = 32 * 1024;
 const MAX_FINAL_BYTES = 32 * 1024;
+const TMPFS_TMP_BYTES = 256 * 1024 * 1024;
+const PNPM_FETCH_VIRTUAL_STORE_MEASURED_BYTES = 88 * 1024 * 1024;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const FAILURE_CODE_PATTERN = /^[a-z0-9_]{1,64}$/u;
 const CASES = Object.freeze([
@@ -551,11 +553,14 @@ function validateManifest(manifest) {
         nofile: 1024,
         nproc: 64,
         fsize_bytes: 268435456,
+        tmpfs_tmp_bytes: TMPFS_TMP_BYTES,
+        pnpm_fetch_virtual_store_measured_bytes: PNPM_FETCH_VIRTUAL_STORE_MEASURED_BYTES,
         full_run_seconds: 2040,
         workflow_timeout_minutes: 45,
         runtime_seconds: 240,
         raw_output_bytes: MAX_RAW_BYTES,
     }), "manifest_limits");
+    gate(PNPM_FETCH_VIRTUAL_STORE_MEASURED_BYTES < TMPFS_TMP_BYTES, "manifest_tmpfs_capacity");
     exactKeys(manifest.runtime, ["node", "zigbee2mqtt", "zigbee_herdsman", "zigbee_herdsman_converters", "pnpm"], "manifest_runtime_shape");
     gate(same(manifest.runtime.node, {version: "20.19.2"}), "manifest_node");
     for (const [kind, spec] of Object.entries(PACKAGE_DOWNLOAD_SPECS)) {
@@ -1564,6 +1569,10 @@ function classifyStageStartFiles(stage, startStatusText, inspectStatusText, outp
     );
 }
 
+function validateTmpfsTmp(value, uid, gid) {
+    gate(value === `rw,noexec,nosuid,nodev,size=${TMPFS_TMP_BYTES},mode=1777,uid=${uid},gid=${gid}`, "inspect_tmpfs");
+}
+
 function validateInspect(inspect, manifest) {
     gate(Array.isArray(inspect) && inspect.length === 1, "inspect_shape");
     const item = inspect[0];
@@ -1594,10 +1603,10 @@ function validateInspect(inspect, manifest) {
     const expectedMounts = ["/harness", "/input", "/launcher", "/runtime", "/upstream", "/verifier", "/z2m"];
     const mounts = (item.Mounts ?? []).map((mount) => ({destination: mount.Destination, type: mount.Type, rw: mount.RW})).sort((left, right) => left.destination.localeCompare(right.destination));
     gate(same(mounts, expectedMounts.map((destination) => ({destination, type: "bind", rw: false}))), "inspect_mounts");
-    gate(same(host.Tmpfs ?? {}, {
-        "/data": "rw,nosuid,nodev,size=268435456,mode=0700,uid=65532,gid=65532",
-        "/tmp": "rw,noexec,nosuid,nodev,size=67108864,mode=1777,uid=65532,gid=65532",
-    }), "inspect_tmpfs");
+    const tmpfs = host.Tmpfs ?? {};
+    exactKeys(tmpfs, ["/data", "/tmp"], "inspect_tmpfs");
+    gate(tmpfs["/data"] === "rw,nosuid,nodev,size=268435456,mode=0700,uid=65532,gid=65532", "inspect_tmpfs");
+    validateTmpfsTmp(tmpfs["/tmp"], "65532", "65532");
     gate(!mounts.some((mount) => mount.destination.includes("docker.sock")), "inspect_docker_socket");
     const environmentEntries = item.Config?.Env ?? [];
     gate(environmentEntries.length === 4, "inspect_environment");
@@ -2295,9 +2304,29 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const runtimeFlags = shellArray("RUNTIME_FLAGS");
     const pnpmFailureSuffixes = shellArray("PNPM_FIXED_FAILURE_SUFFIXES").split("\n").map((line) => line.trim()).filter(Boolean);
     gate(same(pnpmFailureSuffixes, PNPM_FIXED_FAILURE_SUFFIXES), "pnpm_classifier_source");
-    gate(commonFlags.includes("--pids-limit=64") && !commonFlags.includes("--ulimit=nproc="), "nproc_policy_source");
+    gate(commonFlags.includes("--pids-limit=64") && commonFlags.includes("--memory=768m") && commonFlags.includes("--memory-swap=768m") && !commonFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(producerFlags.includes("--user=\"$HOST_UID:$HOST_GID\"") && !producerFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(runtimeFlags.includes("--user=65532:65532") && runtimeFlags.includes("--ulimit=nproc=64:64"), "nproc_policy_source");
+    const producerTmpfs = '--tmpfs="/tmp:rw,noexec,nosuid,nodev,size=268435456,mode=1777,uid=$HOST_UID,gid=$HOST_GID"';
+    const runtimeTmpfs = "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=268435456,mode=1777,uid=65532,gid=65532";
+    gate(producerFlags.includes(producerTmpfs) && runtimeFlags.includes(runtimeTmpfs), "tmpfs_policy_source");
+    gate((launcher.match(/--tmpfs="?\/tmp:/gu) ?? []).length === 2 && (launcher.match(/size=268435456,mode=1777/gu) ?? []).length === 2, "tmpfs_policy_source");
+    gate(!launcher.includes("size=67108864,mode=1777") && !launcher.includes("/tmp:rw,exec") && !launcher.includes("/tmp:rw,noexec,nosuid,nodev,mode=1777"), "tmpfs_policy_source");
+    const exactTmpfs = "rw,noexec,nosuid,nodev,size=268435456,mode=1777,uid=1000,gid=1001";
+    validateTmpfsTmp(exactTmpfs, "1000", "1001");
+    for (const invalidTmpfs of [
+        "rw,noexec,nosuid,nodev,size=67108864,mode=1777,uid=1000,gid=1001",
+        "rw,noexec,nosuid,nodev,mode=1777,uid=1000,gid=1001",
+        "rw,exec,nosuid,nodev,size=268435456,mode=1777,uid=1000,gid=1001",
+    ]) {
+        let rejected = false;
+        try {
+            validateTmpfsTmp(invalidTmpfs, "1000", "1001");
+        } catch (error) {
+            rejected = error instanceof VerifyError;
+        }
+        gate(rejected, "tmpfs_policy_self_test");
+    }
     gate((launcher.match(/--ulimit=nproc=/gu) ?? []).length === 1, "nproc_policy_source");
     gate((launcher.match(/--ulimit=nproc=64:64/gu) ?? []).length === 1, "nproc_policy_source");
     gate(!launcher.includes("--ulimit=nproc=16:16") && !launcher.includes("--pids-limit=16"), "nproc_policy_source");
