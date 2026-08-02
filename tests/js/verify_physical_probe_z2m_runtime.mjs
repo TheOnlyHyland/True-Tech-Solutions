@@ -231,7 +231,7 @@ function same(left, right) {
 
 function harnessSmokeFailureCodes(source) {
     const helperNames = ["gate", "exactKeys", "readJson", "checkMode", "strictProxy", "bounded"];
-    const expectedLiteralCalls = {gate: 157, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
+    const expectedLiteralCalls = {gate: 159, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
     const masked = source.replace(/(?:async\s+)?function\s+(?:gate|exactKeys|readJson|checkMode|strictProxy|bounded)\s*\([^)]*\)\s*\{/gu, "");
     const codes = [];
     for (const name of helperNames) {

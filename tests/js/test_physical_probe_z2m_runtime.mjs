@@ -870,7 +870,9 @@ async function journalDetectorSelfTests(context) {
         journal_mode_rejected: !accepts(wrongMode),
     };
     await rm(root, {recursive: true, force: true});
-    gate(Object.values(result).every(Boolean), "journal_detector_self_test");
+    gate(result.journal_noncanonical_rejected, "journal_noncanonical_detector");
+    gate(result.journal_link_rejected, "journal_link_detector");
+    gate(result.journal_mode_rejected, "journal_mode_detector");
     return result;
 }
 
