@@ -212,20 +212,20 @@ the full Controller, connect MQTT, construct/start Zigbee or herdsman, open
 serial/radio devices, or use Home Assistant. Device and endpoint behavior remains
 synthetic.
 
-Every attached container uses Docker's `local` log driver with exact
-`max-size=1m` and `max-file=1` bounds. Attached stdout and stderr are redirected
-only to private temporary files; no PASS B0 logs or evidence are uploaded as
-workflow artifacts. A failed bounded start retains its container for a bounded
-private `.State` inspection before cleanup. Only the fixed `npm_pack`, `fetch`,
+Every attached container uses Docker's transient `json-file` log driver with
+exact `max-size=1m` and `max-file=1` bounds. Attached stdout and stderr are also
+captured only in private temporary files; no PASS B0 logs or evidence are
+uploaded as workflow artifacts. A failed bounded start retains its container
+for a bounded private `.State` inspection before cleanup. Only the fixed `npm_pack`, `fetch`,
 `install`, `runtime`, and `verifier` stage roles reach the classifier. It emits
 fixed timeout, OOM, process-exit, malformed-inspect, unknown, or OCI `rlimit`,
 mount, permission, invalid-argument, exec, `no_such_file`, `not_directory`,
 `readonly`, cgroup, and security categories. Only the runtime
 wrapper's exact `case_failed` record receives a more specific process-exit code;
 all other npm, Node, Docker, and process output remains private and maps to the
-stage's generic process-exit code. Each container is removed immediately after
-its bounded use or by failure cleanup, and label-based container and network
-cleanup is verified before pass output.
+stage's generic process-exit code. Each container and its transient Docker log
+are removed immediately after bounded use or by failure cleanup. Label-based
+container and network cleanup is verified before pass output.
 
 The raw extension source is necessarily seen inside the process through
 Zigbee2MQTT's in-memory retained inventory. It is not emitted in CI or final

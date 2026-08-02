@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="2af6278373137ce58509aeb6e9aeeb85c5d0f85b811cccfc3f4c840f33453bed"
+EXPECTED_LAUNCHER_SHA256="0e983fdf471465eb7d8fdf41b450143c9c9541d666e67284983327436d1439d4"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -22,7 +22,7 @@ ACTIVE_FAILURE_CODE="launcher_failure"
 declare -a CONTAINERS=()
 declare -a NETWORKS=()
 LOG_FLAGS=(
-  --log-driver=local
+  --log-driver=json-file
   --log-opt=max-size=1m
   --log-opt=max-file=1
 )

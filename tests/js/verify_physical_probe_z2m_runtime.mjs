@@ -230,11 +230,14 @@ function validateManifest(manifest) {
     gate(manifest.container.producer_user === "host-runner-numeric-nonroot" && manifest.container.runtime_user === "65532:65532", "manifest_users");
     gate(manifest.container.limits.nproc === 64, "manifest_nproc_limits");
     gate(same(manifest.container.log_policy, {
-        driver: "local",
+        driver: "json-file",
         options: {"max-file": "1", "max-size": "1m"},
         attach_required: true,
+        transient: true,
+        stdout_stderr_privately_captured: true,
         uploaded_artifacts: false,
         containers_removed_before_pass: true,
+        cleanup_verified_before_pass: true,
     }), "manifest_log_policy");
     gate(same(manifest.container.npm_config_policy, {
         userconfig: "/dev/null",
@@ -898,7 +901,7 @@ function validateRaw(raw, manifest, stage) {
 
 function validateAttachLogConfig(logConfig) {
     gate(same(logConfig, {
-        Type: "local",
+        Type: "json-file",
         Config: {"max-file": "1", "max-size": "1m"},
     }), "inspect_log_policy");
 }
@@ -1495,8 +1498,9 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const launcher = fs.readFileSync(launcherPath, "utf8");
     const original = normalizedLauncherDigestBytes(launcher).digest;
     gate(normalizedLauncherDigestBytes(`${launcher}\n# mutation\n`).digest !== original, "launcher_mutation_self_test");
-    const exactLogFlags = "LOG_FLAGS=(\n  --log-driver=local\n  --log-opt=max-size=1m\n  --log-opt=max-file=1\n)";
-    gate(launcher.includes(exactLogFlags) && !launcher.includes("--log-driver=none"), "attach_log_policy_source");
+    const exactLogFlags = "LOG_FLAGS=(\n  --log-driver=json-file\n  --log-opt=max-size=1m\n  --log-opt=max-file=1\n)";
+    gate(launcher.includes(exactLogFlags) && !launcher.includes("--log-driver=local") && !launcher.includes("--log-driver=none"), "attach_log_policy_source");
+    gate((launcher.match(/--log-driver=json-file/gu) ?? []).length === 1 && (launcher.match(/--log-opt=max-size=1m/gu) ?? []).length === 1 && (launcher.match(/--log-opt=max-file=1/gu) ?? []).length === 1, "attach_log_policy_source");
     gate((launcher.match(/\$\{LOG_FLAGS\[@\]\}/gu) ?? []).length === 1, "attach_log_policy_source");
     gate((launcher.match(/start -a/gu) ?? []).length === 1, "attach_log_policy_source");
     const shellArray = (name) => {
@@ -1545,12 +1549,14 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         gate(harnessText.includes(`"${mount}"`), "actual_run_immutable_source");
     }
     gate(harnessText.includes("immutable_write_attempts_blocked: immutableWriteAttemptsBlocked && immutableMountsReadOnly"), "actual_run_immutable_source");
-    validateAttachLogConfig({Type: "local", Config: {"max-file": "1", "max-size": "1m"}});
+    validateAttachLogConfig({Type: "json-file", Config: {"max-file": "1", "max-size": "1m"}});
     for (const invalidLogConfig of [
         {Type: "none", Config: {}},
-        {Type: "local", Config: {"max-file": "1", "max-size": "2m"}},
-        {Type: "local", Config: {"max-file": "2", "max-size": "1m"}},
-        {Type: "local", Config: {"max-file": "1", "max-size": "1m", extra: "true"}},
+        {Type: "local", Config: {"max-file": "1", "max-size": "1m"}},
+        {Type: "json-file", Config: {"max-file": "1", "max-size": "2m"}},
+        {Type: "json-file", Config: {"max-file": "2", "max-size": "1m"}},
+        {Type: "json-file", Config: {"max-size": "1m"}},
+        {Type: "json-file", Config: {"max-file": "1", "max-size": "1m", extra: "true"}},
     ]) {
         let rejected = false;
         try {
@@ -1612,7 +1618,7 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const classifier = startContainerSource.indexOf('node_bounded 5s "$VERIFIER" --classify-container-start');
     const classifiedFailure = startContainerSource.indexOf('fail "$classification"');
     gate(startCapture >= 0 && stateInspect > startCapture && classifier > stateInspect && classifiedFailure > classifier, "container_start_source");
-    gate(!launcher.includes('docker_checked "container_start"') && startContainerSource.includes('2>/dev/null') && !startContainerSource.includes("remove_container_checked"), "container_start_source");
+    gate(!launcher.includes('docker_checked "container_start"') && startContainerSource.includes('>"$output" 2>"$log"') && startContainerSource.includes('2>/dev/null') && !startContainerSource.includes("remove_container_checked"), "container_start_source");
     const disposableSource = launcher.slice(launcher.indexOf("run_disposable() {"), launcher.indexOf("capture_expected_status IMAGE_PROBE_STATUS"));
     const disposableCreate = disposableSource.indexOf('create_container producer "$name"');
     const disposableStart = disposableSource.indexOf('start_container "$stage"');
@@ -1632,6 +1638,9 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(launcher.includes('capture_expected_status IMAGE_PROBE_STATUS docker_bounded 15s image inspect'), "expected_status_source");
     gate(launcher.includes('if LEFTOVER_CONTAINERS="$(close_fds_exec timeout'), "expected_status_source");
     gate(launcher.includes('if LEFTOVER_NETWORKS="$(close_fds_exec timeout'), "expected_status_source");
+    const finalRootRemoval = launcher.lastIndexOf('rm -rf -- "$FINAL_ROOT"');
+    const finalPassOutput = launcher.lastIndexOf('printf \'%s\\n\' "$FINAL_EVIDENCE"');
+    gate(finalRootRemoval >= 0 && finalPassOutput > finalRootRemoval, "attach_log_policy_source");
     gate(launcher.includes('trap \'fail "$ACTIVE_FAILURE_CODE"\' ERR'), "unexpected_failure_source");
     const shellSelfCheck = spawnSync(launcherPath, ["--shell-self-check"], {encoding: "utf8", env: {PATH: process.env.PATH}});
     gate(shellSelfCheck.status === 0 && shellSelfCheck.stderr === "", "shell_self_check");

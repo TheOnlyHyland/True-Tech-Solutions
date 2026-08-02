@@ -174,11 +174,14 @@ function validateManifest(manifest) {
     gate(manifest.container.platform === "linux/amd64" && manifest.container.fetch_host_allowlist_enforced === false, "manifest_container");
     gate(manifest.container.limits.nproc === 64, "manifest_nproc_limits");
     gate(same(manifest.container.log_policy, {
-        driver: "local",
+        driver: "json-file",
         options: {"max-file": "1", "max-size": "1m"},
         attach_required: true,
+        transient: true,
+        stdout_stderr_privately_captured: true,
         uploaded_artifacts: false,
         containers_removed_before_pass: true,
+        cleanup_verified_before_pass: true,
     }), "manifest_log_policy");
     gate(same(manifest.container.npm_config_policy, {
         userconfig: "/dev/null",
