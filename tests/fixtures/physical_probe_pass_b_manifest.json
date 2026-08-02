@@ -16,6 +16,7 @@
     "index_reference_sha256": "sha256:7cd3fbc830c75c92256fe1122002add9a1c025831af8770cd0bf8e45688ef661",
     "platform": "linux/amd64",
     "producer_user": "host-runner-numeric-nonroot",
+    "producer_nproc_limit": 4096,
     "runtime_user": "65532:65532",
     "log_policy": {
       "driver": "local",
@@ -90,9 +91,9 @@
   },
   "verifier": {
     "launcher_normalization": "sha256 of launcher UTF-8 bytes after replacing only EXPECTED_LAUNCHER_SHA256=\"<64 lowercase hex>\" with the same assignment containing 64 zeroes",
-    "launcher_normalized_sha256": "7f6d3273896cc5bdff8d634bd08942a82a7af5bdc1ca9ee96e809486c7bb796d",
-    "harness_sha256": "75bdd85b6dca7aba73e57a2b4a3ea2ffb434feb4dc57e9e4045af94f251eb8bd",
-    "verifier_sha256": "166ea0c66526ce4b48b287cff6ea9361ba829e12a7dccb2780cf71c6d23207a6"
+    "launcher_normalized_sha256": "dff8ac6fe9d90f5bd756f01908f5fea34991721bd9f3d71a3fee6b748d1b11ff",
+    "harness_sha256": "02c45d3a4edac4dc5cde5810a422c0787f66285eed190822bbf7fe3710fa1c44",
+    "verifier_sha256": "38e05966010dcd443d2f8b9d89dbcc3dfc0d52a3ed9c6f01fe7054fa46a76307"
   },
   "test_scope": {
     "cases": [

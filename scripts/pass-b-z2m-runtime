@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="7f6d3273896cc5bdff8d634bd08942a82a7af5bdc1ca9ee96e809486c7bb796d"
+EXPECTED_LAUNCHER_SHA256="dff8ac6fe9d90f5bd756f01908f5fea34991721bd9f3d71a3fee6b748d1b11ff"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -459,7 +459,7 @@ permission_self_check() {
     --ulimit=core=0:0 \
     --ulimit=fsize=1048576:1048576 \
     --ulimit=nofile=64:64 \
-    --ulimit=nproc=16:16 \
+    --ulimit=nproc=4096:4096 \
     --ipc=private \
     --cgroupns=private \
     "${LOG_FLAGS[@]}" \
@@ -498,7 +498,7 @@ permission_self_check() {
     --ulimit=core=0:0 \
     --ulimit=fsize=1048576:1048576 \
     --ulimit=nofile=64:64 \
-    --ulimit=nproc=16:16 \
+    --ulimit=nproc=64:64 \
     --ipc=private \
     --cgroupns=private \
     "${LOG_FLAGS[@]}" \
@@ -677,7 +677,6 @@ COMMON_FLAGS=(
   --ulimit=core=0:0
   --ulimit=fsize=268435456:268435456
   --ulimit=nofile=1024:1024
-  --ulimit=nproc=64:64
   --ipc=private
   --cgroupns=private
   "${LOG_FLAGS[@]}"
@@ -686,10 +685,12 @@ COMMON_FLAGS=(
 )
 PRODUCER_FLAGS=(
   --user="$HOST_UID:$HOST_GID"
+  --ulimit=nproc=4096:4096
   --tmpfs="/tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777,uid=$HOST_UID,gid=$HOST_GID"
 )
 RUNTIME_FLAGS=(
   --user=65532:65532
+  --ulimit=nproc=64:64
   --tmpfs=/tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777,uid=65532,gid=65532
 )
 

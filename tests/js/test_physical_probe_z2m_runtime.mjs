@@ -172,6 +172,7 @@ function validateManifest(manifest) {
     gate(same(manifest.trust_boundary, TRUST_BOUNDARY), "manifest_trust_boundary");
     gate(manifest.container.image === "docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8", "manifest_image");
     gate(manifest.container.platform === "linux/amd64" && manifest.container.fetch_host_allowlist_enforced === false, "manifest_container");
+    gate(manifest.container.producer_nproc_limit === 4096 && manifest.container.limits.nproc === 64, "manifest_nproc_limits");
     gate(same(manifest.container.log_policy, {
         driver: "local",
         options: {"max-file": "1", "max-size": "1m"},

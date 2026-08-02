@@ -172,12 +172,16 @@ signature or independent build provenance.
 containers. pnpm fetch has network access and receives only the exact upstream
 package and lock inputs. Every fetch, install, extraction, and verifier container
 that writes a host bind output runs under the runner's captured numeric UID/GID,
-which must both be nonzero. Installation copies the sealed upstream inputs into a
-mode-`0700` writable `/work` tree, recursively normalizes regular files to
-mode `0600`, verifies the copied package is writable, and verifies the read-only
-source snapshot did not change. A separate install uses a copied store with
-Docker networking disabled, lifecycle scripts disabled, and the exact frozen
-lock. The fetch commands explicitly target `registry.npmjs.org` and GitHub, but
+which must both be nonzero. Their `nproc` limit is `4096`, because Linux accounts
+that limit across every process using the shared runner UID; producer process
+containment instead remains enforced by Docker's 64-process pids cgroup. The
+UID-65532 runtime retains exact `nproc=64:64` and `pids=64` limits. Installation
+copies the sealed upstream inputs into a mode-`0700` writable `/work` tree,
+recursively normalizes regular files to mode `0600`, verifies the copied package
+is writable, and verifies the read-only source snapshot did not change. A
+separate install uses a copied store with Docker networking disabled, lifecycle
+scripts disabled, and the exact frozen lock. The fetch commands explicitly
+target `registry.npmjs.org` and GitHub, but
 Docker's default egress is used: `fetch_host_allowlist_enforced` is deliberately
 `false`. This smoke gate does not prove host-level destination filtering. The
 separately downloaded zigbee-herdsman and zigbee-herdsman-converters tarballs

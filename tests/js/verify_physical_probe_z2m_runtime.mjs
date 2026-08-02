@@ -218,6 +218,7 @@ function validateManifest(manifest) {
         "index_reference_sha256",
         "platform",
         "producer_user",
+        "producer_nproc_limit",
         "runtime_user",
         "log_policy",
         "fetch_host_allowlist_enforced",
@@ -227,6 +228,7 @@ function validateManifest(manifest) {
     gate(manifest.container.image === IMAGE && manifest.container.index_reference_sha256 === IMAGE_INDEX, "manifest_image");
     gate(manifest.container.platform === "linux/amd64" && manifest.container.fetch_host_allowlist_enforced === false, "manifest_platform");
     gate(manifest.container.producer_user === "host-runner-numeric-nonroot" && manifest.container.runtime_user === "65532:65532", "manifest_users");
+    gate(manifest.container.producer_nproc_limit === 4096 && manifest.container.limits.nproc === 64, "manifest_nproc_limits");
     gate(same(manifest.container.log_policy, {
         driver: "local",
         options: {"max-file": "1", "max-size": "1m"},
@@ -1437,6 +1439,20 @@ async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
     gate(launcher.includes(exactLogFlags) && !launcher.includes("--log-driver=none"), "attach_log_policy_source");
     gate((launcher.match(/\$\{LOG_FLAGS\[@\]\}/gu) ?? []).length === 3, "attach_log_policy_source");
     gate((launcher.match(/start -a/gu) ?? []).length === 3, "attach_log_policy_source");
+    const shellArray = (name) => {
+        const match = launcher.match(new RegExp(`${name}=\\(\\n([\\s\\S]*?)\\n\\)`, "u"));
+        gate(match !== null, "nproc_policy_source");
+        return match[1];
+    };
+    const commonFlags = shellArray("COMMON_FLAGS");
+    const producerFlags = shellArray("PRODUCER_FLAGS");
+    const runtimeFlags = shellArray("RUNTIME_FLAGS");
+    gate(commonFlags.includes("--pids-limit=64") && !commonFlags.includes("--ulimit=nproc="), "nproc_policy_source");
+    gate(producerFlags.includes("--user=\"$HOST_UID:$HOST_GID\"") && producerFlags.includes("--ulimit=nproc=4096:4096"), "nproc_policy_source");
+    gate(runtimeFlags.includes("--user=65532:65532") && runtimeFlags.includes("--ulimit=nproc=64:64"), "nproc_policy_source");
+    gate((launcher.match(/--ulimit=nproc=4096:4096/gu) ?? []).length === 2, "nproc_policy_source");
+    gate((launcher.match(/--ulimit=nproc=64:64/gu) ?? []).length === 2, "nproc_policy_source");
+    gate(!launcher.includes("--ulimit=nproc=16:16") && (launcher.match(/--pids-limit=16/gu) ?? []).length === 2, "nproc_policy_source");
     validateAttachLogConfig({Type: "local", Config: {"max-file": "1", "max-size": "1m"}});
     for (const invalidLogConfig of [
         {Type: "none", Config: {}},
