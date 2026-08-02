@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="0e983fdf471465eb7d8fdf41b450143c9c9541d666e67284983327436d1439d4"
+EXPECTED_LAUNCHER_SHA256="8b88560e5567e817efed4ba84295050b4b14c5e4035f543f1476cce0eafc4fce"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -571,7 +571,7 @@ start_container() {
   local log="$5"
   local start_status inspect_status classification
   case "$stage" in
-    npm_pack|fetch|install|runtime|verifier) ;;
+    package_fetch|fetch|install|runtime|verifier) ;;
     *) fail "container_stage" ;;
   esac
   capture_expected_status start_status docker_bounded "$seconds" start -a "$name" >"$output" 2>"$log"
@@ -592,6 +592,15 @@ start_container() {
       "${stage}_state_error_cgroup"|"${stage}_state_error_security"|"${stage}_state_error_unknown"|\
       "${stage}_process_exit"|"${stage}_inspect_timeout"|\
       "${stage}_inspect_failed"|"${stage}_inspect_malformed"|"${stage}_unknown"|runtime_case_failed)
+      fail "$classification"
+      ;;
+    package_fetch_download_arguments|package_fetch_download_kind|package_fetch_download_contract|\
+      package_fetch_download_url|package_fetch_download_destination|package_fetch_download_destination_exists|\
+      package_fetch_download_request|package_fetch_download_timeout|package_fetch_download_redirect|\
+      package_fetch_download_status|package_fetch_download_length|package_fetch_download_overrun|\
+      package_fetch_download_truncated|package_fetch_download_integrity|package_fetch_download_response|\
+      package_fetch_download_write|package_fetch_download_sync|package_fetch_download_cleanup|\
+      package_fetch_download_failed)
       fail "$classification"
       ;;
     *)
@@ -777,7 +786,7 @@ acquire_run() {
   local store_fetch="$run_root/store-fetch"
   local store_install="$run_root/store-install"
   local install="$run_root/install"
-  local name output
+  local name filename kind
   mkdir -m 0700 "$run_root" "$run_root/log" "$run_root/mount" "$run_root/mount/input" "$run_root/mount/harness" \
     "$run_root/mount/verifier" "$run_root/mount/launcher" "$run_root/mount/upstream" "$run_root/mount/runtime" \
     "$run_root/mount/z2m" "$fetch" "$store_fetch" "$store_install" "$install" "$upstream_git" "$run_root/git-home" \
@@ -824,23 +833,22 @@ acquire_run() {
   seal_readonly_tree "$run_root/mount/upstream"
 
   make_network "$network"
-  for package in "zigbee2mqtt@2.12.1" "zigbee-herdsman@10.6.1" "zigbee-herdsman-converters@26.76.0" "pnpm@10.18.3"; do
-    name="tf-pass-b0-$RUN_TOKEN-r$ordinal-npm-${package%%@*}"
-    run_disposable npm_pack "$name" 60s "$run_root/log/npm-${package%%@*}.out" "$run_root/log/npm-${package%%@*}" \
+  for kind in z2m herdsman converters pnpm; do
+    case "$kind" in
+      z2m) filename="zigbee2mqtt-2.12.1.tgz" ;;
+      herdsman) filename="zigbee-herdsman-10.6.1.tgz" ;;
+      converters) filename="zigbee-herdsman-converters-26.76.0.tgz" ;;
+      pnpm) filename="pnpm-10.18.3.tgz" ;;
+    esac
+    name="tf-pass-b0-$RUN_TOKEN-r$ordinal-package-$kind"
+    run_disposable package_fetch "$name" 60s "$run_root/log/package-$kind.out" "$run_root/log/package-$kind" \
       --network="$network" \
-      --workdir=/out \
+      --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
+      --mount "type=bind,source=$run_root/tool-input,target=/input,readonly" \
       --mount "type=bind,source=$fetch,target=/out" \
-      --env HOME=/tmp/home \
-      --env NPM_CONFIG_USERCONFIG=/dev/null \
-      --env NPM_CONFIG_GLOBALCONFIG=/dev/null \
-      --env NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
-      --env NPM_CONFIG_AUDIT=false \
-      --env NPM_CONFIG_FUND=false \
-      --env NPM_CONFIG_UPDATE_NOTIFIER=false \
-      --entrypoint=/usr/local/bin/npm \
-      "$IMAGE" pack "$package" --ignore-scripts --pack-destination=/out \
-        --registry=https://registry.npmjs.org/ --userconfig=/dev/null \
-        --globalconfig=/dev/null --loglevel=silent
+      --entrypoint=/usr/local/bin/node \
+      "$IMAGE" /verifier/verify_physical_probe_z2m_runtime.mjs --download-package \
+        "$kind" "/out/$filename" /input/physical_probe_pass_b_manifest.json
   done
 
   local z2m_tar="$fetch/zigbee2mqtt-2.12.1.tgz"
@@ -881,12 +889,6 @@ acquire_run() {
     --mount "type=bind,source=$run_root/mount/upstream,target=/source,readonly" \
     --mount "type=bind,source=$store_fetch,target=/store" \
     --env HOME=/tmp/home \
-    --env npm_config_userconfig=/dev/null \
-    --env npm_config_globalconfig=/dev/null \
-    --env npm_config_registry=https://registry.npmjs.org/ \
-    --env npm_config_audit=false \
-    --env npm_config_fund=false \
-    --env npm_config_update_notifier=false \
     --entrypoint=/bin/sh \
     "$IMAGE" -eu -c 'mkdir -p /tmp/project; cp /source/package.json /source/pnpm-lock.yaml /tmp/project/; if [ -f /source/pnpm-workspace.yaml ]; then cp /source/pnpm-workspace.yaml /tmp/project/; fi; if [ -f /source/.npmrc ]; then cp /source/.npmrc /tmp/project/; fi; exec /usr/local/bin/node /tool/bin/pnpm.cjs fetch --dir=/tmp/project --prod --no-optional --frozen-lockfile --ignore-scripts --store-dir=/store --reporter=silent'
 
@@ -913,8 +915,6 @@ acquire_run() {
     --mount "type=bind,source=$install,target=/work" \
     --mount "type=bind,source=$store_install,target=/store" \
     --env HOME=/tmp/home \
-    --env npm_config_userconfig=/dev/null \
-    --env npm_config_globalconfig=/dev/null \
     --entrypoint=/usr/local/bin/node \
     "$IMAGE" /tool/bin/pnpm.cjs install --prod --no-optional --offline --frozen-lockfile \
       --ignore-scripts --package-import-method=copy --store-dir=/store --reporter=silent

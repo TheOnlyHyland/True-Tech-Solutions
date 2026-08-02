@@ -2,6 +2,7 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
+import https from "node:https";
 import path from "node:path";
 import zlib from "node:zlib";
 import {spawnSync} from "node:child_process";
@@ -87,6 +88,68 @@ const TRUST_BOUNDARY = Object.freeze({
     independently_attested: false,
     branch_protected_evidence: false,
     cryptographically_unforgeable: false,
+});
+const PACKAGE_DOWNLOAD_SCHEMA = "true-family-pass-b0-package-download-v1";
+const PACKAGE_DOWNLOAD_FAILURE_SCHEMA = "true-family-pass-b0-package-download-failure-v1";
+const PACKAGE_DOWNLOAD_TIMEOUT_MS = 45000;
+const PACKAGE_DOWNLOAD_FAILURE_CODES = Object.freeze([
+    "download_arguments",
+    "download_kind",
+    "download_contract",
+    "download_url",
+    "download_destination",
+    "download_destination_exists",
+    "download_request",
+    "download_timeout",
+    "download_redirect",
+    "download_status",
+    "download_length",
+    "download_overrun",
+    "download_truncated",
+    "download_integrity",
+    "download_response",
+    "download_write",
+    "download_sync",
+    "download_cleanup",
+    "download_failed",
+]);
+const PACKAGE_DOWNLOAD_SPECS = Object.freeze({
+    z2m: Object.freeze({
+        runtime_key: "zigbee2mqtt",
+        version: "2.12.1",
+        tarball_url: "https://registry.npmjs.org/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz",
+        filename: "zigbee2mqtt-2.12.1.tgz",
+        sha512_sri: "sha512-OucrVP2raFmMEKK+4r7qHOSamAmaM4WI0WYLbLRhZ1s73frVDcppzD/6BHGPWFIalJrxGrdKHYSbRmpQqLUt5w==",
+        compressed_size: 349915,
+        max_bytes: 524288,
+    }),
+    herdsman: Object.freeze({
+        runtime_key: "zigbee_herdsman",
+        version: "10.6.1",
+        tarball_url: "https://registry.npmjs.org/zigbee-herdsman/-/zigbee-herdsman-10.6.1.tgz",
+        filename: "zigbee-herdsman-10.6.1.tgz",
+        sha512_sri: "sha512-BXy2jai1R6OkJ7gWFwS8J6vKJ7Mm+vfReDcuN+IPCmHdT65oiaZ6oZDY/thjG7ePMHD2m0YD8AZvi7o5LBNPpQ==",
+        compressed_size: 1193873,
+        max_bytes: 2097152,
+    }),
+    converters: Object.freeze({
+        runtime_key: "zigbee_herdsman_converters",
+        version: "26.76.0",
+        tarball_url: "https://registry.npmjs.org/zigbee-herdsman-converters/-/zigbee-herdsman-converters-26.76.0.tgz",
+        filename: "zigbee-herdsman-converters-26.76.0.tgz",
+        sha512_sri: "sha512-JSgW/9Yn5xdfUHvyXunKSqoPk7w6wY+0OEzOiqBs/hr67o9YSXKc4joUr/dbRMXJcv7fNlDNDRvIDS41b2758Q==",
+        compressed_size: 2752484,
+        max_bytes: 4194304,
+    }),
+    pnpm: Object.freeze({
+        runtime_key: "pnpm",
+        version: "10.18.3",
+        tarball_url: "https://registry.npmjs.org/pnpm/-/pnpm-10.18.3.tgz",
+        filename: "pnpm-10.18.3.tgz",
+        sha512_sri: "sha512-u9FubXKG/X4B9rPAs8kyzaKWXAapCDKPdGY/EKmupR8RKe6mFRNL+ZKDGwCeq+Fn7LcAi1l/QP+bx1lGqt+wjQ==",
+        compressed_size: 4155290,
+        max_bytes: 5242880,
+    }),
 });
 
 class VerifyError extends Error {
@@ -219,7 +282,7 @@ function validateManifest(manifest) {
         "producer_user",
         "runtime_user",
         "log_policy",
-        "npm_config_policy",
+        "package_download_policy",
         "start_diagnostics",
         "fetch_host_allowlist_enforced",
         "explicit_fetch_targets",
@@ -239,20 +302,28 @@ function validateManifest(manifest) {
         containers_removed_before_pass: true,
         cleanup_verified_before_pass: true,
     }), "manifest_log_policy");
-    gate(same(manifest.container.npm_config_policy, {
-        userconfig: "/dev/null",
-        globalconfig: "/dev/null",
-        config_bind_mounts: false,
-        npm_pack_source_workspace_mounted: false,
-        pnpm_project_npmrc: "exact-upstream-copy",
-    }), "manifest_npm_config_policy");
+    gate(same(manifest.container.package_download_policy, {
+        implementation: "node:https",
+        method: "GET",
+        hostname: "registry.npmjs.org",
+        port: 443,
+        timeout_ms: PACKAGE_DOWNLOAD_TIMEOUT_MS,
+        redirects_allowed: false,
+        proxy_environment_used: false,
+        exclusive_output: true,
+        output_mode: "0600",
+        file_fsync: true,
+        partial_removed_on_failure: true,
+        success_schema: PACKAGE_DOWNLOAD_SCHEMA,
+        failure_schema: PACKAGE_DOWNLOAD_FAILURE_SCHEMA,
+    }), "manifest_package_download_policy");
     gate(same(manifest.container.start_diagnostics, {
-        stages: ["npm_pack", "fetch", "install", "runtime", "verifier"],
+        stages: ["package_fetch", "fetch", "install", "runtime", "verifier"],
         state_inspected_before_removal: true,
         state_inspect_seconds: 10,
         classifier_seconds: 5,
         state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "no_such_file", "not_directory", "readonly", "cgroup", "security", "unknown"],
-        known_process_failure_codes: ["runtime_case_failed"],
+        known_process_failure_codes: [...PACKAGE_DOWNLOAD_FAILURE_CODES.map((code) => `package_fetch_${code}`), "runtime_case_failed"],
         unknown_process_output_code: "<stage>_process_exit",
         raw_output_emitted: false,
     }), "manifest_start_diagnostics");
@@ -272,24 +343,10 @@ function validateManifest(manifest) {
     }), "manifest_limits");
     exactKeys(manifest.runtime, ["node", "zigbee2mqtt", "zigbee_herdsman", "zigbee_herdsman_converters", "pnpm"], "manifest_runtime_shape");
     gate(same(manifest.runtime.node, {version: "20.19.2"}), "manifest_node");
-    gate(same(manifest.runtime.zigbee2mqtt, {
-        version: "2.12.1",
-        npm_integrity: "sha512-OucrVP2raFmMEKK+4r7qHOSamAmaM4WI0WYLbLRhZ1s73frVDcppzD/6BHGPWFIalJrxGrdKHYSbRmpQqLUt5w==",
-        compressed_size: 349915,
-    }), "manifest_z2m");
-    gate(same(manifest.runtime.zigbee_herdsman, {
-        version: "10.6.1",
-        npm_integrity: "sha512-BXy2jai1R6OkJ7gWFwS8J6vKJ7Mm+vfReDcuN+IPCmHdT65oiaZ6oZDY/thjG7ePMHD2m0YD8AZvi7o5LBNPpQ==",
-    }), "manifest_herdsman");
-    gate(same(manifest.runtime.zigbee_herdsman_converters, {
-        version: "26.76.0",
-        npm_integrity: "sha512-JSgW/9Yn5xdfUHvyXunKSqoPk7w6wY+0OEzOiqBs/hr67o9YSXKc4joUr/dbRMXJcv7fNlDNDRvIDS41b2758Q==",
-    }), "manifest_converters");
-    gate(same(manifest.runtime.pnpm, {
-        version: "10.18.3",
-        npm_integrity: "sha512-u9FubXKG/X4B9rPAs8kyzaKWXAapCDKPdGY/EKmupR8RKe6mFRNL+ZKDGwCeq+Fn7LcAi1l/QP+bx1lGqt+wjQ==",
-        compressed_size: 4155290,
-    }), "manifest_pnpm");
+    for (const [kind, spec] of Object.entries(PACKAGE_DOWNLOAD_SPECS)) {
+        const {runtime_key: runtimeKey, ...expected} = spec;
+        gate(same(manifest.runtime[runtimeKey], expected), `manifest_${kind}`);
+    }
     gate(same(manifest.upstream, {
         repository: "Koenkk/zigbee2mqtt",
         commit: "aa909a8a62f76e2dd98ace3a172bca88ee56f5fe",
@@ -462,13 +519,222 @@ function packageTarContract(manifest, kind) {
     return contracts[kind];
 }
 
+function packageDownloadSpec(kind) {
+    gate(Object.hasOwn(PACKAGE_DOWNLOAD_SPECS, kind), "download_kind");
+    return PACKAGE_DOWNLOAD_SPECS[kind];
+}
+
+function packageDownloadContract(manifest, kind) {
+    const spec = packageDownloadSpec(kind);
+    const {runtime_key: runtimeKey, ...expected} = spec;
+    gate(same(manifest.runtime?.[runtimeKey], expected), "download_contract");
+    return expected;
+}
+
+function packageDownloadRequestOptions(kind, contract) {
+    const spec = packageDownloadSpec(kind);
+    const expected = {...spec};
+    delete expected.runtime_key;
+    let parsed;
+    try {
+        parsed = new URL(contract.tarball_url);
+    } catch {
+        throw new VerifyError("download_url");
+    }
+    gate(parsed.href === contract.tarball_url, "download_url");
+    gate(parsed.protocol === "https:" && parsed.hostname === "registry.npmjs.org" && parsed.port === "", "download_url");
+    gate(parsed.username === "" && parsed.password === "" && parsed.search === "" && parsed.hash === "", "download_url");
+    gate(parsed.pathname === new URL(spec.tarball_url).pathname, "download_url");
+    gate(same(contract, expected), "download_contract");
+    return {
+        protocol: "https:",
+        hostname: "registry.npmjs.org",
+        port: 443,
+        method: "GET",
+        path: parsed.pathname,
+        headers: {
+            accept: "application/octet-stream",
+            "accept-encoding": "identity",
+            "user-agent": "true-family-pass-b0-package-fetch/1",
+        },
+        agent: false,
+    };
+}
+
+function packageDownloadFailureToken(code) {
+    const safe = PACKAGE_DOWNLOAD_FAILURE_CODES.includes(code) ? code : "download_failed";
+    return `${canonical({schema: PACKAGE_DOWNLOAD_FAILURE_SCHEMA, result: "fail", failure_code: safe})}\n`;
+}
+
+const PACKAGE_DOWNLOAD_SUCCESS_TOKEN = `${canonical({schema: PACKAGE_DOWNLOAD_SCHEMA, result: "pass"})}\n`;
+
+function validatePackageResponseMetadata(response, contract) {
+    gate(response && typeof response === "object" && response.headers && typeof response.headers === "object", "download_response");
+    gate(Number.isInteger(response.statusCode), "download_response");
+    if (response.statusCode >= 300 && response.statusCode <= 399) throw new VerifyError("download_redirect");
+    gate(response.statusCode === 200, "download_status");
+    const contentLength = response.headers["content-length"];
+    if (contentLength !== undefined) {
+        gate(typeof contentLength === "string" && /^[1-9][0-9]*$/u.test(contentLength), "download_length");
+        gate(Number(contentLength) === contract.compressed_size, "download_length");
+    }
+}
+
+async function consumePackageResponse(response, contract, sink) {
+    validatePackageResponseMetadata(response, contract);
+    gate(response[Symbol.asyncIterator] && typeof sink?.write === "function" && typeof sink?.sync === "function", "download_response");
+    const digest = crypto.createHash("sha512");
+    let total = 0;
+    try {
+        for await (const chunk of response) {
+            gate(Buffer.isBuffer(chunk) || chunk instanceof Uint8Array, "download_response");
+            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            total += bytes.length;
+            gate(total <= contract.max_bytes && total <= contract.compressed_size, "download_overrun");
+            digest.update(bytes);
+            try {
+                await sink.write(bytes);
+            } catch {
+                throw new VerifyError("download_write");
+            }
+        }
+    } catch (error) {
+        if (error instanceof VerifyError) throw error;
+        throw new VerifyError("download_response");
+    }
+    gate(total === contract.compressed_size, "download_truncated");
+    gate(`sha512-${digest.digest("base64")}` === contract.sha512_sri, "download_integrity");
+    try {
+        await sink.sync();
+    } catch {
+        throw new VerifyError("download_sync");
+    }
+}
+
+function fileDownloadSink(handle) {
+    return {
+        async write(bytes) {
+            let offset = 0;
+            while (offset < bytes.length) {
+                const result = await handle.write(bytes, offset, bytes.length - offset, null);
+                gate(Number.isInteger(result?.bytesWritten) && result.bytesWritten > 0 && result.bytesWritten <= bytes.length - offset, "download_write");
+                offset += result.bytesWritten;
+            }
+        },
+        async sync() {
+            await handle.sync();
+        },
+    };
+}
+
+async function transferPackage(kind, contract, sink, dependencies = {}) {
+    const requestOptions = packageDownloadRequestOptions(kind, contract);
+    const requestImpl = dependencies.request ?? https.request;
+    const setTimer = dependencies.setTimeout ?? globalThis.setTimeout;
+    const clearTimer = dependencies.clearTimeout ?? globalThis.clearTimeout;
+    let request;
+    let response;
+    let timer;
+    let timedOut = false;
+    let completed = false;
+    const responsePromise = new Promise((resolve, reject) => {
+        try {
+            request = requestImpl(requestOptions, (incoming) => {
+                response = incoming;
+                resolve(incoming);
+            });
+            request.once("error", () => reject(new VerifyError(timedOut ? "download_timeout" : "download_request")));
+            request.end();
+        } catch {
+            reject(new VerifyError("download_request"));
+        }
+    });
+    const timeoutPromise = new Promise((resolve, reject) => {
+        timer = setTimer(() => {
+            timedOut = true;
+            request?.destroy();
+            response?.destroy?.();
+            reject(new VerifyError("download_timeout"));
+        }, PACKAGE_DOWNLOAD_TIMEOUT_MS);
+    });
+    try {
+        response = await Promise.race([responsePromise, timeoutPromise]);
+        await Promise.race([consumePackageResponse(response, contract, sink), timeoutPromise]);
+        completed = true;
+    } catch (error) {
+        if (timedOut) throw new VerifyError("download_timeout");
+        if (error instanceof VerifyError) throw error;
+        throw new VerifyError("download_response");
+    } finally {
+        clearTimer(timer);
+        if (!completed) response?.destroy?.();
+    }
+}
+
+async function downloadPackageToPath(manifest, kind, outputPath, dependencies = {}) {
+    const contract = packageDownloadContract(manifest, kind);
+    packageDownloadRequestOptions(kind, contract);
+    gate(outputPath === `/out/${contract.filename}`, "download_destination");
+    const openOutput = dependencies.openOutput ?? fs.promises.open;
+    const unlinkOutput = dependencies.unlinkOutput ?? fs.promises.unlink;
+    const transfer = dependencies.transfer ?? transferPackage;
+    let handle;
+    let created = false;
+    try {
+        try {
+            handle = await openOutput(outputPath, "wx", 0o600);
+            created = true;
+        } catch (error) {
+            throw new VerifyError(error?.code === "EEXIST" ? "download_destination_exists" : "download_destination");
+        }
+        try {
+            await handle.chmod(0o600);
+        } catch {
+            throw new VerifyError("download_destination");
+        }
+        await transfer(kind, contract, fileDownloadSink(handle), dependencies);
+        await handle.close();
+        handle = undefined;
+    } catch (error) {
+        let cleanupFailed = false;
+        if (handle) {
+            try {
+                await handle.close();
+            } catch {
+                cleanupFailed = true;
+            }
+        }
+        if (created) {
+            try {
+                await unlinkOutput(outputPath);
+            } catch {
+                cleanupFailed = true;
+            }
+        }
+        if (cleanupFailed) throw new VerifyError("download_cleanup");
+        if (error instanceof VerifyError && PACKAGE_DOWNLOAD_FAILURE_CODES.includes(error.code)) throw error;
+        throw new VerifyError("download_failed");
+    }
+}
+
+async function downloadPackageFile(kind, outputPath, manifestPath, dependencies = {}) {
+    let manifest;
+    try {
+        manifest = readJson(manifestPath, "download_contract");
+        validateManifest(manifest);
+    } catch {
+        throw new VerifyError("download_contract");
+    }
+    await downloadPackageToPath(manifest, kind, outputPath, dependencies);
+}
+
 function validateTarFile(kind, archivePath, manifestPath) {
     const manifest = readJson(manifestPath, "manifest_json");
     validateManifest(manifest);
     const contract = packageTarContract(manifest, kind);
     const compressed = fs.readFileSync(archivePath);
-    gate(sha512Sri(compressed) === contract.npm_integrity, "tar_integrity");
-    if (Object.hasOwn(contract, "compressed_size")) gate(compressed.length === contract.compressed_size, "tar_compressed_size");
+    gate(sha512Sri(compressed) === contract.sha512_sri, "tar_integrity");
+    gate(compressed.length === contract.compressed_size && compressed.length <= contract.max_bytes, "tar_compressed_size");
     const entries = parseStrictTarGzip(compressed);
     gate(entries.length > 0 && entries.every((entry) => entry.name === "package" || entry.name.startsWith("package/")), "tar_package_root");
     return {manifest, entries};
@@ -513,8 +779,8 @@ function verifyUpstream(manifestPath, packagePath, lockPath, z2mPackagePath) {
     const converters = /^  zigbee-herdsman-converters@26\.76\.0:\n    resolution: \{integrity: (sha512-[A-Za-z0-9+/=]+)\}$/gmu;
     const herdsmanMatches = [...packages.matchAll(herdsman)];
     const converterMatches = [...packages.matchAll(converters)];
-    gate(herdsmanMatches.length === 1 && herdsmanMatches[0][1] === manifest.runtime.zigbee_herdsman.npm_integrity, "lock_herdsman_integrity");
-    gate(converterMatches.length === 1 && converterMatches[0][1] === manifest.runtime.zigbee_herdsman_converters.npm_integrity, "lock_converters_integrity");
+    gate(herdsmanMatches.length === 1 && herdsmanMatches[0][1] === manifest.runtime.zigbee_herdsman.sha512_sri, "lock_herdsman_integrity");
+    gate(converterMatches.length === 1 && converterMatches[0][1] === manifest.runtime.zigbee_herdsman_converters.sha512_sri, "lock_converters_integrity");
     for (const line of packages.split("\n").filter((item) => item.trimStart().startsWith("resolution:"))) {
         gate(/^    resolution: \{integrity: sha512-[A-Za-z0-9+/=]+\}$/u.test(line), "lock_resolution_shape");
     }
@@ -906,8 +1172,15 @@ function validateAttachLogConfig(logConfig) {
     }), "inspect_log_policy");
 }
 
-const START_STAGES = Object.freeze(["npm_pack", "fetch", "install", "runtime", "verifier"]);
+const START_STAGES = Object.freeze(["package_fetch", "fetch", "install", "runtime", "verifier"]);
 const RUNTIME_CASE_FAILURE = '{"failure_code":"case_failed","result":"fail","schema":"true-family-pass-b0-runtime-failure-v2"}\n';
+
+function packageFetchFailureClassification(output) {
+    for (const code of PACKAGE_DOWNLOAD_FAILURE_CODES) {
+        if (output === packageDownloadFailureToken(code)) return `package_fetch_${code}`;
+    }
+    return null;
+}
 
 function stageStateErrorCategory(value) {
     const normalized = value.toLowerCase();
@@ -942,6 +1215,10 @@ function classifyStageStart(stage, startStatus, inspectStatus, output, stateText
     if (state.Error !== "") return `${stage}_state_error_${stageStateErrorCategory(state.Error)}`;
     if ([124, 137].includes(startStatus) && (state.Status !== "exited" || state.Running || state.ExitCode !== startStatus)) return `${stage}_start_timeout`;
     if (startStatus !== 0 || state.ExitCode !== 0) {
+        if (stage === "package_fetch") {
+            const classification = packageFetchFailureClassification(output);
+            if (classification !== null) return classification;
+        }
         if (stage === "runtime" && output === RUNTIME_CASE_FAILURE) return "runtime_case_failed";
         return `${stage}_process_exit`;
     }
@@ -1495,6 +1772,142 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         }
         gate(rejected, "tar_self_test");
     }
+    const expectDownloadFailure = async (operation, expected) => {
+        let actual = "no_failure";
+        try {
+            await operation();
+        } catch (error) {
+            actual = error instanceof VerifyError ? error.code : "unexpected";
+        }
+        gate(actual === expected, "package_download_self_test");
+    };
+    const downloadPayload = Buffer.from("safe", "utf8");
+    const downloadContract = {
+        tarball_url: PACKAGE_DOWNLOAD_SPECS.z2m.tarball_url,
+        filename: PACKAGE_DOWNLOAD_SPECS.z2m.filename,
+        sha512_sri: sha512Sri(downloadPayload),
+        compressed_size: downloadPayload.length,
+        max_bytes: 8,
+    };
+    const downloadResponse = (overrides = {}) => ({
+        statusCode: 200,
+        headers: {"content-length": String(downloadPayload.length)},
+        chunks: [downloadPayload.subarray(0, 2), downloadPayload.subarray(2)],
+        destroy() {},
+        async *[Symbol.asyncIterator]() {
+            for (const chunk of this.chunks) yield chunk;
+        },
+        ...overrides,
+    });
+    const downloadSink = () => {
+        const state = {chunks: [], synced: false};
+        return {
+            state,
+            sink: {
+                async write(bytes) { state.chunks.push(Buffer.from(bytes)); },
+                async sync() { state.synced = true; },
+            },
+        };
+    };
+    const successfulSink = downloadSink();
+    await consumePackageResponse(downloadResponse(), downloadContract, successfulSink.sink);
+    gate(Buffer.concat(successfulSink.state.chunks).equals(downloadPayload) && successfulSink.state.synced, "package_download_self_test");
+    await expectDownloadFailure(() => consumePackageResponse(downloadResponse({statusCode: 302}), downloadContract, downloadSink().sink), "download_redirect");
+    await expectDownloadFailure(() => consumePackageResponse(downloadResponse({statusCode: 404}), downloadContract, downloadSink().sink), "download_status");
+    await expectDownloadFailure(() => consumePackageResponse(downloadResponse({headers: {"content-length": "5"}}), downloadContract, downloadSink().sink), "download_length");
+    await expectDownloadFailure(() => consumePackageResponse(downloadResponse({chunks: [Buffer.from("safer")], headers: {}}), downloadContract, downloadSink().sink), "download_overrun");
+    await expectDownloadFailure(() => consumePackageResponse(downloadResponse({headers: {}}), {...downloadContract, compressed_size: 8, max_bytes: 3}, downloadSink().sink), "download_overrun");
+    await expectDownloadFailure(() => consumePackageResponse(downloadResponse({chunks: [Buffer.from("saf")], headers: {}}), downloadContract, downloadSink().sink), "download_truncated");
+    await expectDownloadFailure(() => consumePackageResponse(downloadResponse(), {...downloadContract, sha512_sri: `sha512-${Buffer.alloc(64).toString("base64")}`}, downloadSink().sink), "download_integrity");
+    const exactDownloadContract = packageDownloadContract(manifest, "z2m");
+    const exactRequestOptions = packageDownloadRequestOptions("z2m", exactDownloadContract);
+    exactKeys(exactRequestOptions, ["protocol", "hostname", "port", "method", "path", "headers", "agent"], "package_download_self_test");
+    gate(exactRequestOptions.protocol === "https:" && exactRequestOptions.hostname === "registry.npmjs.org" && exactRequestOptions.port === 443, "package_download_self_test");
+    gate(exactRequestOptions.method === "GET" && exactRequestOptions.agent === false && exactRequestOptions.path === "/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz", "package_download_self_test");
+    gate(!Object.hasOwn(exactRequestOptions, "proxy") && !Object.hasOwn(exactRequestOptions, "auth"), "package_download_self_test");
+    const downloaderSource = [packageDownloadRequestOptions, transferPackage, downloadPackageToPath].map((item) => item.toString()).join("\n");
+    gate(downloaderSource.includes("https.request") && downloaderSource.includes('method: "GET"'), "package_download_self_test");
+    for (const forbidden of ["process.env", "HTTP_PROXY", "HTTPS_PROXY", "http.request", "fetch(", "error.message", "console.", "process.stderr"]) {
+        gate(!downloaderSource.includes(forbidden), "package_download_self_test");
+    }
+    for (const tarballUrl of [
+        "http://registry.npmjs.org/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz",
+        "https://example.invalid/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz",
+        "https://registry.npmjs.org:444/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz",
+        "https://user@registry.npmjs.org/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz",
+        "https://registry.npmjs.org/wrong/-/zigbee2mqtt-2.12.1.tgz",
+        "https://registry.npmjs.org/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz?query=1",
+        "https://registry.npmjs.org/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz#fragment",
+    ]) {
+        await expectDownloadFailure(async () => packageDownloadRequestOptions("z2m", {...exactDownloadContract, tarball_url: tarballUrl}), "download_url");
+    }
+    await expectDownloadFailure(async () => packageDownloadSpec("wrong"), "download_kind");
+    await expectDownloadFailure(async () => packageDownloadRequestOptions("z2m", {...exactDownloadContract, filename: "wrong.tgz"}), "download_contract");
+    let duplicateUnlink = false;
+    await expectDownloadFailure(() => downloadPackageToPath(manifest, "z2m", `/out/${exactDownloadContract.filename}`, {
+        async openOutput() {
+            const error = new Error("private duplicate path");
+            error.code = "EEXIST";
+            throw error;
+        },
+        async unlinkOutput() { duplicateUnlink = true; },
+        async transfer() { throw new Error("unreachable"); },
+    }), "download_destination_exists");
+    gate(!duplicateUnlink, "package_download_self_test");
+    let partialClosed = false;
+    let partialUnlinked = false;
+    let partialMode = 0;
+    const partialHandle = {
+        async chmod(mode) { partialMode = mode; },
+        async write(bytes, offset, length) { return {bytesWritten: length}; },
+        async sync() {},
+        async close() { partialClosed = true; },
+    };
+    await expectDownloadFailure(() => downloadPackageToPath(manifest, "z2m", `/out/${exactDownloadContract.filename}`, {
+        async openOutput(output, flags, mode) {
+            gate(output === `/out/${exactDownloadContract.filename}` && flags === "wx" && mode === 0o600, "package_download_self_test");
+            return partialHandle;
+        },
+        async unlinkOutput(output) {
+            gate(output === `/out/${exactDownloadContract.filename}`, "package_download_self_test");
+            partialUnlinked = true;
+        },
+        async transfer(kind, contract, sink) {
+            gate(kind === "z2m" && same(contract, exactDownloadContract), "package_download_self_test");
+            await sink.write(Buffer.from("partial", "utf8"));
+            throw new VerifyError("download_integrity");
+        },
+    }), "download_integrity");
+    gate(partialClosed && partialUnlinked && partialMode === 0o600, "package_download_self_test");
+    await expectDownloadFailure(() => downloadPackageToPath(manifest, "z2m", "/out/wrong.tgz", {
+        async openOutput() { throw new Error("unreachable"); },
+    }), "download_destination");
+    let timeoutOptions;
+    let timeoutDestroyed = false;
+    let timeoutCleared = false;
+    await expectDownloadFailure(() => transferPackage("z2m", exactDownloadContract, downloadSink().sink, {
+        request(options) {
+            timeoutOptions = options;
+            return {
+                once() { return this; },
+                end() {},
+                destroy() { timeoutDestroyed = true; },
+            };
+        },
+        setTimeout(callback, milliseconds) {
+            gate(milliseconds === PACKAGE_DOWNLOAD_TIMEOUT_MS, "package_download_self_test");
+            queueMicrotask(callback);
+            return "timer";
+        },
+        clearTimeout(timer) {
+            gate(timer === "timer", "package_download_self_test");
+            timeoutCleared = true;
+        },
+    }), "download_timeout");
+    gate(timeoutDestroyed && timeoutCleared && same(timeoutOptions, exactRequestOptions), "package_download_self_test");
+    gate(PACKAGE_DOWNLOAD_SUCCESS_TOKEN === '{"result":"pass","schema":"true-family-pass-b0-package-download-v1"}\n', "package_download_self_test");
+    gate(packageDownloadFailureToken("download_status") === '{"failure_code":"download_status","result":"fail","schema":"true-family-pass-b0-package-download-failure-v1"}\n', "package_download_self_test");
+    gate(packageDownloadFailureToken("private raw error") === packageDownloadFailureToken("download_failed"), "package_download_self_test");
     const launcher = fs.readFileSync(launcherPath, "utf8");
     const original = normalizedLauncherDigestBytes(launcher).digest;
     gate(normalizedLauncherDigestBytes(`${launcher}\n# mutation\n`).digest !== original, "launcher_mutation_self_test");
@@ -1517,15 +1930,26 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate((launcher.match(/--ulimit=nproc=/gu) ?? []).length === 1, "nproc_policy_source");
     gate((launcher.match(/--ulimit=nproc=64:64/gu) ?? []).length === 1, "nproc_policy_source");
     gate(!launcher.includes("--ulimit=nproc=16:16") && !launcher.includes("--pids-limit=16"), "nproc_policy_source");
-    gate(!launcher.includes("empty-user-npmrc") && !launcher.includes("empty-global-npmrc") && !launcher.includes("/config/"), "npm_config_source");
-    gate((launcher.match(/NPM_CONFIG_USERCONFIG=\/dev\/null/gu) ?? []).length === 1, "npm_config_source");
-    gate((launcher.match(/NPM_CONFIG_GLOBALCONFIG=\/dev\/null/gu) ?? []).length === 1, "npm_config_source");
-    gate((launcher.match(/npm_config_userconfig=\/dev\/null/gu) ?? []).length === 2, "npm_config_source");
-    gate((launcher.match(/npm_config_globalconfig=\/dev\/null/gu) ?? []).length === 2, "npm_config_source");
-    gate((launcher.match(/--userconfig=\/dev\/null/gu) ?? []).length === 1 && (launcher.match(/--globalconfig=\/dev\/null/gu) ?? []).length === 1, "npm_config_source");
-    const npmPackSource = launcher.slice(launcher.indexOf('for package in "zigbee2mqtt@2.12.1"'), launcher.indexOf('local z2m_tar="$fetch/zigbee2mqtt-2.12.1.tgz"'));
-    gate(npmPackSource.includes("run_disposable npm_pack") && !npmPackSource.includes("target=/source") && !npmPackSource.includes(".npmrc"), "npm_config_source");
-    gate(launcher.includes("for upstream_file in package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc") && launcher.includes("cp /source/.npmrc /tmp/project/"), "npm_config_source");
+    gate(!launcher.includes("npm_pack") && !launcher.includes("npm pack") && !launcher.includes("/usr/local/bin/npm") && !launcher.includes("NPM_CONFIG") && !launcher.includes("npm_config"), "package_fetch_source");
+    gate(!launcher.includes("--userconfig") && !launcher.includes("--globalconfig") && !launcher.includes("/config/"), "package_fetch_source");
+    const packageFetchSource = launcher.slice(launcher.indexOf("for kind in z2m herdsman converters pnpm"), launcher.indexOf('local z2m_tar="$fetch/zigbee2mqtt-2.12.1.tgz"'));
+    for (const required of [
+        "run_disposable package_fetch",
+        '--network="$network"',
+        "target=/verifier,readonly",
+        "target=/input,readonly",
+        "target=/out",
+        "--entrypoint=/usr/local/bin/node",
+        "--download-package",
+        "/input/physical_probe_pass_b_manifest.json",
+        "zigbee2mqtt-2.12.1.tgz",
+        "zigbee-herdsman-10.6.1.tgz",
+        "zigbee-herdsman-converters-26.76.0.tgz",
+        "pnpm-10.18.3.tgz",
+    ]) gate(packageFetchSource.includes(required), "package_fetch_source");
+    for (const forbidden of ["--env", "HOME=", "target=/source", "--workdir", ".npmrc"]) gate(!packageFetchSource.includes(forbidden), "package_fetch_source");
+    gate(launcher.includes("for upstream_file in package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc") && launcher.includes("cp /source/.npmrc /tmp/project/"), "package_fetch_source");
+    gate(launcher.includes("/tool/bin/pnpm.cjs fetch") && launcher.includes("/tool/bin/pnpm.cjs install"), "package_fetch_source");
     const selfCheckBranch = launcher.slice(launcher.indexOf('  "--self-check")'), launcher.indexOf('  "--shell-self-check")'));
     gate(selfCheckBranch.includes('node_bounded 25s "$VERIFIER" --self-check'), "static_self_check_source");
     for (const forbidden of ["docker", "RUNNER_TEMP", "mktemp", "ROOT="]) {
@@ -1578,6 +2002,10 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         gate(classifyStageStart(stage, 0, 0, "untrusted successful output", startState()) === "pass", "container_start_classifier_self_test");
         gate(classifyStageStart(stage, 1, 0, "untrusted private process output", startState({ExitCode: 1})) === `${stage}_process_exit`, "container_start_classifier_self_test");
     }
+    for (const code of PACKAGE_DOWNLOAD_FAILURE_CODES) {
+        gate(classifyStageStart("package_fetch", 1, 0, packageDownloadFailureToken(code), startState({ExitCode: 1})) === `package_fetch_${code}`, "container_start_classifier_self_test");
+    }
+    gate(classifyStageStart("package_fetch", 1, 0, `${packageDownloadFailureToken("download_status")}spoof`, startState({ExitCode: 1})) === "package_fetch_process_exit", "container_start_classifier_self_test");
     const startClassifications = [
         ["unknown", 0, 0, "", startState(), "verifier_unknown"],
         ["runtime", -1, 0, "", startState(), "runtime_unknown"],
@@ -1587,12 +2015,12 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         ["runtime", 124, 0, "private timeout output", startState({ExitCode: 124}), "runtime_process_exit"],
         ["runtime", 137, 0, "private signal output", startState({ExitCode: 137}), "runtime_process_exit"],
         ["fetch", 1, 0, "", startState({OOMKilled: true, ExitCode: 137}), "fetch_oom"],
-        ["npm_pack", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error setting rlimit type 6"}), "npm_pack_state_error_rlimit"],
+        ["package_fetch", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error setting rlimit type 6"}), "package_fetch_state_error_rlimit"],
         ["fetch", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error mounting private bind"}), "fetch_state_error_mount"],
         ["install", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "operation not permitted"}), "install_state_error_permission"],
         ["runtime", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "invalid argument"}), "runtime_state_error_invalid_argument"],
         ["verifier", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "exec format error"}), "verifier_state_error_exec"],
-        ["npm_pack", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error mounting target: no such file or directory"}), "npm_pack_state_error_no_such_file"],
+        ["package_fetch", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error mounting target: no such file or directory"}), "package_fetch_state_error_no_such_file"],
         ["fetch", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error mounting target: not a directory"}), "fetch_state_error_not_directory"],
         ["install", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "mount failed: read-only file system"}), "install_state_error_readonly"],
         ["runtime", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "cgroup operation not permitted"}), "runtime_state_error_cgroup"],
@@ -1600,7 +2028,7 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         ["runtime", 125, 0, "private daemon detail", startState({Status: "created", ExitCode: 128, Error: "private daemon detail"}), "runtime_state_error_unknown"],
         ["runtime", 1, 0, RUNTIME_CASE_FAILURE, startState({ExitCode: 1}), "runtime_case_failed"],
         ["runtime", 1, 0, RUNTIME_CASE_FAILURE.trimEnd(), startState({ExitCode: 1}), "runtime_process_exit"],
-        ["npm_pack", 1, 0, RUNTIME_CASE_FAILURE, startState({ExitCode: 1}), "npm_pack_process_exit"],
+        ["package_fetch", 1, 0, RUNTIME_CASE_FAILURE, startState({ExitCode: 1}), "package_fetch_process_exit"],
         ["runtime", 1, 124, "private output", "private state", "runtime_inspect_timeout"],
         ["runtime", 1, 137, "private output", "private state", "runtime_inspect_timeout"],
         ["runtime", 1, 1, "private output", "private state", "runtime_inspect_failed"],
@@ -1624,9 +2052,10 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const disposableStart = disposableSource.indexOf('start_container "$stage"');
     const disposableRemove = disposableSource.indexOf('remove_container_checked "$name"');
     gate(disposableCreate >= 0 && disposableStart > disposableCreate && disposableRemove > disposableStart, "container_start_source");
-    for (const stageCall of ["run_disposable npm_pack", "run_disposable fetch", "run_disposable install", "run_disposable verifier", "start_container runtime"]) {
+    for (const stageCall of ["run_disposable package_fetch", "run_disposable fetch", "run_disposable install", "run_disposable verifier", "start_container runtime"]) {
         gate(launcher.includes(stageCall), "container_start_source");
     }
+    for (const code of PACKAGE_DOWNLOAD_FAILURE_CODES) gate(launcher.includes(`package_fetch_${code}`), "container_start_source");
     const launcherLines = launcher.split("\n");
     for (let index = 0; index < launcherLines.length; index += 1) {
         if (launcherLines[index].trim() !== "set +e") continue;
@@ -1728,6 +2157,21 @@ async function main() {
     if (mode === "--classify-container-start") {
         gate(args.length === 5, "arguments");
         process.stdout.write(`${classifyStageStartFiles(...args)}\n`);
+        return;
+    }
+    if (mode === "--download-package") {
+        if (args.length !== 3) {
+            process.stdout.write(packageDownloadFailureToken("download_arguments"));
+            process.exitCode = 1;
+            return;
+        }
+        try {
+            await downloadPackageFile(...args);
+            process.stdout.write(PACKAGE_DOWNLOAD_SUCCESS_TOKEN);
+        } catch (error) {
+            process.stdout.write(packageDownloadFailureToken(error instanceof VerifyError ? error.code : "download_failed"));
+            process.exitCode = 1;
+        }
         return;
     }
     if (mode === "--validate-tar") {

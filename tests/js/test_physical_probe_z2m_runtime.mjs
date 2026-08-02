@@ -183,25 +183,85 @@ function validateManifest(manifest) {
         containers_removed_before_pass: true,
         cleanup_verified_before_pass: true,
     }), "manifest_log_policy");
-    gate(same(manifest.container.npm_config_policy, {
-        userconfig: "/dev/null",
-        globalconfig: "/dev/null",
-        config_bind_mounts: false,
-        npm_pack_source_workspace_mounted: false,
-        pnpm_project_npmrc: "exact-upstream-copy",
-    }), "manifest_npm_config_policy");
+    gate(same(manifest.container.package_download_policy, {
+        implementation: "node:https",
+        method: "GET",
+        hostname: "registry.npmjs.org",
+        port: 443,
+        timeout_ms: 45000,
+        redirects_allowed: false,
+        proxy_environment_used: false,
+        exclusive_output: true,
+        output_mode: "0600",
+        file_fsync: true,
+        partial_removed_on_failure: true,
+        success_schema: "true-family-pass-b0-package-download-v1",
+        failure_schema: "true-family-pass-b0-package-download-failure-v1",
+    }), "manifest_package_download_policy");
     gate(same(manifest.container.start_diagnostics, {
-        stages: ["npm_pack", "fetch", "install", "runtime", "verifier"],
+        stages: ["package_fetch", "fetch", "install", "runtime", "verifier"],
         state_inspected_before_removal: true,
         state_inspect_seconds: 10,
         classifier_seconds: 5,
         state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "no_such_file", "not_directory", "readonly", "cgroup", "security", "unknown"],
-        known_process_failure_codes: ["runtime_case_failed"],
+        known_process_failure_codes: [
+            "package_fetch_download_arguments",
+            "package_fetch_download_kind",
+            "package_fetch_download_contract",
+            "package_fetch_download_url",
+            "package_fetch_download_destination",
+            "package_fetch_download_destination_exists",
+            "package_fetch_download_request",
+            "package_fetch_download_timeout",
+            "package_fetch_download_redirect",
+            "package_fetch_download_status",
+            "package_fetch_download_length",
+            "package_fetch_download_overrun",
+            "package_fetch_download_truncated",
+            "package_fetch_download_integrity",
+            "package_fetch_download_response",
+            "package_fetch_download_write",
+            "package_fetch_download_sync",
+            "package_fetch_download_cleanup",
+            "package_fetch_download_failed",
+            "runtime_case_failed",
+        ],
         unknown_process_output_code: "<stage>_process_exit",
         raw_output_emitted: false,
     }), "manifest_start_diagnostics");
-    gate(manifest.runtime.node.version === "20.19.2" && manifest.runtime.zigbee2mqtt.version === "2.12.1", "manifest_runtime");
-    gate(manifest.runtime.zigbee_herdsman.version === "10.6.1" && manifest.runtime.zigbee_herdsman_converters.version === "26.76.0", "manifest_runtime");
+    gate(manifest.runtime.node.version === "20.19.2", "manifest_runtime");
+    gate(same(manifest.runtime.zigbee2mqtt, {
+        version: "2.12.1",
+        tarball_url: "https://registry.npmjs.org/zigbee2mqtt/-/zigbee2mqtt-2.12.1.tgz",
+        filename: "zigbee2mqtt-2.12.1.tgz",
+        sha512_sri: "sha512-OucrVP2raFmMEKK+4r7qHOSamAmaM4WI0WYLbLRhZ1s73frVDcppzD/6BHGPWFIalJrxGrdKHYSbRmpQqLUt5w==",
+        compressed_size: 349915,
+        max_bytes: 524288,
+    }), "manifest_runtime");
+    gate(same(manifest.runtime.zigbee_herdsman, {
+        version: "10.6.1",
+        tarball_url: "https://registry.npmjs.org/zigbee-herdsman/-/zigbee-herdsman-10.6.1.tgz",
+        filename: "zigbee-herdsman-10.6.1.tgz",
+        sha512_sri: "sha512-BXy2jai1R6OkJ7gWFwS8J6vKJ7Mm+vfReDcuN+IPCmHdT65oiaZ6oZDY/thjG7ePMHD2m0YD8AZvi7o5LBNPpQ==",
+        compressed_size: 1193873,
+        max_bytes: 2097152,
+    }), "manifest_runtime");
+    gate(same(manifest.runtime.zigbee_herdsman_converters, {
+        version: "26.76.0",
+        tarball_url: "https://registry.npmjs.org/zigbee-herdsman-converters/-/zigbee-herdsman-converters-26.76.0.tgz",
+        filename: "zigbee-herdsman-converters-26.76.0.tgz",
+        sha512_sri: "sha512-JSgW/9Yn5xdfUHvyXunKSqoPk7w6wY+0OEzOiqBs/hr67o9YSXKc4joUr/dbRMXJcv7fNlDNDRvIDS41b2758Q==",
+        compressed_size: 2752484,
+        max_bytes: 4194304,
+    }), "manifest_runtime");
+    gate(same(manifest.runtime.pnpm, {
+        version: "10.18.3",
+        tarball_url: "https://registry.npmjs.org/pnpm/-/pnpm-10.18.3.tgz",
+        filename: "pnpm-10.18.3.tgz",
+        sha512_sri: "sha512-u9FubXKG/X4B9rPAs8kyzaKWXAapCDKPdGY/EKmupR8RKe6mFRNL+ZKDGwCeq+Fn7LcAi1l/QP+bx1lGqt+wjQ==",
+        compressed_size: 4155290,
+        max_bytes: 5242880,
+    }), "manifest_runtime");
     gate(manifest.expected.closure_package_count === 148, "manifest_closure");
     gate(manifest.expected.closure_sha256 === "de77c8dea2c3a531c3af9331147426d708ad83435072aa4aec228cdcf10c9e52", "manifest_closure");
     gate(manifest.expected.dist_sha256 === "b69100d9ec7992eb47ee756d4cbaf540996e30e12b24b8dbb348c05356c72ff2", "manifest_dist");

@@ -168,15 +168,21 @@ These are content checks, not provenance or signature claims. The exact Git
 commit and tree establish content identity only; the gate does not verify a Git
 signature or independent build provenance.
 
-`npm pack` and the downloaded verified pnpm program execute only in disposable
-containers. pnpm fetch has network access and receives only the exact upstream
-package and lock inputs. No synthetic npmrc file or `/config` target is created
-or mounted. npm and pnpm set user and global configuration to `/dev/null`; npm
-pack also passes both settings explicitly and receives no source workspace. The
-exact upstream project `.npmrc` is copied only into the pnpm project flow where
-the frozen lock expects it. The clean Docker invocation environment and absent
-npm-pack source workspace prevent host credentials or local npmrc discovery.
-Every fetch, install, extraction, and verifier container
+Four disposable package-fetch containers run only the checked-in verifier with
+Node's built-in HTTPS client. Each receives the verifier and manifest as
+read-only inputs plus one writable `/out` bind, with no source workspace, HOME,
+package-manager invocation, package-manager configuration, proxy configuration,
+or inherited host environment. The manifest pins each exact HTTPS URL, filename,
+SHA-512 SRI, compressed size, and response ceiling. The downloader requires a
+direct GET to `registry.npmjs.org` on default port 443, rejects redirects and
+unexpected status or length, writes exclusively at mode `0600`, hashes while
+streaming, fsyncs the verified file, and removes any partial output on failure.
+It emits only fixed sanitized pass or failure records.
+
+The downloaded and strictly validated pnpm program executes later in its
+constrained fetch stage. That stage has network access and receives only the
+exact upstream package, lock, workspace, and optional project `.npmrc` inputs.
+Every package fetch, dependency fetch, install, extraction, and verifier container
 that writes a host bind output runs under the runner's captured numeric UID/GID,
 which must both be nonzero. No `nproc` limit is applied to these producers because
 Linux accounts it across every process using the shared runner UID; producer
@@ -187,7 +193,7 @@ copies the sealed upstream inputs into a mode-`0700` writable `/work` tree,
 recursively normalizes regular files to mode `0600`, verifies the copied package
 is writable, and verifies the read-only source snapshot did not change. A
 separate install uses a copied store with Docker networking disabled, lifecycle
-scripts disabled, and the exact frozen lock. The fetch commands explicitly
+scripts disabled, and the exact frozen lock. Package URLs and dependency fetches
 target `registry.npmjs.org` and GitHub, but
 Docker's default egress is used: `fetch_host_allowlist_enforced` is deliberately
 `false`. This smoke gate does not prove host-level destination filtering. The
@@ -216,16 +222,18 @@ Every attached container uses Docker's transient `json-file` log driver with
 exact `max-size=1m` and `max-file=1` bounds. Attached stdout and stderr are also
 captured only in private temporary files; no PASS B0 logs or evidence are
 uploaded as workflow artifacts. A failed bounded start retains its container
-for a bounded private `.State` inspection before cleanup. Only the fixed `npm_pack`, `fetch`,
-`install`, `runtime`, and `verifier` stage roles reach the classifier. It emits
+for a bounded private `.State` inspection before cleanup. Only the fixed
+`package_fetch`, `fetch`, `install`, `runtime`, and `verifier` stage roles reach
+the classifier. It emits
 fixed timeout, OOM, process-exit, malformed-inspect, unknown, or OCI `rlimit`,
 mount, permission, invalid-argument, exec, `no_such_file`, `not_directory`,
-`readonly`, cgroup, and security categories. Only the runtime
-wrapper's exact `case_failed` record receives a more specific process-exit code;
-all other npm, Node, Docker, and process output remains private and maps to the
-stage's generic process-exit code. Each container and its transient Docker log
-are removed immediately after bounded use or by failure cleanup. Label-based
-container and network cleanup is verified before pass output.
+`readonly`, cgroup, and security categories. The runtime wrapper's exact
+`case_failed` record and the downloader's exact failure records receive more
+specific process-exit codes. All other package, Node, Docker, and process output
+remains private and maps to the stage's generic process-exit code. Each container
+and its transient Docker log are removed immediately after bounded use or by
+failure cleanup. Label-based container and network cleanup is verified before
+pass output.
 
 The raw extension source is necessarily seen inside the process through
 Zigbee2MQTT's in-memory retained inventory. It is not emitted in CI or final
