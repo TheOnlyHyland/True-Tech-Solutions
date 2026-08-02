@@ -859,6 +859,8 @@ async function journalDetectorSelfTests(context) {
     fs.writeFileSync(noncanonical, '{"b":2,"a":1}', {mode: 0o600});
     await link(canonicalFile, linked);
     fs.writeFileSync(wrongMode, '{"a":1,"b":2}', {mode: 0o644});
+    fs.chmodSync(wrongMode, 0o644);
+    gate((fs.lstatSync(wrongMode).mode & 0o777) === 0o644, "journal_mode_fixture");
     const accepts = (file) => {
         const metadata = fs.lstatSync(file);
         const text = fs.readFileSync(file, "utf8");

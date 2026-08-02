@@ -231,7 +231,7 @@ function same(left, right) {
 
 function harnessSmokeFailureCodes(source) {
     const helperNames = ["gate", "exactKeys", "readJson", "checkMode", "strictProxy", "bounded"];
-    const expectedLiteralCalls = {gate: 159, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
+    const expectedLiteralCalls = {gate: 160, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
     const masked = source.replace(/(?:async\s+)?function\s+(?:gate|exactKeys|readJson|checkMode|strictProxy|bounded)\s*\([^)]*\)\s*\{/gu, "");
     const codes = [];
     for (const name of helperNames) {
@@ -2627,6 +2627,15 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     }
     const harnessFailureCodes = harnessSmokeFailureCodes(harnessText);
     gate(harnessFailureCodes.includes("prohibited_api"), "runtime_failure_source");
+    const journalDetectorSource = harnessText.slice(harnessText.indexOf("async function journalDetectorSelfTests"), harnessText.indexOf("async function expectFreshReject"));
+    const wrongModeWrite = journalDetectorSource.indexOf("fs.writeFileSync(wrongMode");
+    const wrongModeChmod = journalDetectorSource.indexOf("fs.chmodSync(wrongMode, 0o644)");
+    const wrongModeObserved = journalDetectorSource.indexOf('(fs.lstatSync(wrongMode).mode & 0o777) === 0o644, "journal_mode_fixture"');
+    const acceptsMode = journalDetectorSource.indexOf("(metadata.mode & 0o777) === 0o600");
+    const wrongModeRejected = journalDetectorSource.indexOf("journal_mode_rejected: !accepts(wrongMode)");
+    gate(wrongModeWrite >= 0 && wrongModeChmod > wrongModeWrite && wrongModeObserved > wrongModeChmod && acceptsMode > wrongModeObserved && wrongModeRejected > acceptsMode, "journal_mode_fixture_source");
+    const detectorAcceptsMode = (mode) => (mode & 0o777) === 0o600;
+    gate(detectorAcceptsMode(0o644 & ~0o077) && !detectorAcceptsMode(0o644), "journal_mode_fixture_source");
     for (const code of [...harnessFailureCodes, "case_failed", "internal_failure", "future_failure", "a".repeat(40)]) {
         const token = runtimeFailureToken(code);
         gate(Buffer.byteLength(token, "utf8") <= RUNTIME_FAILURE_MAX_BYTES, "runtime_failure_self_test");
