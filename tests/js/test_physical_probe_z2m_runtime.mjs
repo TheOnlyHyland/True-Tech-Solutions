@@ -343,7 +343,14 @@ function validateManifest(manifest) {
     gate(same(manifest.evidence.claim_limits, CLAIM_LIMITS), "manifest_claims");
     gate(manifest.evidence.raw_source_seen_in_process_retained_inventory === true, "manifest_claims");
     gate(manifest.evidence.raw_source_emitted_to_ci_evidence === false && manifest.evidence.broker_delivery_exercised === false, "manifest_claims");
-    gate(manifest.evidence.comparison_scope === "normalized-verifier-output-only" && manifest.evidence.raw_runtime_bytes_reproducible === false, "manifest_claims");
+    const externalJsPolicy = manifest.evidence.external_js_node_modules_policy;
+    gate(manifest.evidence.comparison_scope === "normalized-verifier-output-only" && manifest.evidence.raw_runtime_bytes_reproducible === false && same(externalJsPolicy, {
+        pinned_dist_sha256: "b69100d9ec7992eb47ee756d4cbaf540996e30e12b24b8dbb348c05356c72ff2",
+        creation: "lazy-inside-loadFiles-loop",
+        positive_source_target: "/z2m/node_modules",
+        source_free_restart_entries: 0,
+        source_free_restart_node_modules_alias: false,
+    }), "manifest_claims");
     gate(same(manifest.prohibited.guarded_surfaces, GUARDED_SURFACES), "manifest_prohibited");
     gate(same(manifest.prohibited.static_not_used_surfaces, STATIC_NOT_USED_SURFACES), "manifest_prohibited");
     gate(same(manifest.prohibited.containment_only_surfaces, CONTAINMENT_ONLY_SURFACES), "manifest_prohibited");
@@ -500,6 +507,7 @@ async function securityChecks() {
 }
 
 function extensionInventory(dataRoot, phase, sourceCount = 1) {
+    gate(Number.isSafeInteger(sourceCount) && sourceCount >= 0, "source_count_invalid");
     const root = path.join(dataRoot, "external_extensions");
     checkMode(root, 0o700, "extension_root_mode");
     const entries = fs.readdirSync(root, {withFileTypes: true}).sort((left, right) => left.name.localeCompare(right.name));
@@ -512,6 +520,11 @@ function extensionInventory(dataRoot, phase, sourceCount = 1) {
             gate(metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1, "source_inventory_pre");
         }
     } else {
+        if (sourceCount === 0) {
+            gate(!entries.some((entry) => entry.name === "node_modules"), "source_post_empty_symlink");
+            gate(entries.length === 0, "source_post_empty_count");
+            return 0;
+        }
         gate(entries.length === sourceCount + 1 && entries.some((entry) => entry.name === "node_modules"), "source_post_entry_count");
         const sources = entries.filter((entry) => /\.(?:cjs|mjs|js)$/u.test(entry.name));
         gate(sources.length === sourceCount, "source_post_source_count");
@@ -725,12 +738,12 @@ async function createRuntime(context, {expectProbe = true, validateFresh = true,
     controller.extensions.add(loader);
     await bounded(loader.start(), "loader_start_timeout");
     await settle();
-    extensionInventory(context.dataRoot, "post", sourceCount);
+    const postInventoryCount = extensionInventory(context.dataRoot, "post", sourceCount);
     const probe = controller.getExtension(ARTIFACT_CLASS);
     if (expectProbe) gate(probe?.constructor.name === ARTIFACT_CLASS, "probe_loader");
     else gate(probe === undefined, "probe_loader");
     gate(runtime.errors.length === 0 && runtime.guards.count() === 0, "runtime_side_effect");
-    return {...runtime, audit, commands, controller, device, endpoint, eventBus, loader, mqtt, probe, published};
+    return {...runtime, audit, commands, controller, device, endpoint, eventBus, loader, mqtt, postInventoryCount, probe, published};
 }
 
 async function removeProbe(runtime) {
@@ -1130,12 +1143,21 @@ async function caseStopRemove(context) {
         await unlink(source);
         freshInventory(context.dataRoot, {allowMissingSource: true});
         const fresh = await createRuntime(context, {expectProbe: false});
+        const sourceFreeRestartEntries = fresh.postInventoryCount;
+        const sourceFreeRestartNodeModulesAlias = fs.existsSync(path.join(context.dataRoot, "external_extensions", "node_modules"));
         try {
             gate(sourceInventory(fresh, context).length === 0, "empty_inventory");
         } finally {
             await stopRuntime(fresh);
         }
-        return {boundedStop: true, listenersBeforeDelete: true, outOfBandDelete: true, retainedEmpty: true};
+        return {
+            boundedStop: true,
+            listenersBeforeDelete: true,
+            outOfBandDelete: true,
+            retainedEmpty: true,
+            sourceFreeRestartEntries,
+            sourceFreeRestartNodeModulesAlias,
+        };
     } finally {
         await stopRuntime(runtime);
     }
@@ -1166,7 +1188,7 @@ function aggregate(context) {
         control_rename: ["kind", "failedSafe", "commandCount"],
         control_group: ["kind", "failedSafe", "commandCount"],
         collision: ["testPreflightByteIdenticalRejected", "realLoaderSequentialSameClassReplaced", "enforcementProven", "authorityGranted", "classKeyRegistryEntries", "existingJournalRejected", "existingTempRejected", "existingSymlinkRejected", "duplicateSourceRejected"],
-        stop_remove: ["boundedStop", "listenersBeforeDelete", "outOfBandDelete", "retainedEmpty"],
+        stop_remove: ["boundedStop", "listenersBeforeDelete", "outOfBandDelete", "retainedEmpty", "sourceFreeRestartEntries", "sourceFreeRestartNodeModulesAlias"],
     };
     for (const caseName of CASES) {
         const value = readJson(path.join(context.resultsRoot, `${caseName}.json`), "case_result");
@@ -1249,6 +1271,8 @@ function aggregate(context) {
                 out_of_band_delete: results.stop_remove.outOfBandDelete,
                 dynamic_mqtt_save_remove_used: false,
                 retained_empty_array: results.stop_remove.retainedEmpty,
+                source_free_restart_entries: results.stop_remove.sourceFreeRestartEntries,
+                source_free_restart_node_modules_alias: results.stop_remove.sourceFreeRestartNodeModulesAlias,
             },
             adversarial: {
                 existing_journal_rejected: results.collision.existingJournalRejected,

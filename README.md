@@ -239,6 +239,11 @@ Controller add/remove/get/enable API shell. It does not construct, start, or sto
 the full Controller, connect MQTT, construct/start Zigbee or herdsman, open
 serial/radio devices, or use Home Assistant. Device and endpoint behavior remains
 synthetic.
+The pinned Zigbee2MQTT `ExternalJS` loader creates its `node_modules` symlink
+lazily inside the per-source `loadFiles` loop. The source-free `stop_remove`
+restart therefore proves an empty external-extension directory with no retained
+alias; positive-source runs still require exactly one alias targeting
+`/z2m/node_modules`.
 
 Every attached container uses Docker's transient `json-file` log driver with
 exact `max-size=1m` and `max-file=1` bounds. Attached stdout and stderr are also

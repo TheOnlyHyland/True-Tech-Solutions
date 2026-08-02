@@ -267,8 +267,8 @@
       "verifier_failed"
     ],
     "launcher_normalized_sha256": "558d36215f36e7d051bc5cf6a4bf685322fcca804ec8b7c97cf74ee56c6bd194",
-    "harness_sha256": "a963be6dbef26c8ab6cdce1ffd862bd91cc30ee3739527bf3d4a441621a97c14",
-    "verifier_sha256": "fb1b92c806fead6a54997514834658dedbc8cb794aef991b5a59d5143755c30c"
+    "harness_sha256": "f0e6452335b744352357dc8e4afb29659a74f83cced0be18677d78f7347ee3be",
+    "verifier_sha256": "b9c81e00135f23fd8a83d636abb21527b0bcf1ab2261a4a235cbac7be10fdcf2"
   },
   "test_scope": {
     "cases": [
@@ -323,6 +323,13 @@
     "raw_source_seen_in_process_retained_inventory": true,
     "raw_source_emitted_to_ci_evidence": false,
     "broker_delivery_exercised": false,
+    "external_js_node_modules_policy": {
+      "pinned_dist_sha256": "b69100d9ec7992eb47ee756d4cbaf540996e30e12b24b8dbb348c05356c72ff2",
+      "creation": "lazy-inside-loadFiles-loop",
+      "positive_source_target": "/z2m/node_modules",
+      "source_free_restart_entries": 0,
+      "source_free_restart_node_modules_alias": false
+    },
     "comparison_scope": "normalized-verifier-output-only",
     "raw_runtime_bytes_reproducible": false,
     "claim_limits": [

@@ -231,7 +231,7 @@ function same(left, right) {
 
 function harnessSmokeFailureCodes(source) {
     const helperNames = ["gate", "exactKeys", "readJson", "checkMode", "strictProxy", "bounded"];
-    const expectedLiteralCalls = {gate: 161, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
+    const expectedLiteralCalls = {gate: 164, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
     const masked = source.replace(/(?:async\s+)?function\s+(?:gate|exactKeys|readJson|checkMode|strictProxy|bounded)\s*\([^)]*\)\s*\{/gu, "");
     const codes = [];
     for (const name of helperNames) {
@@ -662,6 +662,13 @@ function validateManifest(manifest) {
         raw_source_seen_in_process_retained_inventory: true,
         raw_source_emitted_to_ci_evidence: false,
         broker_delivery_exercised: false,
+        external_js_node_modules_policy: {
+            pinned_dist_sha256: DIST_SHA256,
+            creation: "lazy-inside-loadFiles-loop",
+            positive_source_target: "/z2m/node_modules",
+            source_free_restart_entries: 0,
+            source_free_restart_node_modules_alias: false,
+        },
         comparison_scope: "normalized-verifier-output-only",
         raw_runtime_bytes_reproducible: false,
         claim_limits: CLAIM_LIMITS,
@@ -1466,6 +1473,8 @@ function validateRaw(raw, manifest, stage) {
         out_of_band_delete: true,
         dynamic_mqtt_save_remove_used: false,
         retained_empty_array: true,
+        source_free_restart_entries: 0,
+        source_free_restart_node_modules_alias: false,
     }), "raw_stop_remove");
     exactBooleanMap(raw.behavior.adversarial, [
         "existing_journal_rejected",
@@ -1854,6 +1863,8 @@ function validateFinal(final, manifest, manifestDigest, expectedBindings) {
         out_of_band_delete: true,
         dynamic_mqtt_save_remove_used: false,
         retained_empty_array: true,
+        source_free_restart_entries: 0,
+        source_free_restart_node_modules_alias: false,
     }), "final_stop_remove");
     exactBooleanMap(final.behavior.adversarial, ["existing_journal_rejected", "existing_temp_rejected", "existing_symlink_rejected", "duplicate_source_rejected", "journal_noncanonical_rejected", "journal_link_rejected", "journal_mode_rejected", "listener_leak_rejected"], "final_adversarial_shape");
     gate(Object.values(final.behavior.adversarial).every((value) => value === true), "final_adversarial");
@@ -2079,6 +2090,8 @@ function finalSelfTestFixture(manifest, manifestDigest) {
                 out_of_band_delete: true,
                 dynamic_mqtt_save_remove_used: false,
                 retained_empty_array: true,
+                source_free_restart_entries: 0,
+                source_free_restart_node_modules_alias: false,
             },
             adversarial: {
                 existing_journal_rejected: true,
@@ -2637,14 +2650,37 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const detectorAcceptsMode = (mode) => (mode & 0o777) === 0o600;
     gate(detectorAcceptsMode(0o644 & ~0o077) && !detectorAcceptsMode(0o644), "journal_mode_fixture_source");
     const extensionInventorySource = harnessText.slice(harnessText.indexOf("function extensionInventory"), harnessText.indexOf("function freshInventory"));
+    const sourceCountGate = extensionInventorySource.indexOf('Number.isSafeInteger(sourceCount) && sourceCount >= 0, "source_count_invalid"');
+    const emptyBranch = extensionInventorySource.indexOf("if (sourceCount === 0)");
+    const emptySymlink = extensionInventorySource.indexOf('"source_post_empty_symlink"');
+    const emptyCount = extensionInventorySource.indexOf('"source_post_empty_count"');
+    const emptyReturn = extensionInventorySource.indexOf("return 0;");
     const postEntryGate = extensionInventorySource.indexOf('"source_post_entry_count"');
     const postSourceCount = extensionInventorySource.indexOf('"source_post_source_count"');
     const postSourceMetadata = extensionInventorySource.indexOf('"source_post_source_metadata"');
     const postModulesLstat = extensionInventorySource.indexOf("fs.lstatSync(modulesPath)");
     const postModulesSymlink = extensionInventorySource.indexOf('"source_post_modules_symlink"');
     const postModulesTarget = extensionInventorySource.indexOf('fs.realpathSync(modulesPath) === fs.realpathSync("/z2m/node_modules"), "source_post_modules_target"');
-    gate(postEntryGate >= 0 && postSourceCount > postEntryGate && postSourceMetadata > postSourceCount && postModulesLstat > postSourceMetadata && postModulesSymlink > postModulesLstat && postModulesTarget > postModulesSymlink, "source_post_failure_source");
+    gate(sourceCountGate >= 0 && emptyBranch > sourceCountGate && emptySymlink > emptyBranch && emptyCount > emptySymlink && emptyReturn > emptyCount && postEntryGate > emptyReturn, "source_post_failure_source");
+    gate(postSourceCount > postEntryGate && postSourceMetadata > postSourceCount && postModulesLstat > postSourceMetadata && postModulesSymlink > postModulesLstat && postModulesTarget > postModulesSymlink, "source_post_failure_source");
     gate(!extensionInventorySource.includes('"source_inventory_post"'), "source_post_failure_source");
+    const lazyInventoryFixture = [
+        {sourceCount: 0, entries: []},
+        {sourceCount: 1, entries: ["probe.mjs", "node_modules"]},
+        {sourceCount: 2, entries: ["probe.mjs", "collision_probe.mjs", "node_modules"]},
+    ];
+    for (const fixture of lazyInventoryFixture) {
+        const aliases = fixture.entries.filter((entry) => entry === "node_modules").length;
+        if (fixture.sourceCount === 0) gate(fixture.entries.length === 0 && aliases === 0, "source_post_lazy_fixture");
+        else gate(fixture.entries.length === fixture.sourceCount + 1 && aliases === 1, "source_post_lazy_fixture");
+    }
+    gate(same(manifest.evidence.external_js_node_modules_policy, {
+        pinned_dist_sha256: DIST_SHA256,
+        creation: "lazy-inside-loadFiles-loop",
+        positive_source_target: "/z2m/node_modules",
+        source_free_restart_entries: 0,
+        source_free_restart_node_modules_alias: false,
+    }), "source_post_lazy_fixture");
     for (const code of [...harnessFailureCodes, "case_failed", "internal_failure", "future_failure", "a".repeat(40)]) {
         const token = runtimeFailureToken(code);
         gate(Buffer.byteLength(token, "utf8") <= RUNTIME_FAILURE_MAX_BYTES, "runtime_failure_self_test");
