@@ -52,13 +52,13 @@ jobs:
         run: |
           env -i \
             PATH="$PATH" \
-            scripts/pass-b-z2m-runtime --shell-self-check >/dev/null
+            scripts/pass-b-z2m-runtime --shell-self-check
           exec env -i \
             PATH="$PATH" \
             RUNNER_TEMP="$RUNNER_TEMP" \
             CI="true" \
             GITHUB_REF="$GITHUB_REF" \
-            scripts/pass-b-z2m-runtime --self-check >/dev/null
+            scripts/pass-b-z2m-runtime --self-check
 
       - name: Run the sanitized disposable-container smoke gate
         shell: bash
