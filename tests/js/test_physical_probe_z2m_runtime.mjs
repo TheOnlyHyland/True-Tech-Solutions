@@ -180,6 +180,16 @@ function validateManifest(manifest) {
         uploaded_artifacts: false,
         containers_removed_before_pass: true,
     }), "manifest_log_policy");
+    gate(same(manifest.container.start_diagnostics, {
+        stages: ["npm_pack", "fetch", "install", "runtime", "verifier"],
+        state_inspected_before_removal: true,
+        state_inspect_seconds: 10,
+        classifier_seconds: 5,
+        state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "unknown"],
+        known_process_failure_codes: ["runtime_case_failed"],
+        unknown_process_output_code: "<stage>_process_exit",
+        raw_output_emitted: false,
+    }), "manifest_start_diagnostics");
     gate(manifest.runtime.node.version === "20.19.2" && manifest.runtime.zigbee2mqtt.version === "2.12.1", "manifest_runtime");
     gate(manifest.runtime.zigbee_herdsman.version === "10.6.1" && manifest.runtime.zigbee_herdsman_converters.version === "26.76.0", "manifest_runtime");
     gate(manifest.expected.closure_package_count === 148, "manifest_closure");

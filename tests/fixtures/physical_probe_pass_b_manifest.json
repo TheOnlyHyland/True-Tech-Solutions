@@ -27,6 +27,31 @@
       "uploaded_artifacts": false,
       "containers_removed_before_pass": true
     },
+    "start_diagnostics": {
+      "stages": [
+        "npm_pack",
+        "fetch",
+        "install",
+        "runtime",
+        "verifier"
+      ],
+      "state_inspected_before_removal": true,
+      "state_inspect_seconds": 10,
+      "classifier_seconds": 5,
+      "state_error_categories": [
+        "rlimit",
+        "mount",
+        "permission",
+        "invalid_argument",
+        "exec",
+        "unknown"
+      ],
+      "known_process_failure_codes": [
+        "runtime_case_failed"
+      ],
+      "unknown_process_output_code": "<stage>_process_exit",
+      "raw_output_emitted": false
+    },
     "fetch_host_allowlist_enforced": false,
     "explicit_fetch_targets": [
       "registry.npmjs.org",
@@ -90,9 +115,9 @@
   },
   "verifier": {
     "launcher_normalization": "sha256 of launcher UTF-8 bytes after replacing only EXPECTED_LAUNCHER_SHA256=\"<64 lowercase hex>\" with the same assignment containing 64 zeroes",
-    "launcher_normalized_sha256": "6b1523bfd3e467efc33bc960c2f086823298e124077b2b8ef502698cbaa39283",
-    "harness_sha256": "a25234f19425592498026ae17f3bf1d6f81ed1b8d0729426d6b29cc99c0ecd01",
-    "verifier_sha256": "1b7c51b89deb62a0ac6a5c5f211c8150a69dff0e27ac077b37efcb56a549ad8d"
+    "launcher_normalized_sha256": "9a04dedfe6a70f0b17b5d1e833451cc91a85e50544c31f68b98dad98e5781778",
+    "harness_sha256": "0afd03511d036686a63224a9f19abea08f39578e296a612ca39cba3065122aa6",
+    "verifier_sha256": "bac57f7d4a0100d8ee0733c9ad0a8e304f7927f0b7285c840b1143c3cbbb1d23"
   },
   "test_scope": {
     "cases": [

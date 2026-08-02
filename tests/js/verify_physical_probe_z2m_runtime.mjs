@@ -219,6 +219,7 @@ function validateManifest(manifest) {
         "producer_user",
         "runtime_user",
         "log_policy",
+        "start_diagnostics",
         "fetch_host_allowlist_enforced",
         "explicit_fetch_targets",
         "limits",
@@ -234,6 +235,16 @@ function validateManifest(manifest) {
         uploaded_artifacts: false,
         containers_removed_before_pass: true,
     }), "manifest_log_policy");
+    gate(same(manifest.container.start_diagnostics, {
+        stages: ["npm_pack", "fetch", "install", "runtime", "verifier"],
+        state_inspected_before_removal: true,
+        state_inspect_seconds: 10,
+        classifier_seconds: 5,
+        state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "unknown"],
+        known_process_failure_codes: ["runtime_case_failed"],
+        unknown_process_output_code: "<stage>_process_exit",
+        raw_output_emitted: false,
+    }), "manifest_start_diagnostics");
     gate(same(manifest.container.explicit_fetch_targets, ["registry.npmjs.org", "github.com"]), "manifest_fetch_targets");
     gate(same(manifest.container.limits, {
         memory_bytes: 805306368,
@@ -884,6 +895,67 @@ function validateAttachLogConfig(logConfig) {
     }), "inspect_log_policy");
 }
 
+const START_STAGES = Object.freeze(["npm_pack", "fetch", "install", "runtime", "verifier"]);
+const RUNTIME_CASE_FAILURE = '{"failure_code":"case_failed","result":"fail","schema":"true-family-pass-b0-runtime-failure-v2"}\n';
+
+function stageStateErrorCategory(value) {
+    const normalized = value.toLowerCase();
+    if (/\b(?:rlimit|ulimit|setrlimit)\b|resource limit/u.test(normalized)) return "rlimit";
+    if (/\bmount(?:ed|ing)?\b|\bbind\b|\bvolume\b/u.test(normalized)) return "mount";
+    if (/permission denied|operation not permitted|access denied|\beacces\b|\beperm\b/u.test(normalized)) return "permission";
+    if (/invalid argument|\beinval\b/u.test(normalized)) return "invalid_argument";
+    if (/\bexec\b|executable|entrypoint/u.test(normalized)) return "exec";
+    return "unknown";
+}
+
+function classifyStageStart(stage, startStatus, inspectStatus, output, stateText) {
+    if (!START_STAGES.includes(stage)) return "verifier_unknown";
+    if (!Number.isInteger(startStatus) || startStatus < 0 || startStatus > 255 || !Number.isInteger(inspectStatus) || inspectStatus < 0 || inspectStatus > 255) return `${stage}_unknown`;
+    if ([124, 137].includes(inspectStatus)) return `${stage}_inspect_timeout`;
+    if (inspectStatus !== 0) return `${stage}_inspect_failed`;
+    let state;
+    try {
+        state = JSON.parse(stateText);
+    } catch {
+        return `${stage}_inspect_malformed`;
+    }
+    if (!state || typeof state !== "object" || Array.isArray(state)) return `${stage}_inspect_malformed`;
+    if (typeof state.OOMKilled !== "boolean" || typeof state.Error !== "string" || !Number.isInteger(state.ExitCode)) return `${stage}_inspect_malformed`;
+    if (typeof state.Status !== "string" || typeof state.Running !== "boolean") return `${stage}_inspect_malformed`;
+    if (state.OOMKilled) return `${stage}_oom`;
+    if (state.Error !== "") return `${stage}_state_error_${stageStateErrorCategory(state.Error)}`;
+    if ([124, 137].includes(startStatus) && (state.Status !== "exited" || state.Running || state.ExitCode !== startStatus)) return `${stage}_start_timeout`;
+    if (startStatus !== 0 || state.ExitCode !== 0) {
+        if (stage === "runtime" && output === RUNTIME_CASE_FAILURE) return "runtime_case_failed";
+        return `${stage}_process_exit`;
+    }
+    if (state.Status !== "exited" || state.Running) return `${stage}_unknown`;
+    return "pass";
+}
+
+function readStartDiagnostic(filePath, maximumBytes) {
+    try {
+        const metadata = fs.lstatSync(filePath);
+        if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1 || metadata.size > maximumBytes) return null;
+        const bytes = fs.readFileSync(filePath);
+        const text = bytes.toString("utf8");
+        return Buffer.from(text, "utf8").equals(bytes) ? text : null;
+    } catch {
+        return null;
+    }
+}
+
+function classifyStageStartFiles(stage, startStatusText, inspectStatusText, outputPath, statePath) {
+    const parseStatus = (value) => /^(?:0|[1-9][0-9]{0,2})$/u.test(value) ? Number(value) : -1;
+    return classifyStageStart(
+        stage,
+        parseStatus(startStatusText),
+        parseStatus(inspectStatusText),
+        readStartDiagnostic(outputPath, 32768),
+        readStartDiagnostic(statePath, 4096),
+    );
+}
+
 function validateInspect(inspect, manifest) {
     gate(Array.isArray(inspect) && inspect.length === 1, "inspect_shape");
     const item = inspect[0];
@@ -1466,6 +1538,62 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         }
         gate(rejected, "attach_log_policy_self_test");
     }
+    const startState = (overrides = {}) => JSON.stringify({
+        Status: "exited",
+        Running: false,
+        OOMKilled: false,
+        ExitCode: 0,
+        Error: "",
+        ...overrides,
+    });
+    for (const stage of START_STAGES) {
+        gate(classifyStageStart(stage, 0, 0, "untrusted successful output", startState()) === "pass", "container_start_classifier_self_test");
+        gate(classifyStageStart(stage, 1, 0, "untrusted private process output", startState({ExitCode: 1})) === `${stage}_process_exit`, "container_start_classifier_self_test");
+    }
+    const startClassifications = [
+        ["unknown", 0, 0, "", startState(), "verifier_unknown"],
+        ["runtime", -1, 0, "", startState(), "runtime_unknown"],
+        ["runtime", 256, 0, "", startState(), "runtime_unknown"],
+        ["runtime", 124, 0, "", startState({Status: "running", Running: true}), "runtime_start_timeout"],
+        ["runtime", 137, 0, "", startState({Status: "running", Running: true}), "runtime_start_timeout"],
+        ["runtime", 124, 0, "private timeout output", startState({ExitCode: 124}), "runtime_process_exit"],
+        ["runtime", 137, 0, "private signal output", startState({ExitCode: 137}), "runtime_process_exit"],
+        ["fetch", 1, 0, "", startState({OOMKilled: true, ExitCode: 137}), "fetch_oom"],
+        ["npm_pack", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error setting rlimit type 6"}), "npm_pack_state_error_rlimit"],
+        ["fetch", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error mounting private bind"}), "fetch_state_error_mount"],
+        ["install", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "operation not permitted"}), "install_state_error_permission"],
+        ["runtime", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "invalid argument"}), "runtime_state_error_invalid_argument"],
+        ["verifier", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "exec format error"}), "verifier_state_error_exec"],
+        ["runtime", 125, 0, "private daemon detail", startState({Status: "created", ExitCode: 128, Error: "private daemon detail"}), "runtime_state_error_unknown"],
+        ["runtime", 1, 0, RUNTIME_CASE_FAILURE, startState({ExitCode: 1}), "runtime_case_failed"],
+        ["runtime", 1, 0, RUNTIME_CASE_FAILURE.trimEnd(), startState({ExitCode: 1}), "runtime_process_exit"],
+        ["npm_pack", 1, 0, RUNTIME_CASE_FAILURE, startState({ExitCode: 1}), "npm_pack_process_exit"],
+        ["runtime", 1, 124, "private output", "private state", "runtime_inspect_timeout"],
+        ["runtime", 1, 137, "private output", "private state", "runtime_inspect_timeout"],
+        ["runtime", 1, 1, "private output", "private state", "runtime_inspect_failed"],
+        ["runtime", 1, 0, "private output", "{", "runtime_inspect_malformed"],
+        ["runtime", 1, 0, "private output", JSON.stringify({Status: "exited"}), "runtime_inspect_malformed"],
+        ["runtime", 0, 0, "", startState({Status: "running", Running: true}), "runtime_unknown"],
+    ];
+    for (const [stage, startStatus, inspectStatus, output, state, expected] of startClassifications) {
+        const actual = classifyStageStart(stage, startStatus, inspectStatus, output, state);
+        gate(actual === expected && !actual.includes("private"), "container_start_classifier_self_test");
+    }
+    const startContainerSource = launcher.slice(launcher.indexOf("start_container() {"), launcher.indexOf("remove_container_checked() {"));
+    const startCapture = startContainerSource.indexOf('capture_expected_status start_status docker_bounded "$seconds" start -a "$name"');
+    const stateInspect = startContainerSource.indexOf("capture_expected_status inspect_status docker_bounded 10s inspect --format '{{json .State}}'");
+    const classifier = startContainerSource.indexOf('node_bounded 5s "$VERIFIER" --classify-container-start');
+    const classifiedFailure = startContainerSource.indexOf('fail "$classification"');
+    gate(startCapture >= 0 && stateInspect > startCapture && classifier > stateInspect && classifiedFailure > classifier, "container_start_source");
+    gate(!launcher.includes('docker_checked "container_start"') && startContainerSource.includes('2>/dev/null') && !startContainerSource.includes("remove_container_checked"), "container_start_source");
+    const disposableSource = launcher.slice(launcher.indexOf("run_disposable() {"), launcher.indexOf("capture_expected_status IMAGE_PROBE_STATUS"));
+    const disposableCreate = disposableSource.indexOf('create_container producer "$name"');
+    const disposableStart = disposableSource.indexOf('start_container "$stage"');
+    const disposableRemove = disposableSource.indexOf('remove_container_checked "$name"');
+    gate(disposableCreate >= 0 && disposableStart > disposableCreate && disposableRemove > disposableStart, "container_start_source");
+    for (const stageCall of ["run_disposable npm_pack", "run_disposable fetch", "run_disposable install", "run_disposable verifier", "start_container runtime"]) {
+        gate(launcher.includes(stageCall), "container_start_source");
+    }
     const launcherLines = launcher.split("\n");
     for (let index = 0; index < launcherLines.length; index += 1) {
         if (launcherLines[index].trim() !== "set +e") continue;
@@ -1559,6 +1687,11 @@ async function main() {
         const manifest = validateStaticBindings(...args);
         await selfTests(args[1], fs.readFileSync(args[2], "utf8"), fs.readFileSync(args[4], "utf8"), manifest, sha256File(args[0]));
         process.stdout.write(`${canonical({schema: "true-family-pass-b0-self-check-v1", result: "pass", launcher_normalized_sha256: manifest.verifier.launcher_normalized_sha256, harness_sha256: manifest.verifier.harness_sha256, verifier_sha256: manifest.verifier.verifier_sha256})}\n`);
+        return;
+    }
+    if (mode === "--classify-container-start") {
+        gate(args.length === 5, "arguments");
+        process.stdout.write(`${classifyStageStartFiles(...args)}\n`);
         return;
     }
     if (mode === "--validate-tar") {

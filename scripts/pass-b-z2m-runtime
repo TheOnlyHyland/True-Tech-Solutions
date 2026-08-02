@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="6b1523bfd3e467efc33bc960c2f086823298e124077b2b8ef502698cbaa39283"
+EXPECTED_LAUNCHER_SHA256="9a04dedfe6a70f0b17b5d1e833451cc91a85e50544c31f68b98dad98e5781778"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -564,11 +564,38 @@ create_container() {
 }
 
 start_container() {
-  local name="$1"
-  local seconds="$2"
-  local output="$3"
-  local log="$4"
-  docker_checked "container_start" "container_start_timeout" "$seconds" "$output" "$log" start -a "$name"
+  local stage="$1"
+  local name="$2"
+  local seconds="$3"
+  local output="$4"
+  local log="$5"
+  local start_status inspect_status classification
+  case "$stage" in
+    npm_pack|fetch|install|runtime|verifier) ;;
+    *) fail "container_stage" ;;
+  esac
+  capture_expected_status start_status docker_bounded "$seconds" start -a "$name" >"$output" 2>"$log"
+  capture_expected_status inspect_status docker_bounded 10s inspect --format '{{json .State}}' "$name" >"$log.state.json" 2>"$log.state.err"
+  if classification="$(node_bounded 5s "$VERIFIER" --classify-container-start \
+    "$stage" "$start_status" "$inspect_status" "$output" "$log.state.json" 2>/dev/null)"; then
+    :
+  else
+    classification="${stage}_unknown"
+  fi
+  case "$classification" in
+    pass)
+      return 0
+      ;;
+    "${stage}_start_timeout"|"${stage}_oom"|"${stage}_state_error_rlimit"|"${stage}_state_error_mount"|\
+      "${stage}_state_error_permission"|"${stage}_state_error_invalid_argument"|"${stage}_state_error_exec"|\
+      "${stage}_state_error_unknown"|"${stage}_process_exit"|"${stage}_inspect_timeout"|\
+      "${stage}_inspect_failed"|"${stage}_inspect_malformed"|"${stage}_unknown"|runtime_case_failed)
+      fail "$classification"
+      ;;
+    *)
+      fail "${stage}_unknown"
+      ;;
+  esac
 }
 
 remove_container_checked() {
@@ -578,13 +605,14 @@ remove_container_checked() {
 }
 
 run_disposable() {
-  local name="$1"
-  local seconds="$2"
-  local output="$3"
-  local log="$4"
-  shift 4
+  local stage="$1"
+  local name="$2"
+  local seconds="$3"
+  local output="$4"
+  local log="$5"
+  shift 5
   create_container producer "$name" "$log.create" "$@"
-  start_container "$name" "$seconds" "$output" "$log.run"
+  start_container "$stage" "$name" "$seconds" "$output" "$log.run"
   remove_container_checked "$name" "$log.remove"
 }
 
@@ -714,7 +742,7 @@ run_tar_tool() {
     args+=("/output")
   fi
   args+=("/input/physical_probe_pass_b_manifest.json")
-  run_disposable "$name" 45s "$run_root/log/tar-$kind-${mode#--}.out" "$run_root/log/tar-$kind-${mode#--}" "${args[@]}"
+  run_disposable verifier "$name" 45s "$run_root/log/tar-$kind-${mode#--}.out" "$run_root/log/tar-$kind-${mode#--}" "${args[@]}"
 }
 
 rehash_run() {
@@ -800,7 +828,7 @@ acquire_run() {
   make_network "$network"
   for package in "zigbee2mqtt@2.12.1" "zigbee-herdsman@10.6.1" "zigbee-herdsman-converters@26.76.0" "pnpm@10.18.3"; do
     name="tf-pass-b0-$RUN_TOKEN-r$ordinal-npm-${package%%@*}"
-    run_disposable "$name" 60s "$run_root/log/npm-${package%%@*}.out" "$run_root/log/npm-${package%%@*}" \
+    run_disposable npm_pack "$name" 60s "$run_root/log/npm-${package%%@*}.out" "$run_root/log/npm-${package%%@*}" \
       --network="$network" \
       --workdir=/out \
       --mount "type=bind,source=$fetch,target=/out" \
@@ -840,7 +868,7 @@ acquire_run() {
   seal_readonly_tree "$run_root/extract-pnpm"
 
   name="tf-pass-b0-$RUN_TOKEN-r$ordinal-upstream-verify"
-  run_disposable "$name" 60s "$run_root/log/upstream-verify.out" "$run_root/log/upstream-verify" \
+  run_disposable verifier "$name" 60s "$run_root/log/upstream-verify.out" "$run_root/log/upstream-verify" \
     --network=none \
     --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
     --mount "type=bind,source=$run_root/tool-input,target=/input,readonly" \
@@ -851,7 +879,7 @@ acquire_run() {
       /input/physical_probe_pass_b_manifest.json /upstream/package.json /upstream/pnpm-lock.yaml /published/package.json
 
   name="tf-pass-b0-$RUN_TOKEN-r$ordinal-pnpm-fetch"
-  run_disposable "$name" 180s "$run_root/log/pnpm-fetch.out" "$run_root/log/pnpm-fetch" \
+  run_disposable fetch "$name" 180s "$run_root/log/pnpm-fetch.out" "$run_root/log/pnpm-fetch" \
     --network="$network" \
     --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
     --mount "type=bind,source=$run_root/mount/upstream,target=/source,readonly" \
@@ -874,7 +902,7 @@ acquire_run() {
   find "$store_install" -xdev -type f -exec chmod 0600 {} +
   assert_private_writable_tree "$store_install"
   name="tf-pass-b0-$RUN_TOKEN-r$ordinal-prepare-install"
-  run_disposable "$name" 60s "$run_root/log/prepare-install.out" "$run_root/log/prepare-install" \
+  run_disposable install "$name" 60s "$run_root/log/prepare-install.out" "$run_root/log/prepare-install" \
     --network=none \
     --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
     --mount "type=bind,source=$run_root/mount/upstream,target=/source,readonly" \
@@ -884,7 +912,7 @@ acquire_run() {
   assert_writable_work_tree "$install"
 
   name="tf-pass-b0-$RUN_TOKEN-r$ordinal-pnpm-install"
-  run_disposable "$name" 180s "$run_root/log/pnpm-install.out" "$run_root/log/pnpm-install" \
+  run_disposable install "$name" 180s "$run_root/log/pnpm-install.out" "$run_root/log/pnpm-install" \
     --network=none \
     --workdir=/work \
     --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
@@ -902,7 +930,7 @@ acquire_run() {
   assert_host_owned_tree "$install"
 
   name="tf-pass-b0-$RUN_TOKEN-r$ordinal-normalize-closure"
-  run_disposable "$name" 60s "$run_root/log/normalize-closure.out" "$run_root/log/normalize-closure" \
+  run_disposable verifier "$name" 60s "$run_root/log/normalize-closure.out" "$run_root/log/normalize-closure" \
     --network=none \
     --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
     --mount "type=bind,source=$install/node_modules,target=/closure" \
@@ -916,7 +944,7 @@ acquire_run() {
   seal_readonly_tree "$run_root/mount/z2m"
 
   name="tf-pass-b0-$RUN_TOKEN-r$ordinal-runtime-hashes"
-  run_disposable "$name" 60s "$run_root/runtime-hashes.json" "$run_root/log/runtime-hashes" \
+  run_disposable verifier "$name" 60s "$run_root/runtime-hashes.json" "$run_root/log/runtime-hashes" \
     --network=none \
     --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
     --entrypoint=/usr/local/bin/node \
@@ -957,7 +985,7 @@ acquire_run() {
     --env "PASS_B_BASE_TOPIC=$base_topic" \
     --entrypoint=/usr/bin/timeout \
     "$IMAGE" --foreground --signal=TERM --kill-after=10s 240s /runtime/run.sh
-  start_container "$name" 270s "$run_root/runtime-raw.json" "$run_root/log/runtime-run.log"
+  start_container runtime "$name" 270s "$run_root/runtime-raw.json" "$run_root/log/runtime-run.log"
   docker_checked "runtime_inspect" "runtime_inspect_timeout" 20s \
     "$run_root/runtime-inspect.json" "$run_root/log/runtime-inspect.log" inspect "$name"
   [ -s "$run_root/runtime-raw.json" ]
@@ -988,7 +1016,7 @@ acquire_run() {
     "$run_root/mount/z2m/node_modules" >/dev/null 2>&1
 
   local verifier_name="tf-pass-b0-$RUN_TOKEN-r$ordinal-final-verifier"
-  run_disposable "$verifier_name" 90s "$run_root/final-evidence.json" "$run_root/log/final-verifier" \
+  run_disposable verifier "$verifier_name" 90s "$run_root/final-evidence.json" "$run_root/log/final-verifier" \
     --network=none \
     --mount "type=bind,source=$run_root/mount/input,target=/input,readonly" \
     --mount "type=bind,source=$run_root/mount/harness,target=/harness,readonly" \
