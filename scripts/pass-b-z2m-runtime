@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="e240cad754f906113641bf4d48d34bb3d47b1e4c178988fab592d5b2cff7ced9"
+EXPECTED_LAUNCHER_SHA256="447b981b254b015316b42a6b7887b2e2cbdbe4f046d10916f0825e240d476733"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -28,6 +28,7 @@ LOG_FLAGS=(
 )
 PNPM_FAILURE_SUFFIXES=(
   failed
+  aborted_remove_modules_dir_no_tty
   bad_pm_version
   broken_lockfile
   config_conflict
@@ -937,6 +938,7 @@ acquire_run() {
     --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
     --mount "type=bind,source=$run_root/mount/upstream,target=/source,readonly" \
     --mount "type=bind,source=$store_fetch,target=/store" \
+    --env CI=true \
     --env HOME=/tmp/home \
     --entrypoint=/bin/sh \
     "$IMAGE" -eu -c 'mkdir -p /tmp/project; cp /source/package.json /source/pnpm-lock.yaml /tmp/project/; if [ -f /source/pnpm-workspace.yaml ]; then cp /source/pnpm-workspace.yaml /tmp/project/; fi; if [ -f /source/.npmrc ]; then cp /source/.npmrc /tmp/project/; fi; stdout=/tmp/pnpm-fetch.stdout.ndjson; stderr=/tmp/pnpm-fetch.stderr.ndjson; set +e; /usr/local/bin/node /tool/bin/pnpm.cjs fetch --dir=/tmp/project --prod --no-optional --frozen-lockfile --ignore-scripts --store-dir=/store --reporter=ndjson >"$stdout" 2>"$stderr"; status=$?; set -e; if [ "$status" -ne 0 ]; then set +e; /usr/local/bin/node /verifier/verify_physical_probe_z2m_runtime.mjs --classify-pnpm fetch "$stdout" "$stderr"; set -e; exit "$status"; fi'
@@ -964,6 +966,7 @@ acquire_run() {
     --mount "type=bind,source=$run_root/mount/verifier,target=/verifier,readonly" \
     --mount "type=bind,source=$install,target=/work" \
     --mount "type=bind,source=$store_install,target=/store" \
+    --env CI=true \
     --env HOME=/tmp/home \
     --entrypoint=/bin/sh \
     "$IMAGE" -eu -c 'stdout=/tmp/pnpm-install.stdout.ndjson; stderr=/tmp/pnpm-install.stderr.ndjson; set +e; /usr/local/bin/node /tool/bin/pnpm.cjs install --prod --no-optional --offline --frozen-lockfile --ignore-scripts --package-import-method=copy --store-dir=/store --reporter=ndjson >"$stdout" 2>"$stderr"; status=$?; set -e; if [ "$status" -ne 0 ]; then set +e; /usr/local/bin/node /verifier/verify_physical_probe_z2m_runtime.mjs --classify-pnpm install "$stdout" "$stderr"; set -e; exit "$status"; fi'

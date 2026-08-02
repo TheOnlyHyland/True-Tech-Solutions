@@ -183,8 +183,10 @@ The downloaded and strictly validated pnpm program executes later in its
 constrained fetch stage. That stage has network access and receives only the
 exact upstream package, lock, workspace, and optional project `.npmrc` inputs.
 Fetch and offline install retain their existing commands and exit statuses but
-use pnpm's machine `ndjson` reporter redirected to private tmpfs files. On a
-nonzero exit, the verifier reads only regular, non-symlinked files bounded to
+receive the launcher-pinned literal `CI=true`, rather than a value inherited
+from the host, so pnpm remains noninteractive without a TTY. Both use pnpm's
+machine `ndjson` reporter redirected to private tmpfs files. On a nonzero exit,
+the verifier reads only regular, non-symlinked files bounded to
 1 MiB each, inspects only allowlisted root `code` or nested `err.code` values,
 and emits one canonical `true-family-pass-b0-pnpm-failure-v1` record. Unknown or
 malformed diagnostics become `pnpm_fetch_failed` or `pnpm_install_failed`; raw

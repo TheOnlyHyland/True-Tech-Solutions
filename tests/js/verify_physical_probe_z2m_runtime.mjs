@@ -98,6 +98,7 @@ const PNPM_FAILURE_SCHEMA = "true-family-pass-b0-pnpm-failure-v1";
 const PNPM_DIAGNOSTIC_MAX_BYTES = 1024 * 1024;
 const PNPM_DIAGNOSTIC_LINE_MAX_BYTES = 64 * 1024;
 const PNPM_ERROR_CODES = Object.freeze([
+    "ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY",
     "ERR_PNPM_BAD_PM_VERSION",
     "ERR_PNPM_BROKEN_LOCKFILE",
     "ERR_PNPM_CONFIG_CONFLICT",
@@ -491,6 +492,7 @@ function validateManifest(manifest) {
         max_file_bytes: PNPM_DIAGNOSTIC_MAX_BYTES,
         max_line_bytes: PNPM_DIAGNOSTIC_LINE_MAX_BYTES,
         regular_files_only: true,
+        noninteractive_ci: true,
         original_exit_status_preserved: true,
         raw_output_emitted: false,
         error_codes: PNPM_ERROR_CODES,
@@ -2294,6 +2296,7 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     for (const [phase, source] of [["fetch", pnpmFetchSource], ["install", pnpmInstallSource]]) {
         for (const required of [
             "target=/verifier,readonly",
+            "--env CI=true",
             "--entrypoint=/bin/sh",
             "--reporter=ndjson",
             `--classify-pnpm ${phase}`,
@@ -2306,6 +2309,7 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     }
     gate(!launcher.includes("--reporter=silent") && (launcher.match(/--reporter=ndjson/gu) ?? []).length === 2, "pnpm_classifier_source");
     gate((launcher.match(/--classify-pnpm/gu) ?? []).length === 2, "pnpm_classifier_source");
+    gate((launcher.match(/--env CI=true/gu) ?? []).length === 2, "pnpm_classifier_source");
     const selfCheckBranch = launcher.slice(launcher.indexOf('  "--self-check")'), launcher.indexOf('  "--shell-self-check")'));
     gate(selfCheckBranch.includes('node_bounded 25s "$VERIFIER" --self-check'), "static_self_check_source");
     for (const forbidden of ["docker", "RUNNER_TEMP", "mktemp", "ROOT="]) {
@@ -2397,6 +2401,7 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     const knownNestedPnpm = ndjson({level: "error", err: {code: "ERR_PNPM_TARBALL_INTEGRITY"}});
     gate(classifyPnpmText("fetch", knownRootPnpm, "") === "pnpm_fetch_outdated_lockfile", "pnpm_classifier_self_test");
     gate(classifyPnpmText("install", "", knownNestedPnpm) === "pnpm_install_tarball_integrity", "pnpm_classifier_self_test");
+    gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY"}), "") === "pnpm_fetch_aborted_remove_modules_dir_no_tty", "pnpm_classifier_self_test");
     gate(classifyPnpmText("fetch", ndjson({code: "ERR_PNPM_PRIVATE_UNKNOWN"}), "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
     gate(classifyPnpmText("fetch", "{\n", "") === "pnpm_fetch_failed", "pnpm_classifier_self_test");
     const privatePnpm = ndjson({level: "error", code: "ERR_PNPM_FETCH_404", path: "/private/path", message: "private\ncontrol", url: "https://private.invalid"});

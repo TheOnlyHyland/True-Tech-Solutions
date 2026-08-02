@@ -106,6 +106,7 @@ const VERIFIER_FAILURE_CODES = Object.freeze([
     "verifier_failed",
 ]);
 const PNPM_ERROR_CODES = Object.freeze([
+    "ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY",
     "ERR_PNPM_BAD_PM_VERSION",
     "ERR_PNPM_BROKEN_LOCKFILE",
     "ERR_PNPM_CONFIG_CONFLICT",
@@ -256,6 +257,7 @@ function validateManifest(manifest) {
         max_file_bytes: 1048576,
         max_line_bytes: 65536,
         regular_files_only: true,
+        noninteractive_ci: true,
         original_exit_status_preserved: true,
         raw_output_emitted: false,
         error_codes: PNPM_ERROR_CODES,

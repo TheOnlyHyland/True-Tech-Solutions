@@ -55,9 +55,11 @@
       "max_file_bytes": 1048576,
       "max_line_bytes": 65536,
       "regular_files_only": true,
+      "noninteractive_ci": true,
       "original_exit_status_preserved": true,
       "raw_output_emitted": false,
       "error_codes": [
+        "ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY",
         "ERR_PNPM_BAD_PM_VERSION",
         "ERR_PNPM_BROKEN_LOCKFILE",
         "ERR_PNPM_CONFIG_CONFLICT",
@@ -147,6 +149,7 @@
         "verifier_final_verification_failed",
         "verifier_verifier_failed",
         "pnpm_fetch_failed",
+        "pnpm_fetch_aborted_remove_modules_dir_no_tty",
         "pnpm_fetch_bad_pm_version",
         "pnpm_fetch_broken_lockfile",
         "pnpm_fetch_config_conflict",
@@ -174,6 +177,7 @@
         "pnpm_fetch_unsupported_engine",
         "pnpm_fetch_workspace_pkg_not_found",
         "pnpm_install_failed",
+        "pnpm_install_aborted_remove_modules_dir_no_tty",
         "pnpm_install_bad_pm_version",
         "pnpm_install_broken_lockfile",
         "pnpm_install_config_conflict",
@@ -302,9 +306,9 @@
       "final_verification_failed",
       "verifier_failed"
     ],
-    "launcher_normalized_sha256": "e240cad754f906113641bf4d48d34bb3d47b1e4c178988fab592d5b2cff7ced9",
-    "harness_sha256": "49046ba9725b5c346eb3627b74d827d7d4ea83d43b4775195be3d367b4a11a43",
-    "verifier_sha256": "241d976339625c1f54932684b385370cfa5bdb16836ff07e08b48e6f7660dfce"
+    "launcher_normalized_sha256": "447b981b254b015316b42a6b7887b2e2cbdbe4f046d10916f0825e240d476733",
+    "harness_sha256": "b2dbc652385fdea418fad685b7deaf3fc354d5dafff896e581f72271dfe57543",
+    "verifier_sha256": "56b2aae45fa6521116389bc1171e628c23ae567391290ded488510a211285bed"
   },
   "test_scope": {
     "cases": [
