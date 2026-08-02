@@ -16,7 +16,6 @@
     "index_reference_sha256": "sha256:7cd3fbc830c75c92256fe1122002add9a1c025831af8770cd0bf8e45688ef661",
     "platform": "linux/amd64",
     "producer_user": "host-runner-numeric-nonroot",
-    "producer_nproc_limit": 4096,
     "runtime_user": "65532:65532",
     "permission_self_check_limits": {
       "pids": 64,
@@ -24,7 +23,7 @@
       "memory_swap_bytes": 268435456,
       "nano_cpus": 1000000000,
       "nofile": 1024,
-      "producer_nproc": 4096,
+      "producer_nproc_applied": false,
       "runtime_nproc": 64
     },
     "log_policy": {
@@ -100,9 +99,9 @@
   },
   "verifier": {
     "launcher_normalization": "sha256 of launcher UTF-8 bytes after replacing only EXPECTED_LAUNCHER_SHA256=\"<64 lowercase hex>\" with the same assignment containing 64 zeroes",
-    "launcher_normalized_sha256": "084548981f35cb543eabd542709173b9adfec351ba61986e3e8729b9e7a30f2a",
-    "harness_sha256": "67d82840241bd5955970a0f175570d6d622eb93538ce1c16f7546e7c0b7e33a0",
-    "verifier_sha256": "7b85404645c1ed3986f3424f2de054334b3d15af9afbe3b18372a65c66989dd8"
+    "launcher_normalized_sha256": "a7fd5302f1ee8d4a6733cac756efb5e3bc94a9de5a1303e5ed970d9fc02f7610",
+    "harness_sha256": "c4667f764efca2d49dc3f1f09d011fa47f48dbec27baf635f809b742089aed3b",
+    "verifier_sha256": "68ecabb06ee5dc59a1c0995d3eabfcb1f383e8ccf3d34d96f691b3b272b5a1b2"
   },
   "test_scope": {
     "cases": [

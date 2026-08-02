@@ -218,7 +218,6 @@ function validateManifest(manifest) {
         "index_reference_sha256",
         "platform",
         "producer_user",
-        "producer_nproc_limit",
         "runtime_user",
         "permission_self_check_limits",
         "log_policy",
@@ -229,14 +228,14 @@ function validateManifest(manifest) {
     gate(manifest.container.image === IMAGE && manifest.container.index_reference_sha256 === IMAGE_INDEX, "manifest_image");
     gate(manifest.container.platform === "linux/amd64" && manifest.container.fetch_host_allowlist_enforced === false, "manifest_platform");
     gate(manifest.container.producer_user === "host-runner-numeric-nonroot" && manifest.container.runtime_user === "65532:65532", "manifest_users");
-    gate(manifest.container.producer_nproc_limit === 4096 && manifest.container.limits.nproc === 64, "manifest_nproc_limits");
+    gate(manifest.container.limits.nproc === 64, "manifest_nproc_limits");
     gate(same(manifest.container.permission_self_check_limits, {
         pids: 64,
         memory_bytes: 268435456,
         memory_swap_bytes: 268435456,
         nano_cpus: 1000000000,
         nofile: 1024,
-        producer_nproc: 4096,
+        producer_nproc_applied: false,
         runtime_nproc: 64,
     }), "manifest_permission_limits");
     gate(same(manifest.container.log_policy, {
@@ -900,6 +899,16 @@ function permissionStartGeneric(role) {
     return role === "producer" ? "permission_producer_start" : "permission_runtime_start";
 }
 
+function permissionStateErrorCategory(value) {
+    const normalized = value.toLowerCase();
+    if (/\b(?:rlimit|ulimit|setrlimit)\b|resource limit/u.test(normalized)) return "rlimit";
+    if (/\bmount(?:ed|ing)?\b|\bbind\b|\bvolume\b/u.test(normalized)) return "mount";
+    if (/permission denied|operation not permitted|access denied|\beacces\b|\beperm\b/u.test(normalized)) return "permission";
+    if (/invalid argument|\beinval\b/u.test(normalized)) return "invalid_argument";
+    if (/\bexec\b|executable|entrypoint/u.test(normalized)) return "exec";
+    return "unknown";
+}
+
 function classifyPermissionStart(role, startStatus, inspectStatus, output, stateText) {
     const generic = permissionStartGeneric(role);
     if (!new Set(["producer", "runtime"]).has(role)) return "permission_runtime_start";
@@ -917,7 +926,7 @@ function classifyPermissionStart(role, startStatus, inspectStatus, output, state
     if (typeof state.OOMKilled !== "boolean" || typeof state.Error !== "string" || !Number.isInteger(state.ExitCode)) return generic;
     if (typeof state.Status !== "string" || typeof state.Running !== "boolean") return generic;
     if (state.OOMKilled) return `${prefix}_oom`;
-    if (state.Error !== "") return `${prefix}_state_error`;
+    if (state.Error !== "") return `${prefix}_state_error_${permissionStateErrorCategory(state.Error)}`;
     if ([124, 137].includes(startStatus)) return `${prefix}_start_timeout`;
     const commonTokens = new Map([
         ["uid-mismatch", `${prefix}_uid_mismatch`],
@@ -1522,9 +1531,9 @@ async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
     const producerFlags = shellArray("PRODUCER_FLAGS");
     const runtimeFlags = shellArray("RUNTIME_FLAGS");
     gate(commonFlags.includes("--pids-limit=64") && !commonFlags.includes("--ulimit=nproc="), "nproc_policy_source");
-    gate(producerFlags.includes("--user=\"$HOST_UID:$HOST_GID\"") && producerFlags.includes("--ulimit=nproc=4096:4096"), "nproc_policy_source");
+    gate(producerFlags.includes("--user=\"$HOST_UID:$HOST_GID\"") && !producerFlags.includes("--ulimit=nproc="), "nproc_policy_source");
     gate(runtimeFlags.includes("--user=65532:65532") && runtimeFlags.includes("--ulimit=nproc=64:64"), "nproc_policy_source");
-    gate((launcher.match(/--ulimit=nproc=4096:4096/gu) ?? []).length === 2, "nproc_policy_source");
+    gate((launcher.match(/--ulimit=nproc=/gu) ?? []).length === 2, "nproc_policy_source");
     gate((launcher.match(/--ulimit=nproc=64:64/gu) ?? []).length === 2, "nproc_policy_source");
     gate(!launcher.includes("--ulimit=nproc=16:16") && !launcher.includes("--pids-limit=16"), "nproc_policy_source");
     gate((launcher.match(/--pids-limit=64/gu) ?? []).length === 3, "permission_resource_source");
@@ -1572,7 +1581,12 @@ async function selfTests(launcherPath, sourceText, manifest, manifestDigest) {
         ["runtime", 1, 0, "output-write-EROFS", permissionState({ExitCode: 1}), "permission_runtime_output_write_erofs"],
         ["producer", 1, 0, "output-write-other", permissionState({ExitCode: 1}), "permission_producer_output_write_other"],
         ["producer", 137, 0, "", permissionState({OOMKilled: true, ExitCode: 137}), "permission_producer_oom"],
-        ["runtime", 125, 0, "", permissionState({Status: "created", Error: "private daemon detail", ExitCode: 128}), "permission_runtime_state_error"],
+        ["producer", 125, 0, "", permissionState({Status: "created", Error: "error setting rlimit type 6: operation not permitted", ExitCode: 128}), "permission_producer_state_error_rlimit"],
+        ["runtime", 125, 0, "", permissionState({Status: "created", Error: "error mounting private bind", ExitCode: 128}), "permission_runtime_state_error_mount"],
+        ["producer", 125, 0, "", permissionState({Status: "created", Error: "operation not permitted", ExitCode: 128}), "permission_producer_state_error_permission"],
+        ["runtime", 125, 0, "", permissionState({Status: "created", Error: "invalid argument", ExitCode: 128}), "permission_runtime_state_error_invalid_argument"],
+        ["producer", 125, 0, "", permissionState({Status: "created", Error: "exec format error", ExitCode: 128}), "permission_producer_state_error_exec"],
+        ["runtime", 125, 0, "", permissionState({Status: "created", Error: "private daemon detail", ExitCode: 128}), "permission_runtime_state_error_unknown"],
         ["producer", 124, 0, "", permissionState({Status: "running", Running: true}), "permission_producer_start_timeout"],
         ["runtime", 1, 124, "", "", "permission_runtime_inspect_timeout"],
         ["producer", 1, 1, "", "", "permission_producer_inspect"],

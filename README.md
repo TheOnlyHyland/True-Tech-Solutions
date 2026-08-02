@@ -172,10 +172,11 @@ signature or independent build provenance.
 containers. pnpm fetch has network access and receives only the exact upstream
 package and lock inputs. Every fetch, install, extraction, and verifier container
 that writes a host bind output runs under the runner's captured numeric UID/GID,
-which must both be nonzero. Their `nproc` limit is `4096`, because Linux accounts
-that limit across every process using the shared runner UID; producer process
-containment instead remains enforced by Docker's 64-process pids cgroup. The
-UID-65532 runtime retains exact `nproc=64:64` and `pids=64` limits. Installation
+which must both be nonzero. No `nproc` limit is applied to these producers because
+Linux accounts it across every process using the shared runner UID; producer
+process and thread containment is instead enforced by Docker's exact 64-process
+pids cgroup. The UID-65532 runtime retains exact `nproc=64:64` and `pids=64`
+limits. Installation
 copies the sealed upstream inputs into a mode-`0700` writable `/work` tree,
 recursively normalizes regular files to mode `0600`, verifies the copied package
 is writable, and verifies the read-only source snapshot did not change. A
@@ -199,8 +200,10 @@ memory/swap, one CPU, and `nofile=1024`; it is testing ownership and mounts, not
 minimum Node.js resources. The host-UID producer creates an output and UID 65532
 must read but cannot modify its sealed result. If either attached process fails,
 bounded private `.State` inspection maps only allowlisted tokens, status, OOM,
-or state-error classes to sanitized codes before cleanup. Dedicated writable
-work, output, and store trees contain no verifier source. It exercises the real
+or fixed `rlimit`, mount, permission, invalid-argument, exec, and unknown
+state-error categories to sanitized codes before cleanup. Raw daemon errors are
+never emitted. Dedicated writable work, output, and store trees contain no
+verifier source. It exercises the real
 Zigbee2MQTT EventBus,
 disconnected Mqtt object, ExternalExtensions/ExternalJS loader, and only the
 Controller add/remove/get/enable API shell. It does not construct, start, or stop
