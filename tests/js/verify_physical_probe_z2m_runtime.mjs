@@ -219,6 +219,7 @@ function validateManifest(manifest) {
         "producer_user",
         "runtime_user",
         "log_policy",
+        "npm_config_policy",
         "start_diagnostics",
         "fetch_host_allowlist_enforced",
         "explicit_fetch_targets",
@@ -235,12 +236,19 @@ function validateManifest(manifest) {
         uploaded_artifacts: false,
         containers_removed_before_pass: true,
     }), "manifest_log_policy");
+    gate(same(manifest.container.npm_config_policy, {
+        userconfig: "/dev/null",
+        globalconfig: "/dev/null",
+        config_bind_mounts: false,
+        npm_pack_source_workspace_mounted: false,
+        pnpm_project_npmrc: "exact-upstream-copy",
+    }), "manifest_npm_config_policy");
     gate(same(manifest.container.start_diagnostics, {
         stages: ["npm_pack", "fetch", "install", "runtime", "verifier"],
         state_inspected_before_removal: true,
         state_inspect_seconds: 10,
         classifier_seconds: 5,
-        state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "unknown"],
+        state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "no_such_file", "not_directory", "readonly", "cgroup", "security", "unknown"],
         known_process_failure_codes: ["runtime_case_failed"],
         unknown_process_output_code: "<stage>_process_exit",
         raw_output_emitted: false,
@@ -900,7 +908,12 @@ const RUNTIME_CASE_FAILURE = '{"failure_code":"case_failed","result":"fail","sch
 
 function stageStateErrorCategory(value) {
     const normalized = value.toLowerCase();
-    if (/\b(?:rlimit|ulimit|setrlimit)\b|resource limit/u.test(normalized)) return "rlimit";
+    if (/no such file or directory|\benoent\b/u.test(normalized)) return "no_such_file";
+    if (/not a directory|\benotdir\b/u.test(normalized)) return "not_directory";
+    if (/read-only file system|\berofs\b|\breadonly\b|\bread only\b/u.test(normalized)) return "readonly";
+    if (/\b(?:rlimits?|ulimit|setrlimit)\b|resource limit/u.test(normalized)) return "rlimit";
+    if (/\bcgroups?\b|\/sys\/fs\/cgroup/u.test(normalized)) return "cgroup";
+    if (/\b(?:apparmor|seccomp|selinux|landlock)\b|no[- ]new[- ]privileges|security (?:option|profile)/u.test(normalized)) return "security";
     if (/\bmount(?:ed|ing)?\b|\bbind\b|\bvolume\b/u.test(normalized)) return "mount";
     if (/permission denied|operation not permitted|access denied|\beacces\b|\beperm\b/u.test(normalized)) return "permission";
     if (/invalid argument|\beinval\b/u.test(normalized)) return "invalid_argument";
@@ -1500,6 +1513,15 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate((launcher.match(/--ulimit=nproc=/gu) ?? []).length === 1, "nproc_policy_source");
     gate((launcher.match(/--ulimit=nproc=64:64/gu) ?? []).length === 1, "nproc_policy_source");
     gate(!launcher.includes("--ulimit=nproc=16:16") && !launcher.includes("--pids-limit=16"), "nproc_policy_source");
+    gate(!launcher.includes("empty-user-npmrc") && !launcher.includes("empty-global-npmrc") && !launcher.includes("/config/"), "npm_config_source");
+    gate((launcher.match(/NPM_CONFIG_USERCONFIG=\/dev\/null/gu) ?? []).length === 1, "npm_config_source");
+    gate((launcher.match(/NPM_CONFIG_GLOBALCONFIG=\/dev\/null/gu) ?? []).length === 1, "npm_config_source");
+    gate((launcher.match(/npm_config_userconfig=\/dev\/null/gu) ?? []).length === 2, "npm_config_source");
+    gate((launcher.match(/npm_config_globalconfig=\/dev\/null/gu) ?? []).length === 2, "npm_config_source");
+    gate((launcher.match(/--userconfig=\/dev\/null/gu) ?? []).length === 1 && (launcher.match(/--globalconfig=\/dev\/null/gu) ?? []).length === 1, "npm_config_source");
+    const npmPackSource = launcher.slice(launcher.indexOf('for package in "zigbee2mqtt@2.12.1"'), launcher.indexOf('local z2m_tar="$fetch/zigbee2mqtt-2.12.1.tgz"'));
+    gate(npmPackSource.includes("run_disposable npm_pack") && !npmPackSource.includes("target=/source") && !npmPackSource.includes(".npmrc"), "npm_config_source");
+    gate(launcher.includes("for upstream_file in package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc") && launcher.includes("cp /source/.npmrc /tmp/project/"), "npm_config_source");
     const selfCheckBranch = launcher.slice(launcher.indexOf('  "--self-check")'), launcher.indexOf('  "--shell-self-check")'));
     gate(selfCheckBranch.includes('node_bounded 25s "$VERIFIER" --self-check'), "static_self_check_source");
     for (const forbidden of ["docker", "RUNNER_TEMP", "mktemp", "ROOT="]) {
@@ -1564,6 +1586,11 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
         ["install", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "operation not permitted"}), "install_state_error_permission"],
         ["runtime", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "invalid argument"}), "runtime_state_error_invalid_argument"],
         ["verifier", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "exec format error"}), "verifier_state_error_exec"],
+        ["npm_pack", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error mounting target: no such file or directory"}), "npm_pack_state_error_no_such_file"],
+        ["fetch", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "error mounting target: not a directory"}), "fetch_state_error_not_directory"],
+        ["install", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "mount failed: read-only file system"}), "install_state_error_readonly"],
+        ["runtime", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "cgroup operation not permitted"}), "runtime_state_error_cgroup"],
+        ["verifier", 125, 0, "", startState({Status: "created", ExitCode: 128, Error: "AppArmor permission denied"}), "verifier_state_error_security"],
         ["runtime", 125, 0, "private daemon detail", startState({Status: "created", ExitCode: 128, Error: "private daemon detail"}), "runtime_state_error_unknown"],
         ["runtime", 1, 0, RUNTIME_CASE_FAILURE, startState({ExitCode: 1}), "runtime_case_failed"],
         ["runtime", 1, 0, RUNTIME_CASE_FAILURE.trimEnd(), startState({ExitCode: 1}), "runtime_process_exit"],

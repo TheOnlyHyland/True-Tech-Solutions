@@ -5,7 +5,7 @@ umask 077
 # CI-only same-repository reviewed-source smoke. This launcher deliberately does
 # not produce authoritative, independently attested, or malicious-source-resistant evidence.
 
-EXPECTED_LAUNCHER_SHA256="9a04dedfe6a70f0b17b5d1e833451cc91a85e50544c31f68b98dad98e5781778"
+EXPECTED_LAUNCHER_SHA256="2af6278373137ce58509aeb6e9aeeb85c5d0f85b811cccfc3f4c840f33453bed"
 FAILURE_SCHEMA="true-family-pass-b0-launcher-failure-v2"
 IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 PLATFORM="linux/amd64"
@@ -588,7 +588,9 @@ start_container() {
       ;;
     "${stage}_start_timeout"|"${stage}_oom"|"${stage}_state_error_rlimit"|"${stage}_state_error_mount"|\
       "${stage}_state_error_permission"|"${stage}_state_error_invalid_argument"|"${stage}_state_error_exec"|\
-      "${stage}_state_error_unknown"|"${stage}_process_exit"|"${stage}_inspect_timeout"|\
+      "${stage}_state_error_no_such_file"|"${stage}_state_error_not_directory"|"${stage}_state_error_readonly"|\
+      "${stage}_state_error_cgroup"|"${stage}_state_error_security"|"${stage}_state_error_unknown"|\
+      "${stage}_process_exit"|"${stage}_inspect_timeout"|\
       "${stage}_inspect_failed"|"${stage}_inspect_malformed"|"${stage}_unknown"|runtime_case_failed)
       fail "$classification"
       ;;
@@ -788,10 +790,6 @@ acquire_run() {
   cp "$PASS_A_MANIFEST" "$run_root/mount/input/true_family_brt_probe.manifest.json"
   cp "$PREFLIGHT_FIXTURE" "$run_root/mount/input/physical_probe_preflight_vectors.json"
   cp "$MANIFEST" "$run_root/tool-input/physical_probe_pass_b_manifest.json"
-  : >"$run_root/empty-user-npmrc"
-  : >"$run_root/empty-global-npmrc"
-  seal_readonly_file "$run_root/empty-user-npmrc"
-  seal_readonly_file "$run_root/empty-global-npmrc"
   for writable_root in "$fetch" "$store_fetch" "$store_install" "$install" "$run_root/extract-z2m" "$run_root/extract-pnpm"; do
     assert_writable_root "$writable_root"
   done
@@ -832,19 +830,17 @@ acquire_run() {
       --network="$network" \
       --workdir=/out \
       --mount "type=bind,source=$fetch,target=/out" \
-      --mount "type=bind,source=$run_root/empty-user-npmrc,target=/config/user-npmrc,readonly" \
-      --mount "type=bind,source=$run_root/empty-global-npmrc,target=/config/global-npmrc,readonly" \
       --env HOME=/tmp/home \
-      --env NPM_CONFIG_USERCONFIG=/config/user-npmrc \
-      --env NPM_CONFIG_GLOBALCONFIG=/config/global-npmrc \
+      --env NPM_CONFIG_USERCONFIG=/dev/null \
+      --env NPM_CONFIG_GLOBALCONFIG=/dev/null \
       --env NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
       --env NPM_CONFIG_AUDIT=false \
       --env NPM_CONFIG_FUND=false \
       --env NPM_CONFIG_UPDATE_NOTIFIER=false \
       --entrypoint=/usr/local/bin/npm \
-       "$IMAGE" pack "$package" --ignore-scripts --pack-destination=/out \
-         --registry=https://registry.npmjs.org/ --userconfig=/config/user-npmrc \
-        --globalconfig=/config/global-npmrc --loglevel=silent
+      "$IMAGE" pack "$package" --ignore-scripts --pack-destination=/out \
+        --registry=https://registry.npmjs.org/ --userconfig=/dev/null \
+        --globalconfig=/dev/null --loglevel=silent
   done
 
   local z2m_tar="$fetch/zigbee2mqtt-2.12.1.tgz"
@@ -884,11 +880,9 @@ acquire_run() {
     --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
     --mount "type=bind,source=$run_root/mount/upstream,target=/source,readonly" \
     --mount "type=bind,source=$store_fetch,target=/store" \
-    --mount "type=bind,source=$run_root/empty-user-npmrc,target=/config/user-npmrc,readonly" \
-    --mount "type=bind,source=$run_root/empty-global-npmrc,target=/config/global-npmrc,readonly" \
     --env HOME=/tmp/home \
-    --env npm_config_userconfig=/config/user-npmrc \
-    --env npm_config_globalconfig=/config/global-npmrc \
+    --env npm_config_userconfig=/dev/null \
+    --env npm_config_globalconfig=/dev/null \
     --env npm_config_registry=https://registry.npmjs.org/ \
     --env npm_config_audit=false \
     --env npm_config_fund=false \
@@ -918,11 +912,9 @@ acquire_run() {
     --mount "type=bind,source=$run_root/extract-pnpm,target=/tool,readonly" \
     --mount "type=bind,source=$install,target=/work" \
     --mount "type=bind,source=$store_install,target=/store" \
-    --mount "type=bind,source=$run_root/empty-user-npmrc,target=/config/user-npmrc,readonly" \
-    --mount "type=bind,source=$run_root/empty-global-npmrc,target=/config/global-npmrc,readonly" \
     --env HOME=/tmp/home \
-    --env npm_config_userconfig=/config/user-npmrc \
-    --env npm_config_globalconfig=/config/global-npmrc \
+    --env npm_config_userconfig=/dev/null \
+    --env npm_config_globalconfig=/dev/null \
     --entrypoint=/usr/local/bin/node \
     "$IMAGE" /tool/bin/pnpm.cjs install --prod --no-optional --offline --frozen-lockfile \
       --ignore-scripts --package-import-method=copy --store-dir=/store --reporter=silent

@@ -27,6 +27,13 @@
       "uploaded_artifacts": false,
       "containers_removed_before_pass": true
     },
+    "npm_config_policy": {
+      "userconfig": "/dev/null",
+      "globalconfig": "/dev/null",
+      "config_bind_mounts": false,
+      "npm_pack_source_workspace_mounted": false,
+      "pnpm_project_npmrc": "exact-upstream-copy"
+    },
     "start_diagnostics": {
       "stages": [
         "npm_pack",
@@ -44,6 +51,11 @@
         "permission",
         "invalid_argument",
         "exec",
+        "no_such_file",
+        "not_directory",
+        "readonly",
+        "cgroup",
+        "security",
         "unknown"
       ],
       "known_process_failure_codes": [
@@ -115,9 +127,9 @@
   },
   "verifier": {
     "launcher_normalization": "sha256 of launcher UTF-8 bytes after replacing only EXPECTED_LAUNCHER_SHA256=\"<64 lowercase hex>\" with the same assignment containing 64 zeroes",
-    "launcher_normalized_sha256": "9a04dedfe6a70f0b17b5d1e833451cc91a85e50544c31f68b98dad98e5781778",
-    "harness_sha256": "0afd03511d036686a63224a9f19abea08f39578e296a612ca39cba3065122aa6",
-    "verifier_sha256": "bac57f7d4a0100d8ee0733c9ad0a8e304f7927f0b7285c840b1143c3cbbb1d23"
+    "launcher_normalized_sha256": "2af6278373137ce58509aeb6e9aeeb85c5d0f85b811cccfc3f4c840f33453bed",
+    "harness_sha256": "cb9193c1ac9f34a1e43d5a4fc25760bc4b7e68a721acb9dcdba55d40b3770010",
+    "verifier_sha256": "1a092d9d3da0b8371bae0bd4232a7d26376f6f0e0466496d347fe53b9c82d894"
   },
   "test_scope": {
     "cases": [

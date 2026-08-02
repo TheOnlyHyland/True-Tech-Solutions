@@ -180,12 +180,19 @@ function validateManifest(manifest) {
         uploaded_artifacts: false,
         containers_removed_before_pass: true,
     }), "manifest_log_policy");
+    gate(same(manifest.container.npm_config_policy, {
+        userconfig: "/dev/null",
+        globalconfig: "/dev/null",
+        config_bind_mounts: false,
+        npm_pack_source_workspace_mounted: false,
+        pnpm_project_npmrc: "exact-upstream-copy",
+    }), "manifest_npm_config_policy");
     gate(same(manifest.container.start_diagnostics, {
         stages: ["npm_pack", "fetch", "install", "runtime", "verifier"],
         state_inspected_before_removal: true,
         state_inspect_seconds: 10,
         classifier_seconds: 5,
-        state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "unknown"],
+        state_error_categories: ["rlimit", "mount", "permission", "invalid_argument", "exec", "no_such_file", "not_directory", "readonly", "cgroup", "security", "unknown"],
         known_process_failure_codes: ["runtime_case_failed"],
         unknown_process_output_code: "<stage>_process_exit",
         raw_output_emitted: false,

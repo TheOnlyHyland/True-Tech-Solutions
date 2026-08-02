@@ -170,7 +170,13 @@ signature or independent build provenance.
 
 `npm pack` and the downloaded verified pnpm program execute only in disposable
 containers. pnpm fetch has network access and receives only the exact upstream
-package and lock inputs. Every fetch, install, extraction, and verifier container
+package and lock inputs. No synthetic npmrc file or `/config` target is created
+or mounted. npm and pnpm set user and global configuration to `/dev/null`; npm
+pack also passes both settings explicitly and receives no source workspace. The
+exact upstream project `.npmrc` is copied only into the pnpm project flow where
+the frozen lock expects it. The clean Docker invocation environment and absent
+npm-pack source workspace prevent host credentials or local npmrc discovery.
+Every fetch, install, extraction, and verifier container
 that writes a host bind output runs under the runner's captured numeric UID/GID,
 which must both be nonzero. No `nproc` limit is applied to these producers because
 Linux accounts it across every process using the shared runner UID; producer
@@ -213,7 +219,8 @@ workflow artifacts. A failed bounded start retains its container for a bounded
 private `.State` inspection before cleanup. Only the fixed `npm_pack`, `fetch`,
 `install`, `runtime`, and `verifier` stage roles reach the classifier. It emits
 fixed timeout, OOM, process-exit, malformed-inspect, unknown, or OCI `rlimit`,
-mount, permission, invalid-argument, and exec categories. Only the runtime
+mount, permission, invalid-argument, exec, `no_such_file`, `not_directory`,
+`readonly`, cgroup, and security categories. Only the runtime
 wrapper's exact `case_failed` record receives a more specific process-exit code;
 all other npm, Node, Docker, and process output remains private and maps to the
 stage's generic process-exit code. Each container is removed immediately after
