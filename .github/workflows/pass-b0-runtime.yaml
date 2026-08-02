@@ -66,3 +66,305 @@ jobs:
             CI="true" \
             GITHUB_REF="$GITHUB_REF" \
             scripts/pass-b-z2m-runtime
+
+      - name: Diagnose Docker OCI runtime shape after failure
+        if: failure()
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          umask 077
+
+          IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
+          PLATFORM="linux/amd64"
+          SAFE_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          EMPTY_ERROR_SHA256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          LABEL_KEY="true-family-pass-b0-oci-shape"
+          root=""
+          label_token=""
+
+          emit_fixed() {
+            printf 'label=diagnostic result=fail category=%s state_error_sha256=%s exit_code=-1 oom=false code=%s\n' \
+              "$1" "$EMPTY_ERROR_SHA256" "$2"
+          }
+
+          if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$RUNNER_TEMP" ] || [[ "$RUNNER_TEMP" != /* ]] || [[ "$RUNNER_TEMP" == *","* ]]; then
+            emit_fixed unknown runner_temp_invalid
+            exit 0
+          fi
+
+          export PATH="$SAFE_PATH"
+          export LANG="C.UTF-8"
+          export LC_ALL="C.UTF-8"
+          for required_command in chmod docker env id jq mkdir mktemp rm sha256sum timeout tr; do
+            if ! command -v "$required_command" >/dev/null 2>&1; then
+              emit_fixed unknown prerequisite_missing
+              exit 0
+            fi
+          done
+
+          root="$(mktemp -d "$RUNNER_TEMP/true-family-pass-b0-oci-shape.XXXXXXXX" 2>/dev/null || true)"
+          if [ -z "$root" ] || [ ! -d "$root" ]; then
+            emit_fixed unknown temp_root_unavailable
+            exit 0
+          fi
+          chmod 0700 "$root" >/dev/null 2>&1 || {
+            emit_fixed unknown temp_root_unavailable
+            rm -rf -- "$root" >/dev/null 2>&1 || true
+            exit 0
+          }
+
+          label_token="$(printf '%s' "$$:$RANDOM:$RANDOM:$root" | sha256sum 2>/dev/null || true)"
+          label_token="${label_token%% *}"
+          label_token="${label_token:0:32}"
+          if ! [[ "$label_token" =~ ^[0-9a-f]{32}$ ]]; then
+            emit_fixed unknown label_token_unavailable
+            rm -rf -- "$root" >/dev/null 2>&1 || true
+            exit 0
+          fi
+
+          docker_cmd() {
+            local seconds="$1"
+            shift
+            timeout --foreground --signal=TERM --kill-after=2s "$seconds" \
+              env -i \
+                PATH="$SAFE_PATH" \
+                HOME="$root/docker-home" \
+                DOCKER_CONFIG="$root/docker-config" \
+                LANG="C.UTF-8" \
+                LC_ALL="C.UTF-8" \
+                docker "$@"
+          }
+
+          cleanup() {
+            local container_id
+            set +e
+            if [ -n "$root" ] && [ -d "$root" ] && [ -n "$label_token" ]; then
+              docker_cmd 8s ps -aq --filter "label=$LABEL_KEY=$label_token" >"$root/cleanup.ids" 2>/dev/null
+              while IFS= read -r container_id; do
+                if [[ "$container_id" =~ ^[0-9a-f]{12,64}$ ]]; then
+                  docker_cmd 6s rm -f "$container_id" >/dev/null 2>&1 || true
+                fi
+              done <"$root/cleanup.ids"
+            fi
+            case "$root" in
+              "$RUNNER_TEMP"/true-family-pass-b0-oci-shape.*)
+                rm -rf -- "$root" >/dev/null 2>&1 || true
+                ;;
+            esac
+          }
+
+          on_signal() {
+            exit 0
+          }
+
+          trap cleanup EXIT
+          trap on_signal HUP INT TERM
+
+          if ! { mkdir -m 0700 "$root/docker-home" "$root/docker-config" "$root/out" && printf '{}\n' >"$root/docker-config/config.json"; } 2>/dev/null; then
+            emit_fixed unknown temp_setup_failed
+            exit 0
+          fi
+
+          host_uid="$(id -u 2>/dev/null || true)"
+          host_gid="$(id -g 2>/dev/null || true)"
+          if ! [[ "$host_uid" =~ ^[1-9][0-9]*$ ]] || ! [[ "$host_gid" =~ ^[1-9][0-9]*$ ]]; then
+            emit_fixed user host_identity_invalid
+            exit 0
+          fi
+
+          if ! docker_cmd 8s image inspect "$IMAGE" >/dev/null 2>"$root/image-inspect.err"; then
+            emit_fixed unknown image_unavailable
+            exit 0
+          fi
+
+          classify_error() {
+            local normalized
+            normalized="$(tr '[:upper:]' '[:lower:]' <"$1" 2>/dev/null || true)"
+            case "$normalized" in
+              *"working directory"*|*"workdir"*|*"chdir"*|*"current directory"*|*"cwd"*) printf '%s' workdir ;;
+              *"unable to find user"*|*"no matching entries in passwd file"*|*"user lookup"*|*"setuid"*|*"setgid"*) printf '%s' user ;;
+              *"rootfs"*|*"root filesystem"*|*"pivot_root"*|*"pivot root"*|*"chroot"*) printf '%s' rootfs ;;
+              *"no such file or directory"*|*"enoent"*) printf '%s' no_such_file ;;
+              *"not a directory"*|*"enotdir"*) printf '%s' not_directory ;;
+              *"read-only file system"*|*"erofs"*|*"readonly"*|*"read only"*) printf '%s' readonly ;;
+              *"rlimit"*|*"ulimit"*|*"setrlimit"*|*"resource limit"*) printf '%s' rlimit ;;
+              *"cgroup"*|*"/sys/fs/cgroup"*) printf '%s' cgroup ;;
+              *"apparmor"*|*"seccomp"*|*"selinux"*|*"landlock"*|*"no-new-privileges"*|*"no new privileges"*|*"security option"*|*"security profile"*) printf '%s' security ;;
+              *"mount"*|*"bind"*|*"volume"*) printf '%s' mount ;;
+              *"permission denied"*|*"operation not permitted"*|*"access denied"*|*"eacces"*|*"eperm"*) printf '%s' permission ;;
+              *"invalid argument"*|*"einval"*) printf '%s' invalid_argument ;;
+              *"nsexec"*) printf '%s' nsexec ;;
+              *"exec"*|*"executable"*|*"entrypoint"*) printf '%s' exec ;;
+              *"shim"*) printf '%s' shim ;;
+              *) printf '%s' unknown ;;
+            esac
+          }
+
+          SHAPE_ARGS=()
+          build_shape() {
+            local omit="$1"
+            SHAPE_ARGS=()
+            if [ "$omit" != "readonly" ]; then
+              SHAPE_ARGS+=(--read-only)
+            fi
+            SHAPE_ARGS+=(
+              --cap-drop=ALL
+              --security-opt=no-new-privileges
+              --pids-limit=64
+              --memory=768m
+              --memory-swap=768m
+              --cpus=1
+            )
+            if [ "$omit" != "rlimits" ]; then
+              SHAPE_ARGS+=(
+                --ulimit=core=0:0
+                --ulimit=fsize=268435456:268435456
+                --ulimit=nofile=1024:1024
+              )
+            fi
+            if [ "$omit" != "ipc" ]; then
+              SHAPE_ARGS+=(--ipc=private)
+            fi
+            if [ "$omit" != "cgroupns" ]; then
+              SHAPE_ARGS+=(--cgroupns=private)
+            fi
+            if [ "$omit" != "log" ]; then
+              SHAPE_ARGS+=(
+                --log-driver=local
+                --log-opt=max-size=1m
+                --log-opt=max-file=1
+              )
+            fi
+            if [ "$omit" != "init" ]; then
+              SHAPE_ARGS+=(--init)
+            fi
+            SHAPE_ARGS+=(--restart=no)
+            if [ "$omit" != "user" ]; then
+              SHAPE_ARGS+=(--user="$host_uid:$host_gid")
+            fi
+            if [ "$omit" != "tmpfs" ]; then
+              SHAPE_ARGS+=(--tmpfs="/tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777,uid=$host_uid,gid=$host_gid")
+            fi
+            if [ "$omit" != "output" ]; then
+              SHAPE_ARGS+=(
+                --mount "type=bind,source=$root/out,target=/out"
+                --workdir=/tmp
+              )
+            fi
+          }
+
+          probe_index=0
+          probe() {
+            local label="$1"
+            local omit="$2"
+            local control="$3"
+            local name prefix create_status start_status inspect_status state_valid
+            local exit_code oom state_status state_running result category category_file
+            local error_sha hash_line
+            local -a create_args
+
+            probe_index=$((probe_index + 1))
+            name="tf-b0-shape-${label_token:0:12}-$probe_index"
+            prefix="$root/probe-$probe_index"
+            create_status=0
+            start_status=-1
+            inspect_status=-1
+            state_valid=false
+            exit_code=-1
+            oom=false
+            state_status=""
+            state_running=true
+            result=fail
+            category=unknown
+            : >"$prefix.state-error"
+
+            create_args=(
+              create
+              --name "$name"
+              --label "$LABEL_KEY=$label_token"
+              --platform="$PLATFORM"
+              --pull=never
+            )
+            if [ "$control" != "true" ]; then
+              build_shape "$omit"
+              create_args+=("${SHAPE_ARGS[@]}")
+            fi
+            create_args+=(
+              --entrypoint=/usr/local/bin/node
+              "$IMAGE"
+              -e
+              "process.exit(0)"
+            )
+
+            docker_cmd 6s "${create_args[@]}" >/dev/null 2>"$prefix.create.err" || create_status="$?"
+            if [ "$create_status" -eq 0 ]; then
+              start_status=0
+              docker_cmd 6s start --attach "$name" >"$prefix.start.out" 2>"$prefix.start.err" || start_status="$?"
+              inspect_status=0
+              docker_cmd 4s inspect --format '{{json .State}}' "$name" >"$prefix.state.json" 2>"$prefix.inspect.err" || inspect_status="$?"
+              if [ "$inspect_status" -eq 0 ] && jq -e '
+                type == "object"
+                and (.Error | type == "string")
+                and (.ExitCode | type == "number")
+                and (.OOMKilled | type == "boolean")
+                and (.Status | type == "string")
+                and (.Running | type == "boolean")
+              ' "$prefix.state.json" >/dev/null 2>&1; then
+                jq -j '.Error' "$prefix.state.json" >"$prefix.state-error" 2>/dev/null || : >"$prefix.state-error"
+                exit_code="$(jq -r '.ExitCode' "$prefix.state.json" 2>/dev/null || printf '%s' -1)"
+                oom="$(jq -r '.OOMKilled' "$prefix.state.json" 2>/dev/null || printf '%s' false)"
+                state_status="$(jq -r '.Status' "$prefix.state.json" 2>/dev/null || true)"
+                state_running="$(jq -r '.Running' "$prefix.state.json" 2>/dev/null || printf '%s' true)"
+                if [[ "$exit_code" =~ ^-?[0-9]+$ ]] && [[ "$oom" =~ ^(true|false)$ ]] && [[ "$state_running" =~ ^(true|false)$ ]]; then
+                  state_valid=true
+                fi
+              fi
+            fi
+
+            hash_line="$(sha256sum "$prefix.state-error" 2>/dev/null || true)"
+            error_sha="${hash_line%% *}"
+            if ! [[ "$error_sha" =~ ^[0-9a-f]{64}$ ]]; then
+              error_sha="$EMPTY_ERROR_SHA256"
+            fi
+
+            if [ "$create_status" -eq 0 ] && [ "$start_status" -eq 0 ] && [ "$inspect_status" -eq 0 ] && [ "$state_valid" = "true" ] && [ "$exit_code" -eq 0 ] && [ "$oom" = "false" ] && [ "$state_status" = "exited" ] && [ "$state_running" = "false" ] && [ ! -s "$prefix.state-error" ]; then
+              result=pass
+              category=none
+            else
+              category_file="$prefix.state-error"
+              if [ ! -s "$category_file" ]; then
+                if [ "$create_status" -ne 0 ]; then
+                  category_file="$prefix.create.err"
+                elif [ "$start_status" -ne 0 ]; then
+                  category_file="$prefix.start.err"
+                elif [ "$inspect_status" -ne 0 ]; then
+                  category_file="$prefix.inspect.err"
+                fi
+              fi
+              category="$(classify_error "$category_file")"
+            fi
+
+            case "$category" in
+              none|rlimit|mount|permission|invalid_argument|exec|no_such_file|not_directory|readonly|cgroup|security|unknown|nsexec|shim|user|rootfs|workdir) ;;
+              *) category=unknown ;;
+            esac
+
+            docker_cmd 4s rm -f "$name" >/dev/null 2>&1 || true
+            printf 'label=%s result=%s category=%s state_error_sha256=%s exit_code=%s oom=%s\n' \
+              "$label" "$result" "$category" "$error_sha" "$exit_code" "$oom"
+          }
+
+          probe shared "" false
+          probe without_init init false
+          probe without_local_log log false
+          probe without_cgroupns cgroupns false
+          probe without_ipc ipc false
+          probe without_readonly readonly false
+          probe without_numeric_user user false
+          probe without_tmpfs tmpfs false
+          probe without_rlimits rlimits false
+          probe without_output_bind_workdir output false
+          probe minimal_control "" true
+          exit 0
