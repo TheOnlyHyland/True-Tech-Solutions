@@ -231,7 +231,7 @@ function same(left, right) {
 
 function harnessSmokeFailureCodes(source) {
     const helperNames = ["gate", "exactKeys", "readJson", "checkMode", "strictProxy", "bounded"];
-    const expectedLiteralCalls = {gate: 160, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
+    const expectedLiteralCalls = {gate: 161, exactKeys: 5, readJson: 6, checkMode: 2, strictProxy: 4, bounded: 4};
     const masked = source.replace(/(?:async\s+)?function\s+(?:gate|exactKeys|readJson|checkMode|strictProxy|bounded)\s*\([^)]*\)\s*\{/gu, "");
     const codes = [];
     for (const name of helperNames) {
@@ -2636,6 +2636,15 @@ async function selfTests(launcherPath, harnessText, sourceText, manifest, manife
     gate(wrongModeWrite >= 0 && wrongModeChmod > wrongModeWrite && wrongModeObserved > wrongModeChmod && acceptsMode > wrongModeObserved && wrongModeRejected > acceptsMode, "journal_mode_fixture_source");
     const detectorAcceptsMode = (mode) => (mode & 0o777) === 0o600;
     gate(detectorAcceptsMode(0o644 & ~0o077) && !detectorAcceptsMode(0o644), "journal_mode_fixture_source");
+    const extensionInventorySource = harnessText.slice(harnessText.indexOf("function extensionInventory"), harnessText.indexOf("function freshInventory"));
+    const postEntryGate = extensionInventorySource.indexOf('"source_post_entry_count"');
+    const postSourceCount = extensionInventorySource.indexOf('"source_post_source_count"');
+    const postSourceMetadata = extensionInventorySource.indexOf('"source_post_source_metadata"');
+    const postModulesLstat = extensionInventorySource.indexOf("fs.lstatSync(modulesPath)");
+    const postModulesSymlink = extensionInventorySource.indexOf('"source_post_modules_symlink"');
+    const postModulesTarget = extensionInventorySource.indexOf('fs.realpathSync(modulesPath) === fs.realpathSync("/z2m/node_modules"), "source_post_modules_target"');
+    gate(postEntryGate >= 0 && postSourceCount > postEntryGate && postSourceMetadata > postSourceCount && postModulesLstat > postSourceMetadata && postModulesSymlink > postModulesLstat && postModulesTarget > postModulesSymlink, "source_post_failure_source");
+    gate(!extensionInventorySource.includes('"source_inventory_post"'), "source_post_failure_source");
     for (const code of [...harnessFailureCodes, "case_failed", "internal_failure", "future_failure", "a".repeat(40)]) {
         const token = runtimeFailureToken(code);
         gate(Buffer.byteLength(token, "utf8") <= RUNTIME_FAILURE_MAX_BYTES, "runtime_failure_self_test");

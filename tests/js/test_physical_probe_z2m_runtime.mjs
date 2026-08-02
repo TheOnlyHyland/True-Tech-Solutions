@@ -512,15 +512,17 @@ function extensionInventory(dataRoot, phase, sourceCount = 1) {
             gate(metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1, "source_inventory_pre");
         }
     } else {
-        gate(entries.length === sourceCount + 1 && entries.some((entry) => entry.name === "node_modules"), "source_inventory_post");
+        gate(entries.length === sourceCount + 1 && entries.some((entry) => entry.name === "node_modules"), "source_post_entry_count");
         const sources = entries.filter((entry) => /\.(?:cjs|mjs|js)$/u.test(entry.name));
-        gate(sources.length === sourceCount, "source_inventory_post");
+        gate(sources.length === sourceCount, "source_post_source_count");
         for (const entry of sources) {
             const source = fs.lstatSync(path.join(root, entry.name));
-            gate(source.isFile() && !source.isSymbolicLink() && source.nlink === 1, "source_inventory_post");
+            gate(source.isFile() && !source.isSymbolicLink() && source.nlink === 1, "source_post_source_metadata");
         }
-        const modules = fs.lstatSync(path.join(root, "node_modules"));
-        gate(modules.isSymbolicLink() && fs.realpathSync(path.join(root, "node_modules")) === fs.realpathSync("/z2m/node_modules"), "source_inventory_post");
+        const modulesPath = path.join(root, "node_modules");
+        const modules = fs.lstatSync(modulesPath);
+        gate(modules.isSymbolicLink(), "source_post_modules_symlink");
+        gate(fs.realpathSync(modulesPath) === fs.realpathSync("/z2m/node_modules"), "source_post_modules_target");
     }
     return entries.length;
 }

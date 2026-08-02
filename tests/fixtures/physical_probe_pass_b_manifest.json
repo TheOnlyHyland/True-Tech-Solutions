@@ -267,8 +267,8 @@
       "verifier_failed"
     ],
     "launcher_normalized_sha256": "558d36215f36e7d051bc5cf6a4bf685322fcca804ec8b7c97cf74ee56c6bd194",
-    "harness_sha256": "0d81db40b60cdc42a6eef334b9a006c2f6c352b5e6fe702859f0ac6d31451a4d",
-    "verifier_sha256": "729a9b6e8e7420035bf4cf30b0f70978d61f0912dae99f0305ec80e4c491e455"
+    "harness_sha256": "a963be6dbef26c8ab6cdce1ffd862bd91cc30ee3739527bf3d4a441621a97c14",
+    "verifier_sha256": "fb1b92c806fead6a54997514834658dedbc8cb794aef991b5a59d5143755c30c"
   },
   "test_scope": {
     "cases": [
