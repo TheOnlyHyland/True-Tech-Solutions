@@ -194,9 +194,13 @@ only read-only input mounts plus private tmpfs data and temporary directories.
 Immutable mount directories are mode `0555` and their files are mode `0444`,
 except the read-only runner which is mode `0555`. Ownership, traversal,
 readability, and nonwritability are asserted before mounting. Docker-backed
-self-check additionally has the host-UID producer create an output and proves
-UID 65532 can read but cannot modify its sealed result. Dedicated writable work,
-output, and store trees contain no verifier source. It exercises the real
+self-check additionally gives both probe containers `pids=64`, 256 MiB
+memory/swap, one CPU, and `nofile=1024`; it is testing ownership and mounts, not
+minimum Node.js resources. The host-UID producer creates an output and UID 65532
+must read but cannot modify its sealed result. If either attached process fails,
+bounded private `.State` inspection maps only allowlisted tokens, status, OOM,
+or state-error classes to sanitized codes before cleanup. Dedicated writable
+work, output, and store trees contain no verifier source. It exercises the real
 Zigbee2MQTT EventBus,
 disconnected Mqtt object, ExternalExtensions/ExternalJS loader, and only the
 Controller add/remove/get/enable API shell. It does not construct, start, or stop

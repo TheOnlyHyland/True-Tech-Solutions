@@ -18,6 +18,15 @@
     "producer_user": "host-runner-numeric-nonroot",
     "producer_nproc_limit": 4096,
     "runtime_user": "65532:65532",
+    "permission_self_check_limits": {
+      "pids": 64,
+      "memory_bytes": 268435456,
+      "memory_swap_bytes": 268435456,
+      "nano_cpus": 1000000000,
+      "nofile": 1024,
+      "producer_nproc": 4096,
+      "runtime_nproc": 64
+    },
     "log_policy": {
       "driver": "local",
       "options": {
@@ -91,9 +100,9 @@
   },
   "verifier": {
     "launcher_normalization": "sha256 of launcher UTF-8 bytes after replacing only EXPECTED_LAUNCHER_SHA256=\"<64 lowercase hex>\" with the same assignment containing 64 zeroes",
-    "launcher_normalized_sha256": "dff8ac6fe9d90f5bd756f01908f5fea34991721bd9f3d71a3fee6b748d1b11ff",
-    "harness_sha256": "02c45d3a4edac4dc5cde5810a422c0787f66285eed190822bbf7fe3710fa1c44",
-    "verifier_sha256": "38e05966010dcd443d2f8b9d89dbcc3dfc0d52a3ed9c6f01fe7054fa46a76307"
+    "launcher_normalized_sha256": "084548981f35cb543eabd542709173b9adfec351ba61986e3e8729b9e7a30f2a",
+    "harness_sha256": "67d82840241bd5955970a0f175570d6d622eb93538ce1c16f7546e7c0b7e33a0",
+    "verifier_sha256": "7b85404645c1ed3986f3424f2de054334b3d15af9afbe3b18372a65c66989dd8"
   },
   "test_scope": {
     "cases": [
