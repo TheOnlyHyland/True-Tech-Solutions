@@ -2,14 +2,16 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-EXPECTED_LAUNCHER_SHA256="be79b17478a05074cbb10234453a854548dc99d84c4b778572b5c9d6890d5fa0"
+EXPECTED_LAUNCHER_SHA256="390f3613d43b9e15b50ce921fb8981e95d184f97c4a8a419f2eafd2b28a1d1be"
 NODE_IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 MOSQUITTO_IMAGE="docker.io/library/eclipse-mosquitto@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd"
 LABEL_KEY="true-family-pass-b1a"
 RUN_WATCHDOG_SECONDS=1920
 WORKFLOW_TIMEOUT_SECONDS=2700
 LONGEST_BOUNDED_COMMAND_SECONDS=270
-FAILURE_RECORD='{"failure_code":"verification_failed","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v1"}'
+FAILURE_SCHEMA="true-family-pass-b1a-launcher-failure-v2"
+FAILURE_CODE="verification_failed"
+FAILURE_STAGE="startup"
 
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
 if [[ "$SCRIPT_SOURCE" == */* ]]; then
@@ -33,6 +35,42 @@ B0_MANIFEST="$REPO_ROOT/tests/fixtures/physical_probe_pass_b_manifest.json"
 B0_RUNTIME="$REPO_ROOT/tests/js/test_physical_probe_z2m_runtime.mjs"
 B0_VERIFIER="$REPO_ROOT/tests/js/verify_physical_probe_z2m_runtime.mjs"
 
+failure_stage_valid() {
+    local stage="${1:-}"
+    case "$stage" in
+        startup|environment|private_root|static_shell|static_verifier|static_python|pull_node|pull_mosquitto|inspect_node|inspect_mosquitto|compare|combine|final_scan_one|final_scan_two|cleanup|finalize)
+            return 0
+            ;;
+    esac
+    [[ "$stage" =~ ^replica_[12]_(prepare|networks|setup|broker|install|gateway|client_before|observer_before|readback_before|backend_before|restart_one|after_restart|observer_after|client_after|restart_two|final_auth|final_backend|final_readback|inspect|verify|redaction|cleanup)$ ]]
+}
+
+failure_stage_projection() {
+    local candidate="${1:-startup}"
+    if failure_stage_valid "$candidate"; then
+        printf '%s' "$candidate"
+    else
+        printf '%s' "unknown"
+    fi
+}
+
+set_failure_stage() {
+    local candidate="${1:-}"
+    if failure_stage_valid "$candidate"; then
+        FAILURE_STAGE="$candidate"
+        return 0
+    fi
+    FAILURE_STAGE="unknown"
+    return 1
+}
+
+failure_record() {
+    local stage
+    stage="$(failure_stage_projection "${1:-}")"
+    printf '{"failure_code":"%s","failure_stage":"%s","result":"fail","schema":"%s"}\n' \
+        "$FAILURE_CODE" "$stage" "$FAILURE_SCHEMA"
+}
+
 shell_self_check() {
     [[ "$NODE_IMAGE" =~ ^docker\.io/library/node:20\.19\.2-bookworm-slim@sha256:[0-9a-f]{64}$ ]]
     [[ "$MOSQUITTO_IMAGE" =~ ^docker\.io/library/eclipse-mosquitto@sha256:[0-9a-f]{64}$ ]]
@@ -42,7 +80,13 @@ shell_self_check() {
     [[ "$LONGEST_BOUNDED_COMMAND_SECONDS" -eq 270 ]]
     [[ $((WORKFLOW_TIMEOUT_SECONDS - RUN_WATCHDOG_SECONDS)) -eq 780 ]]
     [[ $((WORKFLOW_TIMEOUT_SECONDS - RUN_WATCHDOG_SECONDS - LONGEST_BOUNDED_COMMAND_SECONDS)) -eq 510 ]]
-    [[ "$FAILURE_RECORD" == '{"failure_code":"verification_failed","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v1"}' ]]
+    [[ "$FAILURE_SCHEMA" == "true-family-pass-b1a-launcher-failure-v2" && "$FAILURE_CODE" == "verification_failed" ]]
+    [[ "$(failure_stage_projection)" == "startup" ]]
+    [[ "$(failure_stage_projection "replica_2_final_readback")" == "replica_2_final_readback" ]]
+    [[ "$(failure_stage_projection $'arbitrary/path\nvalue')" == "unknown" ]]
+    [[ "$(failure_record)" == '{"failure_code":"verification_failed","failure_stage":"startup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
+    [[ "$(failure_record "replica_1_setup")" == '{"failure_code":"verification_failed","failure_stage":"replica_1_setup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
+    [[ "$(failure_record "not_allowlisted")" == '{"failure_code":"verification_failed","failure_stage":"unknown","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
     local required
     for required in "$MANIFEST" "$RUNTIME" "$VERIFIER" "$WORKFLOW" "$ARTIFACT" "$PREFLIGHT" "$PREFLIGHT_FIXTURE" "$PREFLIGHT_TEST" "$B0_LAUNCHER" "$B0_WORKFLOW" "$B0_MANIFEST" "$B0_RUNTIME" "$B0_VERIFIER"; do
         [[ -f "$required" && ! -L "$required" ]]
@@ -66,7 +110,7 @@ if [[ "${1:-}" == "--self-check" ]]; then
 fi
 
 if ! [[ $# -eq 0 ]]; then
-    printf '%s\n' "$FAILURE_RECORD"
+    failure_record "$FAILURE_STAGE"
     exit 1
 fi
 umask 077
@@ -186,7 +230,7 @@ failure_exit() {
         if [[ -n "$ROOT" && ( -e "$ROOT" || -L "$ROOT" ) ]]; then
             prepare_root_for_removal "$ROOT" >/dev/null 2>&1
         fi
-        printf '%s\n' "$FAILURE_RECORD" >&3
+        failure_record "$FAILURE_STAGE" >&3
     fi
     exit "$status"
 }
@@ -344,6 +388,15 @@ wait_for_private_file() {
 
 run_replica() {
     local ordinal="$1"
+    case "$ordinal" in
+        1|2)
+            ;;
+        *)
+            FAILURE_STAGE="unknown"
+            return 1
+            ;;
+    esac
+    set_failure_stage "replica_${ordinal}_prepare"
     local replica="$ROOT/replica-$ordinal"
     local credentials="$replica/credentials"
     local generated="$replica/generated"
@@ -381,6 +434,7 @@ run_replica() {
     host_for 60 node "$VERIFIER" --generate-admin-credentials "$MANIFEST" "$credentials" >"$logs/generate-admin-credentials.json"
     host_for 60 node "$VERIFIER" --write-broker-config "$MANIFEST" "$config/pass-b1a.conf" >"$logs/write-config.json"
 
+    set_failure_stage "replica_${ordinal}_networks"
     docker_for 30 network create \
         --driver=bridge \
         --internal \
@@ -396,6 +450,7 @@ run_replica() {
         --label "$LABEL_KEY-plane=frontend" \
         "$frontend" >/dev/null
 
+    set_failure_stage "replica_${ordinal}_setup"
     client_options="$(container_security_client)"
     # The option helper emits one trusted argument per line; newline-only IFS preserves each argument.
     docker_for 30 create \
@@ -419,6 +474,7 @@ run_replica() {
     host_for 60 node "$VERIFIER" --bind-admin-clientid "$data/dynamic-security.json" "$MANIFEST" >"$logs/bind-admin.json"
     host_for 60 node "$VERIFIER" --verify-bootstrap "$data/dynamic-security.json" "$credentials/admin.json" "$MANIFEST" >"$logs/verify-bootstrap.json"
 
+    set_failure_stage "replica_${ordinal}_broker"
     broker_options="$(container_security_broker)"
     docker_for 30 create \
         $broker_options \
@@ -439,6 +495,7 @@ run_replica() {
     docker_for 30 start "$broker_name" >/dev/null
     docker_for 30 inspect "$broker_name" >"$inspect/broker-before.json"
 
+    set_failure_stage "replica_${ordinal}_install"
     create_node_container "$install_name" install "$backend" - install broker 240 "$ordinal" \
         --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly" \
         --mount "type=bind,src=$generated,dst=/out"
@@ -446,12 +503,14 @@ run_replica() {
     docker_for 30 inspect "$install_name" >"$inspect/install.json"
     host_for 60 node "$VERIFIER" --verify-credential-set "$MANIFEST" "$credentials" "$generated" >"$logs/verify-credential-set.json"
 
+    set_failure_stage "replica_${ordinal}_gateway"
     create_node_container "$gateway_name" gateway "$frontend" gateway gateway broker 1200 "$ordinal" \
         --mount "type=bind,src=$status,dst=/status"
     docker_for 30 network connect "$backend" "$gateway_name"
     docker_for 30 start "$gateway_name" >/dev/null
     wait_for_private_file "$status/gateway-startup.json"
 
+    set_failure_stage "replica_${ordinal}_client_before"
     create_node_container "$client_before_name" client "$frontend" - client_before gateway 240 "$ordinal" \
         --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly" \
         --mount "type=bind,src=$ARTIFACT,dst=/input/true_family_brt_probe.mjs,readonly" \
@@ -459,6 +518,7 @@ run_replica() {
     docker_for 30 start "$client_before_name" >/dev/null
     wait_for_private_file "$coord/source-ready.json"
 
+    set_failure_stage "replica_${ordinal}_observer_before"
     create_node_container "$observer_before_name" observer "$backend" - observer_before broker 120 "$ordinal" \
         --mount "type=bind,src=$generated/observer-before.json,dst=/input/observer.json,readonly" \
         --mount "type=bind,src=$ARTIFACT,dst=/input/true_family_brt_probe.mjs,readonly" \
@@ -469,21 +529,25 @@ run_replica() {
     docker_for 30 inspect "$client_before_name" >"$inspect/client-before.json"
     docker_for 30 inspect "$observer_before_name" >"$inspect/observer-before.json"
 
+    set_failure_stage "replica_${ordinal}_readback_before"
     create_node_container "$readback_before_name" readback "$backend" - readback_before broker 180 "$ordinal" \
         --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly"
     docker_for 210 start -a "$readback_before_name" >"$evidence/readback-before.json" 2>"$logs/readback-before.stderr"
     docker_for 30 inspect "$readback_before_name" >"$inspect/readback-before.json"
 
+    set_failure_stage "replica_${ordinal}_backend_before"
     create_node_container "$backend_before_name" backend "$backend" - backend_before broker 180 "$ordinal" \
         --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly"
     docker_for 210 start -a "$backend_before_name" >"$evidence/backend-before.json" 2>"$logs/backend-before.stderr"
     docker_for 30 inspect "$backend_before_name" >"$inspect/backend-before.json"
 
+    set_failure_stage "replica_${ordinal}_restart_one"
     docker_for 30 stop --time 20 "$broker_name" >/dev/null
     docker_for 30 inspect "$broker_name" >"$inspect/broker-stopped.json"
     docker_for 30 start "$broker_name" >/dev/null
     docker_for 30 inspect "$broker_name" >"$inspect/broker-after.json"
 
+    set_failure_stage "replica_${ordinal}_after_restart"
     create_node_container "$readiness_after_name" readiness "$backend" - readiness_after broker 30 "$ordinal" \
         --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly"
     docker_for 60 start -a "$readiness_after_name" >"$evidence/readiness-after.json" 2>"$logs/readiness-after.stderr"
@@ -501,12 +565,14 @@ run_replica() {
     docker_for 30 inspect "$readback_after_name" >"$inspect/readback-after.json"
     host_for 60 node "$VERIFIER" --verify-credential-set "$MANIFEST" "$credentials" "$generated" "$observer_after_output" >"$logs/verify-credential-set-after.json"
 
+    set_failure_stage "replica_${ordinal}_observer_after"
     create_node_container "$observer_after_name" observer "$backend" - observer_after broker 120 "$ordinal" \
         --mount "type=bind,src=$observer_after_output/observer-after.json,dst=/input/observer.json,readonly" \
         --mount "type=bind,src=$coord,dst=/coord"
     docker_for 30 start "$observer_after_name" >/dev/null
     wait_for_private_file "$coord/observer-after-ready.json"
 
+    set_failure_stage "replica_${ordinal}_client_after"
     create_node_container "$client_after_name" client "$frontend" - client_after gateway 180 "$ordinal" \
         --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly"
     docker_for 210 start -a "$client_after_name" >"$evidence/client-after.json" 2>"$logs/client-after.stderr"
@@ -515,11 +581,13 @@ run_replica() {
     docker_for 30 inspect "$client_after_name" >"$inspect/client-after.json"
     docker_for 30 inspect "$observer_after_name" >"$inspect/observer-after.json"
 
+    set_failure_stage "replica_${ordinal}_restart_two"
     docker_for 30 stop --time 20 "$broker_name" >/dev/null
     docker_for 30 inspect "$broker_name" >"$inspect/broker-stopped-final.json"
     docker_for 30 start "$broker_name" >/dev/null
     docker_for 30 inspect "$broker_name" >"$inspect/broker-final.json"
 
+    set_failure_stage "replica_${ordinal}_final_auth"
     create_node_container "$readiness_final_name" readiness "$backend" - readiness_final broker 30 "$ordinal" \
         --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly"
     docker_for 60 start -a "$readiness_final_name" >"$evidence/readiness-final.json" 2>"$logs/readiness-final.stderr"
@@ -530,23 +598,28 @@ run_replica() {
     docker_for 210 start -a "$client_final_name" >"$evidence/client-final.json" 2>"$logs/client-final.stderr"
     docker_for 30 inspect "$client_final_name" >"$inspect/client-final.json"
 
+    set_failure_stage "replica_${ordinal}_final_backend"
     create_node_container "$backend_final_name" backend "$backend" - backend_final broker 180 "$ordinal" \
         --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly"
     docker_for 210 start -a "$backend_final_name" >"$evidence/backend-final.json" 2>"$logs/backend-final.stderr"
     docker_for 30 inspect "$backend_final_name" >"$inspect/backend-final.json"
 
+    set_failure_stage "replica_${ordinal}_final_readback"
     create_node_container "$readback_final_name" readback "$backend" - readback_final broker 180 "$ordinal" \
         --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly"
     docker_for 210 start -a "$readback_final_name" >"$evidence/readback-final.json" 2>"$logs/readback-final.stderr"
     docker_for 30 inspect "$readback_final_name" >"$inspect/readback-final.json"
+    set_failure_stage "replica_${ordinal}_inspect"
     docker_for 30 inspect "$gateway_name" >"$inspect/gateway.json"
     docker_for 30 network inspect "$backend" >"$inspect/network-backend.json"
     docker_for 30 network inspect "$frontend" >"$inspect/network-frontend.json"
     docker_for 30 logs "$broker_name" >"$logs/broker.log" 2>&1
     docker_for 30 logs "$gateway_name" >"$logs/gateway.log" 2>&1
 
+    set_failure_stage "replica_${ordinal}_verify"
     host_for 90 node "$VERIFIER" --verify-replica "$replica" "$MANIFEST" "$ARTIFACT" >"$evidence/replica.json"
 
+    set_failure_stage "replica_${ordinal}_redaction"
     docker_for 30 stop --time 20 "$gateway_name" >/dev/null
     docker_for 30 stop --time 20 "$broker_name" >/dev/null
     docker_for 30 inspect "$broker_name" >"$inspect/broker-redaction-stopped.json"
@@ -554,6 +627,7 @@ run_replica() {
         "$data" "$inspect/broker-redaction-stopped.json" "$logs" "$inspect" "$evidence" \
         "$config/pass-b1a.conf" "$status" "$coord" >/dev/null
 
+    set_failure_stage "replica_${ordinal}_cleanup"
     docker_for 30 rm -fv \
         "$setup_name" "$broker_name" "$gateway_name" "$install_name" \
         "$client_before_name" "$observer_before_name" "$readback_before_name" \
@@ -565,28 +639,39 @@ run_replica() {
     [[ -z "$(docker_for 30 network ls -q --filter "label=$LABEL_KEY=$RUN_ID" --filter "label=$LABEL_KEY-replica=$ordinal")" ]]
 }
 
+set_failure_stage "environment"
 validate_environment
+set_failure_stage "private_root"
 create_private_root
 start_watchdog
+set_failure_stage "static_shell"
 shell_self_check >"$ROOT/shell-self-check.json"
+set_failure_stage "static_verifier"
 host_for 90 node "$VERIFIER" --self-check \
     "$MANIFEST" "$SCRIPT_DIR/pass-b1-broker" "$RUNTIME" "$VERIFIER" "$WORKFLOW" \
     "$ARTIFACT" "$PREFLIGHT" "$PREFLIGHT_FIXTURE" "$PREFLIGHT_TEST" "$B0_LAUNCHER" "$B0_WORKFLOW" \
     "$B0_MANIFEST" "$B0_RUNTIME" "$B0_VERIFIER" >"$ROOT/verifier-self-check.json"
+set_failure_stage "static_python"
 host_for 90 env -i PATH="$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 PYTHONNOUSERSITE=1 \
     python3 "$REPO_ROOT/tests/test_physical_probe_preflight.py" >/dev/null 2>&1
 
+set_failure_stage "pull_node"
 docker_for 270 pull --platform linux/amd64 "$NODE_IMAGE" >/dev/null
+set_failure_stage "pull_mosquitto"
 docker_for 270 pull --platform linux/amd64 "$MOSQUITTO_IMAGE" >/dev/null
+set_failure_stage "inspect_node"
 docker_for 30 image inspect "$NODE_IMAGE" >"$ROOT/node-image.json"
-docker_for 30 image inspect "$MOSQUITTO_IMAGE" >"$ROOT/mosquitto-image.json"
 host_for 60 node "$VERIFIER" --validate-image-inspect node "$ROOT/node-image.json" "$MANIFEST" >/dev/null
+set_failure_stage "inspect_mosquitto"
+docker_for 30 image inspect "$MOSQUITTO_IMAGE" >"$ROOT/mosquitto-image.json"
 host_for 60 node "$VERIFIER" --validate-image-inspect mosquitto "$ROOT/mosquitto-image.json" "$MANIFEST" >/dev/null
 
 run_replica 1
 run_replica 2
+set_failure_stage "compare"
 host_for 30 cmp -s "$ROOT/replica-1/evidence/replica.json" "$ROOT/replica-2/evidence/replica.json"
 
+set_failure_stage "combine"
 COMMIT="$(host_for 30 git -C "$REPO_ROOT" rev-parse HEAD)"
 TREE="$(host_for 30 git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')"
 host_for 90 node "$VERIFIER" --combine-replicas \
@@ -596,12 +681,14 @@ host_for 90 node "$VERIFIER" --combine-replicas \
     "$ARTIFACT" "$PREFLIGHT" "$PREFLIGHT_FIXTURE" "$PREFLIGHT_TEST" \
     "$COMMIT" "$TREE" "$GITHUB_WORKFLOW_REF" >"$ROOT/base-evidence.json"
 
+set_failure_stage "final_scan_one"
 host_for 90 node "$VERIFIER" --scan-redaction "$ARTIFACT" "$MANIFEST" "$ROOT/replica-1" \
     "$ROOT/replica-1/data" "$ROOT/replica-1/inspect/broker-redaction-stopped.json" \
     "$ROOT/replica-1/logs" "$ROOT/replica-1/inspect" "$ROOT/replica-1/evidence" \
     "$ROOT/replica-1/config/pass-b1a.conf" "$ROOT/replica-1/status" "$ROOT/replica-1/coord" \
     "$ROOT/base-evidence.json" "$ROOT/node-image.json" "$ROOT/mosquitto-image.json" \
     "$ROOT/shell-self-check.json" "$ROOT/verifier-self-check.json" >/dev/null
+set_failure_stage "final_scan_two"
 host_for 90 node "$VERIFIER" --scan-redaction "$ARTIFACT" "$MANIFEST" "$ROOT/replica-2" \
     "$ROOT/replica-2/data" "$ROOT/replica-2/inspect/broker-redaction-stopped.json" \
     "$ROOT/replica-2/logs" "$ROOT/replica-2/inspect" "$ROOT/replica-2/evidence" \
@@ -609,9 +696,11 @@ host_for 90 node "$VERIFIER" --scan-redaction "$ARTIFACT" "$MANIFEST" "$ROOT/rep
     "$ROOT/base-evidence.json" "$ROOT/node-image.json" "$ROOT/mosquitto-image.json" \
     "$ROOT/shell-self-check.json" "$ROOT/verifier-self-check.json" >/dev/null
 
+set_failure_stage "cleanup"
 BASE_EVIDENCE="$(<"$ROOT/base-evidence.json")"
 [[ -n "$BASE_EVIDENCE" ]]
 cleanup_all
+set_failure_stage "finalize"
 FINAL_EVIDENCE="$(host_for 60 node "$VERIFIER" --finalize-cleanup "$MANIFEST" <<<"$BASE_EVIDENCE")"
 [[ -n "$FINAL_EVIDENCE" ]]
 

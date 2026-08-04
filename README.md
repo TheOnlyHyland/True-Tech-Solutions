@@ -466,7 +466,11 @@ not a mathematically guaranteed external-timeout cleanup reserve and an overall
 GitHub timeout is not cleanup proof. Host commands are bounded, the final-output descriptor is closed in
 children, and failure handling attempts private-root removal even when resource
 cleanup or its read-back fails. Seccomp is an observed hardening setting, not a
-complete host or kernel isolation boundary. No workflow artifact is uploaded.
+complete host or kernel isolation boundary. On failure, only the launcher emits
+one small canonical `true-family-pass-b1a-launcher-failure-v2` record containing
+the fixed failure code and one finite allowlisted `failure_stage`; invalid stage
+state projects to `unknown`. No command, status, path, log, stderr, random value,
+or other diagnostic field is emitted. No workflow artifact is uploaded.
 
 The effective policy is explicitly composite. Dynamic Security provides broker
 authentication, successful delivery, and its representable defense-in-depth ACL

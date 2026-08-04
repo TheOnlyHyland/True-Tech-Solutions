@@ -29,6 +29,22 @@ const REPLICA_SCHEMA = "true-family-pass-b1a-replica-v1";
 const FINAL_SCHEMA = "true-family-pass-b1a-composite-policy-foundation-v1";
 const BASE_SCHEMA = "true-family-pass-b1a-base-evidence-v1";
 const FAILURE_SCHEMA = "true-family-pass-b1a-verifier-failure-v1";
+const LAUNCHER_FAILURE_SCHEMA = "true-family-pass-b1a-launcher-failure-v2";
+const LAUNCHER_FAILURE_CODE = "verification_failed";
+const LAUNCHER_TOP_LEVEL_FAILURE_STAGES = [
+    "startup", "environment", "private_root", "static_shell", "static_verifier", "static_python",
+    "pull_node", "pull_mosquitto", "inspect_node", "inspect_mosquitto", "compare", "combine",
+    "final_scan_one", "final_scan_two", "cleanup", "finalize",
+];
+const LAUNCHER_REPLICA_FAILURE_PHASES = [
+    "prepare", "networks", "setup", "broker", "install", "gateway", "client_before", "observer_before",
+    "readback_before", "backend_before", "restart_one", "after_restart", "observer_after", "client_after",
+    "restart_two", "final_auth", "final_backend", "final_readback", "inspect", "verify", "redaction", "cleanup",
+];
+const LAUNCHER_FAILURE_STAGES = new Set([
+    ...LAUNCHER_TOP_LEVEL_FAILURE_STAGES,
+    ...[1, 2].flatMap((ordinal) => LAUNCHER_REPLICA_FAILURE_PHASES.map((phase) => `replica_${ordinal}_${phase}`)),
+]);
 const CLASSIFICATION = "ci-only-same-repository-non-authoritative-composite-policy-foundation";
 const RUNTIME_HARNESS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "test_physical_probe_broker_runtime.mjs");
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
@@ -74,6 +90,19 @@ function exactKeys(value, keys, code) {
 
 function same(left, right) {
     return canonical(left) === canonical(right);
+}
+
+function launcherFailureStageProjection(candidate = "startup") {
+    return typeof candidate === "string" && LAUNCHER_FAILURE_STAGES.has(candidate) ? candidate : "unknown";
+}
+
+function launcherFailureRecord(candidate) {
+    return `${canonical({
+        schema: LAUNCHER_FAILURE_SCHEMA,
+        result: "fail",
+        failure_code: LAUNCHER_FAILURE_CODE,
+        failure_stage: launcherFailureStageProjection(candidate),
+    })}\n`;
 }
 
 function sha256File(file) {
@@ -486,7 +515,8 @@ export function validateManifest(manifest) {
     exactKeys(manifest.topics, ["arm_request", "ack_request", "ready", "status", "result", "response", "ack_response", "source", "backup", "candidate_friendly", "candidate_friendly_set", "candidate_friendly_descendant", "candidate_ieee", "candidate_ieee_descendant", "native_outside", "native_retained_sentinel", "request_topics"], "manifest_topics_shape");
     exactKeys(manifest.source_privacy, ["synthetic_publisher", "real_externaljs_path", "inventory_shape", "principals", "denied_filters", "source_canary", "raw_source_emitted", "retained_clear", "restart_old_replay_expected"], "manifest_source_shape");
     exactKeys(manifest.artifact, ["path", "filename", "byte_length", "sha256"], "manifest_artifact_shape");
-    exactKeys(manifest.evidence, ["runtime_schema", "replica_schema", "gateway_startup_schema", "final_schema", "failure_schema", "replicas", "normalized_byte_identical", "uploaded_artifacts", "stdout_records", "raw_stderr", "max_runtime_bytes", "max_final_bytes", "claim_limits"], "manifest_evidence_shape");
+    exactKeys(manifest.evidence, ["runtime_schema", "replica_schema", "gateway_startup_schema", "final_schema", "failure_schema", "failure_record", "replicas", "normalized_byte_identical", "uploaded_artifacts", "stdout_records", "raw_stderr", "max_runtime_bytes", "max_final_bytes", "claim_limits"], "manifest_evidence_shape");
+    exactKeys(manifest.evidence.failure_record, ["exact_keys", "failure_code", "top_level_stages", "replica_ordinals", "replica_phases", "invalid_stage", "only_diagnostic_field", "max_bytes"], "manifest_failure_record_shape");
     exactKeys(manifest.cleanup, ["label", "root_pattern", "root_mode", "find_mode", "symlinks_followed", "files_chmodded", "zero_labeled_containers_before_delete", "zero_labeled_networks_before_delete", "run_watchdog_seconds", "workflow_timeout_seconds", "longest_bounded_command_seconds", "nominal_headroom_if_watchdog_started_at_job_start_seconds", "nominal_headroom_after_longest_command_seconds", "workflow_timeout_cleanup_guaranteed", "private_root_removal_attempted_after_cleanup_failure", "credentials_absent_before_pass", "root_absent_before_pass"], "manifest_cleanup_shape");
     exactKeys(manifest.bindings, ["launcher_normalization", "launcher_normalized_sha256", "runtime_harness_sha256", "verifier_sha256", "workflow_sha256", "preflight_source_sha256", "preflight_fixture_sha256", "preflight_test_sha256", "b0_preservation"], "manifest_bindings_shape");
     exactKeys(manifest.bindings.b0_preservation, ["launcher_sha256", "workflow_sha256", "manifest_sha256", "runtime_harness_sha256", "verifier_sha256", "preflight_fixture_sha256"], "manifest_b0_shape");
@@ -644,7 +674,18 @@ export function validateManifest(manifest) {
     gate(manifest.source_privacy.source_canary === "MANDATORY RESIDUAL WRITER FENCE: a future preflight must give Zigbee2MQTT a", "manifest_source_canary");
     gate(manifest.artifact.path === "custom_components/true_family/probe/true_family_brt_probe.mjs" && manifest.artifact.filename === "true_family_brt_probe.mjs" && manifest.artifact.byte_length === 164_691 && manifest.artifact.sha256 === "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1", "manifest_artifact");
     gate(same(manifest.evidence.claim_limits, CLAIM_LIMITS), "manifest_claim_limits");
-    gate(manifest.evidence.runtime_schema === RUNTIME_SCHEMA && manifest.evidence.replica_schema === REPLICA_SCHEMA && manifest.evidence.gateway_startup_schema === "true-family-pass-b1a-gateway-startup-v1" && manifest.evidence.final_schema === FINAL_SCHEMA && manifest.evidence.failure_schema === "true-family-pass-b1a-launcher-failure-v1", "manifest_evidence_schemas");
+    gate(manifest.evidence.runtime_schema === RUNTIME_SCHEMA && manifest.evidence.replica_schema === REPLICA_SCHEMA && manifest.evidence.gateway_startup_schema === "true-family-pass-b1a-gateway-startup-v1" && manifest.evidence.final_schema === FINAL_SCHEMA && manifest.evidence.failure_schema === LAUNCHER_FAILURE_SCHEMA, "manifest_evidence_schemas");
+    gate(same(manifest.evidence.failure_record, {
+        exact_keys: ["failure_code", "failure_stage", "result", "schema"],
+        failure_code: LAUNCHER_FAILURE_CODE,
+        top_level_stages: LAUNCHER_TOP_LEVEL_FAILURE_STAGES,
+        replica_ordinals: [1, 2],
+        replica_phases: LAUNCHER_REPLICA_FAILURE_PHASES,
+        invalid_stage: "unknown",
+        only_diagnostic_field: "failure_stage",
+        max_bytes: 256,
+    }), "manifest_failure_record");
+    gate([...LAUNCHER_FAILURE_STAGES].every((stage) => /^[a-z0-9_]+$/u.test(stage) && Buffer.byteLength(launcherFailureRecord(stage), "utf8") <= manifest.evidence.failure_record.max_bytes), "manifest_failure_stages");
     gate(manifest.evidence.replicas === 2 && manifest.evidence.normalized_byte_identical === true && manifest.evidence.uploaded_artifacts === false && manifest.evidence.stdout_records === 1 && manifest.evidence.raw_stderr === false, "manifest_evidence");
     gate(manifest.evidence.max_runtime_bytes === MAX_RUNTIME_BYTES && manifest.evidence.max_final_bytes === MAX_FINAL_BYTES, "manifest_evidence_limits");
     gate(same(manifest.cleanup, {
@@ -1766,12 +1807,23 @@ function staticSourceChecks(paths, manifest) {
     }
     const failureSource = launcher.slice(launcher.indexOf("failure_exit()"), launcher.indexOf("trap failure_exit"));
     gate(failureSource.includes('if [[ -n "$ROOT" && ( -e "$ROOT" || -L "$ROOT" ) ]]') && !failureSource.includes('cleanup_queries_ok" -eq 1 &&'), "launcher_failure_root_removal");
+    const stageValidatorSource = launcher.slice(launcher.indexOf("failure_stage_valid()"), launcher.indexOf("failure_stage_projection()"));
+    const stageProjectionSource = launcher.slice(launcher.indexOf("failure_stage_projection()"), launcher.indexOf("set_failure_stage()"));
+    const failureRecordSource = launcher.slice(launcher.indexOf("failure_record()"), launcher.indexOf("shell_self_check()"));
+    gate(launcher.indexOf('FAILURE_STAGE="startup"') >= 0 && launcher.indexOf('FAILURE_STAGE="startup"') < launcher.indexOf('if [[ "${1:-}" == "--shell-self-check" ]]'), "launcher_failure_stage_default");
+    gate(stageValidatorSource.includes('startup|environment|private_root|static_shell|static_verifier|static_python|pull_node|pull_mosquitto|inspect_node|inspect_mosquitto|compare|combine|final_scan_one|final_scan_two|cleanup|finalize') && stageValidatorSource.includes('^replica_[12]_(prepare|networks|setup|broker|install|gateway|client_before|observer_before|readback_before|backend_before|restart_one|after_restart|observer_after|client_after|restart_two|final_auth|final_backend|final_readback|inspect|verify|redaction|cleanup)$'), "launcher_failure_stage_allowlist");
+    gate(stageProjectionSource.includes('printf \'%s\' "unknown"') && failureRecordSource.includes('{"failure_code":"%s","failure_stage":"%s","result":"fail","schema":"%s"}') && !failureRecordSource.includes("status") && (launcher.match(/failure_record "\$FAILURE_STAGE"/gu) ?? []).length === 2, "launcher_failure_projection");
+    const topLevelStageAssignments = [...launcher.matchAll(/^set_failure_stage "([a-z0-9_]+)"$/gmu)].map((match) => match[1]);
+    const replicaStageAssignments = [...launcher.matchAll(/^\s+set_failure_stage "replica_\$\{ordinal\}_([a-z0-9_]+)"$/gmu)].map((match) => match[1]);
+    gate(same(topLevelStageAssignments, LAUNCHER_TOP_LEVEL_FAILURE_STAGES.slice(1)) && same(replicaStageAssignments, LAUNCHER_REPLICA_FAILURE_PHASES), "launcher_failure_stage_coverage");
     const shellStart = launcher.indexOf('if [[ "${1:-}" == "--shell-self-check" ]]');
     const verifierStart = launcher.indexOf('if [[ "${1:-}" == "--self-check" ]]');
     const normalStart = launcher.indexOf('[[ $# -eq 0 ]]', verifierStart);
     gate(shellStart >= 0 && verifierStart > shellStart && normalStart > verifierStart, "self_check_static_shape");
     const shellSelfCheck = launcher.slice(shellStart, verifierStart);
     const verifierSelfCheck = launcher.slice(verifierStart, normalStart);
+    const shellSelfCheckFunction = launcher.slice(launcher.indexOf("shell_self_check()"), shellStart);
+    gate(shellSelfCheckFunction.includes("failure_stage_projection") && shellSelfCheckFunction.includes("replica_2_final_readback") && shellSelfCheckFunction.includes("arbitrary/path") && shellSelfCheckFunction.includes('"failure_stage":"unknown"'), "launcher_failure_shell_self_check");
     for (const source of [shellSelfCheck, verifierSelfCheck]) {
         gate(source.length > 0 && !source.includes("docker") && !source.includes("mktemp") && !source.includes("RUNNER_TEMP"), "self_check_offline");
     }
@@ -1816,6 +1868,8 @@ function staticSourceChecks(paths, manifest) {
 
 function selfTests(paths, manifest) {
     gate(canonical({b: 2, a: 1}) === '{"a":1,"b":2}', "canonical_self_test");
+    gate(launcherFailureStageProjection() === "startup" && launcherFailureStageProjection("replica_1_restart_two") === "replica_1_restart_two" && launcherFailureStageProjection("private/path\nvalue") === "unknown", "launcher_failure_projection_self_test");
+    gate(launcherFailureRecord() === '{"failure_code":"verification_failed","failure_stage":"startup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}\n' && launcherFailureRecord("private/path") === '{"failure_code":"verification_failed","failure_stage":"unknown","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}\n', "launcher_failure_record_self_test");
     const expectedBinaryPath = "/tmp/true-family-pass-b1a.Abcdef12/replica-1/data/mosquitto.db";
     gate(scanPathIsExpectedBinary(expectedBinaryPath, expectedBinaryPath), "binary_scan_branch_self_test");
     for (const invalid of [
@@ -1968,6 +2022,8 @@ function selfTests(paths, manifest) {
     staticSourceChecks(paths, manifest);
     const shell = spawnSync(paths.launcher, ["--shell-self-check"], {encoding: "utf8", env: {PATH: process.env.PATH ?? "/usr/bin:/bin"}, timeout: 5_000});
     gate(shell.status === 0 && shell.stderr === "" && shell.stdout === '{"result":"pass","schema":"true-family-pass-b1a-shell-self-check-v1"}\n', "shell_self_check");
+    const startupFailure = spawnSync(paths.launcher, ["--invalid-mode"], {encoding: "utf8", env: {PATH: process.env.PATH ?? "/usr/bin:/bin"}, timeout: 5_000});
+    gate(startupFailure.status === 1 && startupFailure.stderr === "" && startupFailure.stdout === launcherFailureRecord("startup"), "launcher_failure_startup_self_test");
 }
 
 function pathsFromArguments(args) {
