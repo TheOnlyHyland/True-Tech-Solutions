@@ -82,3 +82,12 @@ jobs:
         run: |
           node --check custom_components/true_family/probe/true_family_brt_probe.mjs
           node --test tests/js/test_physical_probe.mjs
+          bash -n scripts/pass-b1-broker
+          node --check tests/js/test_physical_probe_broker_runtime.mjs
+          node --check tests/js/verify_physical_probe_broker_runtime.mjs
+          node --test tests/js/test_physical_probe_broker_runtime.mjs
+          jq empty tests/fixtures/physical_probe_pass_b1_manifest.json
+          jq empty tests/fixtures/physical_probe_preflight_vectors.json
+          yq '.' .github/workflows/pass-b1-broker.yaml >/dev/null
+          env -i PATH="$PATH" scripts/pass-b1-broker --shell-self-check
+          env -i PATH="$PATH" scripts/pass-b1-broker --self-check

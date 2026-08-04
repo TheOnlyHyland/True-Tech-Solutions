@@ -46,6 +46,12 @@ node --check "$PROJECT/frontend/replacement-wizard.js"
 node --check \
   "$PROJECT/custom_components/true_family/probe/true_family_brt_probe.mjs"
 node --test "$PROJECT/tests/js/test_physical_probe.mjs"
+bash -n "$PROJECT/scripts/pass-b1-broker"
+node --check "$PROJECT/tests/js/test_physical_probe_broker_runtime.mjs"
+node --check "$PROJECT/tests/js/verify_physical_probe_broker_runtime.mjs"
+node --test "$PROJECT/tests/js/test_physical_probe_broker_runtime.mjs"
+env -i PATH="$PATH" "$PROJECT/scripts/pass-b1-broker" --shell-self-check
+env -i PATH="$PATH" "$PROJECT/scripts/pass-b1-broker" --self-check
 
 jq empty \
   "$PROJECT/custom_components/true_family/manifest.json" \
@@ -54,10 +60,12 @@ jq empty \
   "$PROJECT/custom_components/true_family/translations/en.json" \
   "$PROJECT/hacs.json" \
   "$PROJECT/release/identity.json" \
+  "$PROJECT/tests/fixtures/physical_probe_pass_b1_manifest.json" \
   "$PROJECT/tests/fixtures/physical_probe_preflight_vectors.json" \
   "$PROJECT/tests/fixtures/physical_probe_vectors.json"
 
 yq '.' \
+  "$PROJECT/.github/workflows/pass-b1-broker.yaml" \
   "$PROJECT/.github/workflows/release-app.yaml" \
   "$PROJECT/.github/workflows/validate-integration.yaml" \
   "$PROJECT/repository.yaml" \

@@ -20,7 +20,7 @@ from typing import Any, NoReturn
 
 MANIFEST_SCHEMA = "true-family-brt-probe-manifest-v1"
 MANIFEST_VERSION = 1
-ACL_PLAN_SCHEMA = "true-family-physical-probe-acl-plan-v1"
+ACL_PLAN_SCHEMA = "true-family-physical-probe-acl-plan-v2"
 DEPLOYMENT_SNAPSHOT_SCHEMA = "true-family-probe-deployment-snapshot-v1"
 DEPLOYMENT_ATTESTATION_SCHEMA = "true-family-probe-deployment-attestation-v1"
 PREARM_SNAPSHOT_SCHEMA = "true-family-probe-prearm-snapshot-v1"
@@ -113,7 +113,7 @@ _BOUNDARY_WHITESPACE_PATTERN = re.compile(
 )
 
 _MANIFEST_DIGEST_DOMAIN = "true-family-physical-probe/manifest/v1"
-_ACL_DIGEST_DOMAIN = "true-family-physical-probe/acl/v1"
+_ACL_DIGEST_DOMAIN = "true-family-physical-probe/acl/v2"
 _SCOPE_DIGEST_DOMAIN = "true-family-physical-probe/scope/v1"
 _ARTIFACT_DIGEST_DOMAIN = "true-family-physical-probe/artifact/v1"
 _EXTENSION_PATH_DIGEST_DOMAIN = "true-family-physical-probe/extension-path/v1"
@@ -712,6 +712,26 @@ def build_acl_plan(scope: dict[str, Any]) -> ProbeAclPlan:
 
     policy = {
         "schema": ACL_PLAN_SCHEMA,
+        "topic_contract": {
+            "maximum_codepoints": 256,
+            "mqtt_utf8_exclusions": [
+                "null-and-c0-controls",
+                "c1-controls",
+                "utf16-surrogates",
+                "noncharacters-fdd0-fdef",
+                "plane-end-noncharacters",
+            ],
+            "boundaries": {
+                "leading_slash": False,
+                "trailing_slash": False,
+                "leading_or_trailing_whitespace": False,
+            },
+            "concrete_topic_wildcards": False,
+            "internal_empty_segments": True,
+            "shared_subscriptions": False,
+            "zigbee2mqtt_exact_base_wildcard_subscription": f"{base_topic}/#",
+            "adjacent_bridge_request_publish": False,
+        },
         "enforcement": {
             "anonymous_access": "disabled",
             "superuser_bypass": "disabled",
@@ -806,6 +826,8 @@ def acl_allows(
     )
 
     if operation is AclAction.SUBSCRIBE:
+        if topic.startswith("$share/"):
+            return False
         if role is PrincipalRole.ZIGBEE2MQTT:
             if topic == f"{private_scope.base_topic}/#":
                 return True
@@ -1806,12 +1828,29 @@ def _require_canonical_text(
     return value
 
 
-def _topic_is_valid(value: Any) -> bool:
-    if type(value) is not str or not value or len(value) > 256:
+def _mqtt_utf8_is_valid(value: Any) -> bool:
+    if type(value) is not str or not value:
         return False
     try:
-        value.encode("utf-8")
-    except Exception:
+        if len(value.encode("utf-8")) > 65_535:
+            return False
+    except UnicodeEncodeError:
+        return False
+    for character in value:
+        codepoint = ord(character)
+        if (
+            codepoint <= 0x1F
+            or 0x7F <= codepoint <= 0x9F
+            or 0xD800 <= codepoint <= 0xDFFF
+            or 0xFDD0 <= codepoint <= 0xFDEF
+            or (codepoint & 0xFFFF) in (0xFFFE, 0xFFFF)
+        ):
+            return False
+    return True
+
+
+def _topic_is_valid(value: Any) -> bool:
+    if not _mqtt_utf8_is_valid(value) or len(value) > 256:
         return False
     if (
         value.startswith("/")
@@ -1819,7 +1858,6 @@ def _topic_is_valid(value: Any) -> bool:
         or "+" in value
         or "#" in value
         or _BOUNDARY_WHITESPACE_PATTERN.search(value)
-        or any(ord(character) <= 0x1F for character in value)
     ):
         return False
     return True

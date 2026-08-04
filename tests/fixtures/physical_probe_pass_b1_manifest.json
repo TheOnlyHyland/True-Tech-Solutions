@@ -1,0 +1,1487 @@
+{
+  "schema": "true-family-pass-b1a-manifest-v1",
+  "manifest_version": 1,
+  "pass": "B1A",
+  "classification": "ci-only-same-repository-non-authoritative-composite-policy-foundation",
+  "authoritative": false,
+  "pass_b1_complete": false,
+  "authorization": false,
+  "loose_spare_used": false,
+  "trust_boundary": {
+    "same_repository_reviewed_source": true,
+    "ci_only": true,
+    "independently_attested": false,
+    "malicious_source_resistant": false,
+    "household_equivalent": false
+  },
+  "images": {
+    "node": {
+      "tag": "node:20.19.2-bookworm-slim",
+      "child": "docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8",
+      "index_reference_sha256": "sha256:7cd3fbc830c75c92256fe1122002add9a1c025831af8770cd0bf8e45688ef661",
+      "platform": "linux/amd64",
+      "version": "20.19.2",
+      "expected_env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "NODE_VERSION=20.19.2",
+        "YARN_VERSION=1.22.22"
+      ],
+      "expected_labels": {},
+      "expected_entrypoint": [
+        "docker-entrypoint.sh"
+      ],
+      "expected_command": [
+        "node"
+      ]
+    },
+    "mosquitto": {
+      "tag": "eclipse-mosquitto:2.0.22",
+      "index_reference_sha256": "sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c",
+      "child": "docker.io/library/eclipse-mosquitto@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd",
+      "oci_config_digest": "sha256:93a0bdfcbd9b7a86b36127cb81f54e1afd2019f12f39033458df405a027c03e3",
+      "platform": "linux/amd64",
+      "version": "2.0.22",
+      "upstream_source_sha256": "2f752589ef7db40260b633fbdb536e9a04b446a315138d64a7ff3c14e2de6b68",
+      "expected_env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "VERSION=2.0.22",
+        "DOWNLOAD_SHA256=2f752589ef7db40260b633fbdb536e9a04b446a315138d64a7ff3c14e2de6b68",
+        "GPG_KEYS=A0D6EEA1DCAE49A635A3B2F0779B22DFB3E717B7"
+      ],
+      "expected_labels": {
+        "org.opencontainers.image.authors": "Roger Light <roger@atchoo.org>",
+        "org.opencontainers.image.description": "Eclipse Mosquitto MQTT Broker",
+        "org.opencontainers.image.documentation": "https://mosquitto.org/documentation/",
+        "org.opencontainers.image.licenses": "EPL-2.0 OR BSD-3-Clause",
+        "org.opencontainers.image.source": "https://github.com/eclipse-mosquitto/mosquitto",
+        "org.opencontainers.image.title": "eclipse-mosquitto",
+        "org.opencontainers.image.url": "https://mosquitto.org/",
+        "org.opencontainers.image.version": "2.0.22"
+      },
+      "expected_entrypoint": [
+        "/docker-entrypoint.sh"
+      ],
+      "expected_command": [
+        "/usr/sbin/mosquitto",
+        "-c",
+        "/mosquitto/config/mosquitto.conf"
+      ],
+      "dynamic_security_plugin": "/usr/lib/mosquitto_dynamic_security.so",
+      "mosquitto_ctrl": "/usr/bin/mosquitto_ctrl"
+    }
+  },
+  "broker": {
+    "listener_port": 18883,
+    "network": {
+      "driver": "bridge",
+      "internal": true,
+      "published_ports": false,
+      "per_replica": true,
+      "planes": [
+        "backend",
+        "frontend"
+      ],
+      "gateway_only_dual_homed": true
+    },
+    "config_lines": [
+      "per_listener_settings false",
+      "listener 18883 0.0.0.0",
+      "protocol mqtt",
+      "allow_anonymous false",
+      "persistence true",
+      "persistence_file mosquitto.db",
+      "persistence_location /mosquitto/data/",
+      "autosave_interval 1",
+      "autosave_on_changes true",
+      "check_retain_source true",
+      "max_packet_size 1048576",
+      "message_size_limit 524288",
+      "max_inflight_messages 20",
+      "max_queued_messages 100",
+      "plugin /usr/lib/mosquitto_dynamic_security.so",
+      "plugin_opt_config_file /mosquitto/data/dynamic-security.json",
+      "connection_messages false",
+      "log_dest stderr",
+      "log_type error",
+      "log_type warning",
+      "log_timestamp false"
+    ],
+    "config_sha256": "5cde09482469290f860d56f14f53a7e335e962e496629b457c267472d701b622",
+    "forbidden_directives": [
+      "acl_file",
+      "password_file",
+      "bridge",
+      "connection",
+      "remote_username",
+      "remote_password",
+      "use_username_as_clientid",
+      "port",
+      "user"
+    ],
+    "forbidden_exact_lines": [
+      "allow_anonymous true",
+      "user root"
+    ],
+    "dynamic_security": {
+      "only_authentication_authority": true,
+      "bootstrap_method": "official-mosquitto-ctrl-isolated-setup-container",
+      "bootstrap_password_boundary": "mode-0600-file-read-then-transient-private-setup-process-argument",
+      "plaintext_password_in_docker_create_or_inspect": false,
+      "control_success_requires_correlated_response": true,
+      "check_retain_source_configured": true,
+      "check_retain_source_behavior_tested": false,
+      "retained_persistence_behavior_tested": true,
+      "application_credential_acl_samples_tested": true,
+      "broker_native_qos_retain": false,
+      "composite_policy": true
+    }
+  },
+  "gateway": {
+    "schema": "true-family-pass-b1a-gateway-policy-v1",
+    "generation": 1,
+    "frontend_listener_port": 18884,
+    "backend_broker_port": 18883,
+    "policy_sha256": "c6c19e4fbf668f946c09c5caaec705ce65403e6f055a1154b7ed1956681b93fb",
+    "runtime_loaded_policy_digest": true,
+    "credential_files_provisioned": false,
+    "artifact_files_provisioned": false,
+    "connect_password_in_transit": true,
+    "connect_password_decoded": false,
+    "connect_password_persisted": false,
+    "broker_ack_authority": true,
+    "gateway_enforcement": true,
+    "deep_containment": true,
+    "qos_enforced": true,
+    "qos2_stateful": true,
+    "retain_enforced": true,
+    "bounded_session_timers": true,
+    "bidirectional_backpressure": true,
+    "broker_origin_malformed_latches_gateway": true,
+    "composite_policy": true
+  },
+  "composite_policy": {
+    "schema": "true-family-pass-b1a-composite-policy-v1",
+    "gateway_policy_sha256": "c6c19e4fbf668f946c09c5caaec705ce65403e6f055a1154b7ed1956681b93fb",
+    "broker_policy_sha256": "479fe28dfb3e55f42c71c0e874f9c6cc54e6085488507d8dccc8e66938f5f008",
+    "preflight_acl_digest": "a6a9ac8d16025af3670a84b2ddd40fb4b0a2f155043402eadff43aeb23bd6cb8",
+    "effective_sha256": "beaa7fe3fcc73137748c04c70531fc9dc870b3b650f6b1576185e9c391bce0dc"
+  },
+  "containers": {
+    "runtime_user": "host-runner-numeric-nonroot",
+    "broker_user": "host-runner-numeric-nonroot",
+    "read_only_root": true,
+    "cap_drop_all": true,
+    "no_new_privileges": true,
+    "private_ipc": true,
+    "private_cgroup_namespace": true,
+    "init": true,
+    "restart": "no",
+    "log_driver": "json-file",
+    "log_options": {
+      "max-file": "1",
+      "max-size": "1m"
+    },
+    "client_limits": {
+      "memory_bytes": 268435456,
+      "memory_swap_bytes": 268435456,
+      "nano_cpus": 1000000000,
+      "pids": 64,
+      "nofile": 256,
+      "core": 0,
+      "tmpfs_bytes": 16777216
+    },
+    "broker_limits": {
+      "memory_bytes": 134217728,
+      "memory_swap_bytes": 134217728,
+      "nano_cpus": 500000000,
+      "pids": 32,
+      "nofile": 256,
+      "core": 0,
+      "tmpfs_bytes": 16777216
+    },
+    "forbidden_mount_destinations": [
+      "/homeassistant",
+      "/addons",
+      "/addon_configs",
+      "/github/workspace",
+      "/run/docker.sock",
+      "/var/run/docker.sock",
+      "/dev"
+    ],
+    "topology": {
+      "broker_networks": [
+        "backend"
+      ],
+      "gateway_networks": [
+        "backend",
+        "frontend"
+      ],
+      "admin_networks": [
+        "backend"
+      ],
+      "observer_networks": [
+        "backend"
+      ],
+      "application_probe_networks": [
+        "backend"
+      ],
+      "client_networks": [
+        "frontend"
+      ],
+      "setup_networks": [],
+      "host_ports": false,
+      "client_broker_dns": false,
+      "client_broker_tcp": false,
+      "same_runner_host_isolation_proven": false
+    }
+  },
+  "credentials": {
+    "admin_schema": "true-family-pass-b1a-admin-credential-v1",
+    "frontend_schema": "true-family-pass-b1a-frontend-credentials-v1",
+    "observer_schema": "true-family-pass-b1a-observer-credential-v1",
+    "root_mode": "0700",
+    "file_mode": "0600",
+    "password_bytes": 32,
+    "password_encoding": "base64url-no-padding",
+    "stdout": false,
+    "evidence": false,
+    "artifacts": false,
+    "private_root_only": true,
+    "deleted_before_pass": true
+  },
+  "principals": {
+    "admin": {
+      "username": "tf-b1a-admin",
+      "client_id": "tf-b1a-admin-client",
+      "role": "admin",
+      "purpose": "bootstrap-install-and-readback-only"
+    },
+    "z2m": {
+      "username": "tf-b1a-z2m",
+      "client_id": "tf-b1a-z2m-client",
+      "role": "tf-b1a-z2m-role",
+      "purpose": "synthetic-zigbee2mqtt-principal"
+    },
+    "orchestrator": {
+      "username": "tf-b1a-orchestrator",
+      "client_id": "tf-b1a-orchestrator-client",
+      "role": "tf-b1a-orchestrator-role",
+      "purpose": "synthetic-probe-orchestrator"
+    },
+    "collector": {
+      "username": "tf-b1a-collector",
+      "client_id": "tf-b1a-collector-client",
+      "role": "tf-b1a-collector-role",
+      "purpose": "test-only-authenticated-evidence-collector-not-production-preflight-principal"
+    },
+    "other": {
+      "username": "tf-b1a-other",
+      "client_id": "tf-b1a-other-client",
+      "role": "tf-b1a-other-role",
+      "purpose": "authenticated-no-access-control"
+    },
+    "observer": {
+      "username": "tf-b1a-observer",
+      "client_id": "tf-b1a-observer-client",
+      "role": "tf-b1a-observer-role",
+      "purpose": "temporary-retained-source-observer"
+    }
+  },
+  "authentication": {
+    "wrong_client_id": "tf-b1a-wrong-client",
+    "anonymous_client_id": "tf-b1a-anonymous-client",
+    "unknown_client_id": "tf-b1a-unknown-client",
+    "unknown_username": "tf-b1a-unknown",
+    "accepted_negative_reason_classes": [
+      "bad_username_or_password",
+      "connection_closed",
+      "not_authorized"
+    ]
+  },
+  "scope": {
+    "base_topic": "zigbee2mqtt",
+    "friendly_name": "spare-brt-100",
+    "candidate_ieee": "0xa4c1380000000001",
+    "set_topic": "spare-brt-100/set",
+    "preflight_acl_digest": "a6a9ac8d16025af3670a84b2ddd40fb4b0a2f155043402eadff43aeb23bd6cb8"
+  },
+  "preflight_acl": {
+    "schema": "true-family-physical-probe-acl-plan-v2",
+    "scope_digest": "59a5336a934168f3737f78f28d45add55d5f4b066fe90014f663cedb2389e947",
+    "policy_digest": "a6a9ac8d16025af3670a84b2ddd40fb4b0a2f155043402eadff43aeb23bd6cb8",
+    "effective_policy": {
+      "schema": "true-family-physical-probe-acl-plan-v2",
+      "topic_contract": {
+        "maximum_codepoints": 256,
+        "mqtt_utf8_exclusions": [
+          "null-and-c0-controls",
+          "c1-controls",
+          "utf16-surrogates",
+          "noncharacters-fdd0-fdef",
+          "plane-end-noncharacters"
+        ],
+        "boundaries": {
+          "leading_slash": false,
+          "trailing_slash": false,
+          "leading_or_trailing_whitespace": false
+        },
+        "concrete_topic_wildcards": false,
+        "internal_empty_segments": true,
+        "shared_subscriptions": false,
+        "zigbee2mqtt_exact_base_wildcard_subscription": "zigbee2mqtt/#",
+        "adjacent_bridge_request_publish": false
+      },
+      "enforcement": {
+        "anonymous_access": "disabled",
+        "superuser_bypass": "disabled",
+        "dedicated_listener": true,
+        "effective_readback_complete": true
+      },
+      "scope": {
+        "base_topic": "zigbee2mqtt",
+        "candidate_publish_roots": [
+          "zigbee2mqtt/spare-brt-100",
+          "zigbee2mqtt/0xa4c1380000000001"
+        ],
+        "candidate_set_topic": "zigbee2mqtt/spare-brt-100/set"
+      },
+      "principals": {
+        "orchestrator": {
+          "publish_default": "deny",
+          "publish_allow": [
+            {
+              "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+              "qos": 1,
+              "retain": false
+            },
+            {
+              "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe/ack",
+              "qos": 1,
+              "retain": false
+            }
+          ],
+          "subscribe_default": "deny",
+          "subscribe_allow": [
+            "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+            "zigbee2mqtt/bridge/true_family/physical_probe/status",
+            "zigbee2mqtt/bridge/true_family/physical_probe/result",
+            "zigbee2mqtt/bridge/response/true_family/physical_probe",
+            "zigbee2mqtt/bridge/response/true_family/physical_probe/ack"
+          ]
+        },
+        "zigbee2mqtt": {
+          "publish_default": "allow",
+          "subscribe_default": "allow",
+          "subscribe_filters": [
+            "zigbee2mqtt/#"
+          ],
+          "bridge_request_publish": "deny"
+        },
+        "admin_recovery": {
+          "publish_default": "deny",
+          "subscribe_default": "deny"
+        },
+        "other": {
+          "publish_default": "deny",
+          "subscribe_default": "deny"
+        },
+        "anonymous": {
+          "publish_default": "deny",
+          "subscribe_default": "deny"
+        }
+      },
+      "global_denies": {
+        "unknown_principals": true,
+        "non_zigbee2mqtt_candidate_publish_subtrees": true,
+        "bridge_request_publish_slash_containment": true,
+        "bridge_request_publish_exceptions": [
+          "zigbee2mqtt/bridge/request/true_family/physical_probe",
+          "zigbee2mqtt/bridge/request/true_family/physical_probe/ack"
+        ]
+      }
+    }
+  },
+  "topic_oracle": {
+    "schema": "true-family-pass-b1a-topic-oracle-v1",
+    "maximum_codepoints": 256,
+    "valid_codepoints": [
+      126,
+      160,
+      64975,
+      65008,
+      65533,
+      65536,
+      1114109
+    ],
+    "invalid_codepoints": [
+      0,
+      1,
+      31,
+      127,
+      128,
+      159,
+      64976,
+      65007
+    ],
+    "valid_topics": [
+      "safe/topic",
+      "safe//topic",
+      "outside/root"
+    ],
+    "invalid_topics": [
+      "",
+      "/safe/topic",
+      "safe/topic/",
+      " safe/topic",
+      "safe/topic ",
+      "safe/+",
+      "safe/#"
+    ]
+  },
+  "topics": {
+    "arm_request": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+    "ack_request": "zigbee2mqtt/bridge/request/true_family/physical_probe/ack",
+    "ready": "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+    "status": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+    "result": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+    "response": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+    "ack_response": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+    "source": "zigbee2mqtt/bridge/extensions",
+    "backup": "zigbee2mqtt/bridge/response/backup",
+    "candidate_friendly": "zigbee2mqtt/spare-brt-100",
+    "candidate_friendly_set": "zigbee2mqtt/spare-brt-100/set",
+    "candidate_friendly_descendant": "zigbee2mqtt/spare-brt-100/1/set/current_heating_setpoint",
+    "candidate_ieee": "zigbee2mqtt/0xa4c1380000000001",
+    "candidate_ieee_descendant": "zigbee2mqtt/0xa4c1380000000001/set/system_mode",
+    "native_outside": "true-family-b1a/native/outside",
+    "native_retained_sentinel": "true-family-b1a/native/retained-sentinel",
+    "request_topics": [
+      "zigbee2mqtt/bridge/request/true_family/physical_probe",
+      "zigbee2mqtt/bridge/request/true_family/physical_probe/ack"
+    ]
+  },
+  "policy": {
+    "defaults": [
+      {
+        "acltype": "publishClientSend",
+        "allow": false
+      },
+      {
+        "acltype": "publishClientReceive",
+        "allow": false
+      },
+      {
+        "acltype": "subscribe",
+        "allow": false
+      },
+      {
+        "acltype": "unsubscribe",
+        "allow": false
+      }
+    ],
+    "admin_role": {
+      "rolename": "admin",
+      "acls": [
+        {
+          "acltype": "publishClientSend",
+          "topic": "$CONTROL/dynamic-security/v1",
+          "allow": true,
+          "priority": 100
+        },
+        {
+          "acltype": "publishClientReceive",
+          "topic": "$CONTROL/dynamic-security/v1/response",
+          "allow": true,
+          "priority": 100
+        },
+        {
+          "acltype": "subscribeLiteral",
+          "topic": "$CONTROL/dynamic-security/v1/response",
+          "allow": true,
+          "priority": 100
+        }
+      ]
+    },
+    "roles": [
+      {
+        "rolename": "tf-b1a-orchestrator-role",
+        "acls": [
+          {
+            "acltype": "publishClientSend",
+            "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientSend",
+            "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe/ack",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+            "allow": true,
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "rolename": "tf-b1a-z2m-role",
+        "acls": [
+          {
+            "acltype": "publishClientSend",
+            "topic": "#",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "#",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/#",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribePattern",
+            "topic": "#",
+            "allow": true,
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "rolename": "tf-b1a-collector-role",
+        "acls": [
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "publishClientReceive",
+            "topic": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+            "allow": true,
+            "priority": 100
+          },
+          {
+            "acltype": "subscribeLiteral",
+            "topic": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+            "allow": true,
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "rolename": "tf-b1a-other-role",
+        "acls": []
+      }
+    ],
+    "observer_role": {
+      "rolename": "tf-b1a-observer-role",
+      "acls": [
+        {
+          "acltype": "publishClientReceive",
+          "topic": "zigbee2mqtt/bridge/extensions",
+          "allow": true,
+          "priority": 100
+        },
+        {
+          "acltype": "subscribeLiteral",
+          "topic": "zigbee2mqtt/bridge/extensions",
+          "allow": true,
+          "priority": 100
+        }
+      ]
+    },
+    "clients": [
+      {
+        "principal": "orchestrator",
+        "roles": [
+          {
+            "rolename": "tf-b1a-orchestrator-role",
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "principal": "z2m",
+        "roles": [
+          {
+            "rolename": "tf-b1a-z2m-role",
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "principal": "collector",
+        "roles": [
+          {
+            "rolename": "tf-b1a-collector-role",
+            "priority": 100
+          }
+        ]
+      },
+      {
+        "principal": "other",
+        "roles": [
+          {
+            "rolename": "tf-b1a-other-role",
+            "priority": 100
+          }
+        ]
+      }
+    ],
+    "canonical_sha256": "479fe28dfb3e55f42c71c0e874f9c6cc54e6085488507d8dccc8e66938f5f008",
+    "expected_readback_sha256": "1fc47098751a6541b285df1693c44d171b43e5f6621ae441f4bed04a8ddf7706"
+  },
+  "matrix": {
+    "publish": [
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "allowed": true
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe/ack",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/bridge/extensions",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/spare-brt-100/set",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/0xa4c1380000000001/set/system_mode",
+        "allowed": true
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/bridge/extensions",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/bridge/response/backup",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe/descendant",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/spare-brt-100/1/set/current_heating_setpoint",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/0xa4c1380000000001/set/system_mode",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/arbitrary",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/bridge/request/action",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/zigbee2mqtt/bridge/request/action",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/a/b/c/d/e/f/g/h/bridge/request/action",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/a/b/c/d/e/f/g/h/i/bridge/request/action",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "bridge_request_depth_32",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "bridge_request_depth_100",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic": "zigbee2mqtt/a//b",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "maximum",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "outside/root/qos0-retain0",
+        "qos": 0,
+        "retain": false,
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "outside/root/qos0-retain1",
+        "qos": 0,
+        "retain": true,
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "outside/root/qos1-retain0",
+        "qos": 1,
+        "retain": false,
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "outside/root/qos1-retain1",
+        "qos": 1,
+        "retain": true,
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "outside/root/qos2-retain0",
+        "qos": 2,
+        "retain": false,
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "topic": "outside/root/qos2-retain1",
+        "qos": 2,
+        "retain": true,
+        "allowed": true
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "qos": 0,
+        "retain": false,
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "qos": 1,
+        "retain": true,
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "leading_slash",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "trailing_slash",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "boundary_space",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "control",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "overlength",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "empty",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "boundary_unicode",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "wildcard_plus",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "wildcard_hash",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "malformed_utf8",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "c1_delete",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "c1_first",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "c1_last",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "noncharacter_fdd0",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "noncharacter_fdef",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "noncharacter_fffe",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "noncharacter_ffff",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "noncharacter_plane_end",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "topic_fixture": "surrogate_utf8",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "topic": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "topic": "zigbee2mqtt/bridge/extensions",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "topic": "zigbee2mqtt/spare-brt-100/set",
+        "allowed": false
+      },
+      {
+        "principal": "other",
+        "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "other",
+        "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "allowed": false
+      },
+      {
+        "principal": "other",
+        "topic": "zigbee2mqtt/spare-brt-100/set",
+        "allowed": false
+      }
+    ],
+    "subscribe": [
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+        "allowed": true
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": true
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+        "allowed": true
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+        "delivery_topic": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+        "allowed": true
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+        "delivery_topic": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+        "allowed": true
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": true
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/result",
+        "allowed": true
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+        "delivery_topic": "zigbee2mqtt/bridge/response/true_family/physical_probe",
+        "allowed": true
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+        "delivery_topic": "zigbee2mqtt/bridge/response/true_family/physical_probe/ack",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "delivery_topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter": "zigbee2mqtt/spare-brt-100/set",
+        "delivery_topic": "zigbee2mqtt/spare-brt-100/set",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter": "zigbee2mqtt/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter": "zigbee2mqtt/a//b",
+        "delivery_topic": "zigbee2mqtt/a//b",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "maximum",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter": "outside/root/subscribe-qos0",
+        "delivery_topic": "outside/root/subscribe-qos0",
+        "qos": 0,
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter": "outside/root/subscribe-qos1",
+        "delivery_topic": "outside/root/subscribe-qos1",
+        "qos": 1,
+        "allowed": true
+      },
+      {
+        "principal": "z2m",
+        "filter": "outside/root/subscribe-qos2",
+        "delivery_topic": "outside/root/subscribe-qos2",
+        "qos": 2,
+        "allowed": true
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/extensions",
+        "delivery_topic": "zigbee2mqtt/bridge/extensions",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/response/backup",
+        "delivery_topic": "zigbee2mqtt/bridge/response/backup",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "delivery_topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/spare-brt-100/set",
+        "delivery_topic": "zigbee2mqtt/spare-brt-100/set",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/0xa4c1380000000001/set/system_mode",
+        "delivery_topic": "zigbee2mqtt/0xa4c1380000000001/set/system_mode",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/+",
+        "delivery_topic": "zigbee2mqtt/probe",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "zigbee2mqtt/bridge/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "orchestrator",
+        "filter": "$share/b1a/zigbee2mqtt/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/ready",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/bridge/extensions",
+        "delivery_topic": "zigbee2mqtt/bridge/extensions",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "delivery_topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/spare-brt-100/set",
+        "delivery_topic": "zigbee2mqtt/spare-brt-100/set",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "filter": "zigbee2mqtt/+",
+        "delivery_topic": "zigbee2mqtt/probe",
+        "allowed": false
+      },
+      {
+        "principal": "collector",
+        "filter": "$share/b1a/zigbee2mqtt/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter": "zigbee2mqtt/+",
+        "delivery_topic": "zigbee2mqtt/probe",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter": "zigbee2mqtt/bridge/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter": "#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter": "+",
+        "delivery_topic": "zigbee2mqtt",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter": "$share/b1a/zigbee2mqtt/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter": "$share/b1a/outside/root",
+        "delivery_topic": "outside/root",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "leading_slash",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "trailing_slash",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "boundary_space",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "control",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "overlength",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "empty",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "boundary_unicode",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "malformed_utf8",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "c1_delete",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "c1_first",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "c1_last",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "noncharacter_fdd0",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "noncharacter_fdef",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "noncharacter_fffe",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "noncharacter_ffff",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "noncharacter_plane_end",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "z2m",
+        "filter_fixture": "surrogate_utf8",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "other",
+        "filter": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      },
+      {
+        "principal": "other",
+        "filter": "zigbee2mqtt/bridge/extensions",
+        "delivery_topic": "zigbee2mqtt/bridge/extensions",
+        "allowed": false
+      },
+      {
+        "principal": "other",
+        "filter": "zigbee2mqtt/#",
+        "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
+        "allowed": false
+      }
+    ]
+  },
+  "source_privacy": {
+    "synthetic_publisher": true,
+    "real_externaljs_path": false,
+    "inventory_shape": "JSON.stringify([{name:artifact.filename,code:exact_utf8_source}])",
+    "principals": [
+      "orchestrator",
+      "collector",
+      "other"
+    ],
+    "denied_filters": [
+      "zigbee2mqtt/bridge/extensions",
+      "zigbee2mqtt/#",
+      "$share/b1a/zigbee2mqtt/#"
+    ],
+    "source_canary": "MANDATORY RESIDUAL WRITER FENCE: a future preflight must give Zigbee2MQTT a",
+    "raw_source_emitted": false,
+    "retained_clear": "z2m-zero-length-retained-qos1",
+    "restart_old_replay_expected": false
+  },
+  "artifact": {
+    "path": "custom_components/true_family/probe/true_family_brt_probe.mjs",
+    "filename": "true_family_brt_probe.mjs",
+    "byte_length": 164691,
+    "sha256": "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1"
+  },
+  "evidence": {
+    "runtime_schema": "true-family-pass-b1a-runtime-v1",
+    "replica_schema": "true-family-pass-b1a-replica-v1",
+    "gateway_startup_schema": "true-family-pass-b1a-gateway-startup-v1",
+    "final_schema": "true-family-pass-b1a-composite-policy-foundation-v1",
+    "failure_schema": "true-family-pass-b1a-launcher-failure-v1",
+    "replicas": 2,
+    "normalized_byte_identical": true,
+    "uploaded_artifacts": false,
+    "stdout_records": 1,
+    "raw_stderr": false,
+    "max_runtime_bytes": 131072,
+    "max_final_bytes": 65536,
+    "claim_limits": [
+      "pass_b1_not_complete",
+      "authorization_not_proven",
+      "real_zigbee2mqtt_mqtt_externaljs_source_path_not_proven",
+      "permit_consumption_not_proven",
+      "writer_fence_not_proven",
+      "broker_delivery_to_real_zigbee2mqtt_not_proven",
+      "physical_provenance_not_proven",
+      "coordinator_radio_valve_not_exercised",
+      "independent_attestation_not_proven",
+      "malicious_source_resistance_not_proven",
+      "household_equivalence_not_proven",
+      "same_runner_host_isolation_not_proven",
+      "seccomp_not_an_isolation_boundary",
+      "backend_fault_injection_not_proven",
+      "listener_fault_injection_not_proven",
+      "no_loose_spare"
+    ]
+  },
+  "cleanup": {
+    "label": "true-family-pass-b1a",
+    "root_pattern": "$RUNNER_TEMP/true-family-pass-b1a.*",
+    "root_mode": "0700",
+    "find_mode": "find -P -xdev",
+    "symlinks_followed": false,
+    "files_chmodded": false,
+    "zero_labeled_containers_before_delete": true,
+    "zero_labeled_networks_before_delete": true,
+    "run_watchdog_seconds": 1920,
+    "workflow_timeout_seconds": 2700,
+    "longest_bounded_command_seconds": 270,
+    "nominal_headroom_if_watchdog_started_at_job_start_seconds": 780,
+    "nominal_headroom_after_longest_command_seconds": 510,
+    "workflow_timeout_cleanup_guaranteed": false,
+    "private_root_removal_attempted_after_cleanup_failure": true,
+    "credentials_absent_before_pass": true,
+    "root_absent_before_pass": true
+  },
+  "bindings": {
+    "launcher_normalization": "sha256 after replacing the sole EXPECTED_LAUNCHER_SHA256 lowercase-hex literal with 64 zeroes",
+    "launcher_normalized_sha256": "be79b17478a05074cbb10234453a854548dc99d84c4b778572b5c9d6890d5fa0",
+    "runtime_harness_sha256": "0607c5e9f3f66e2ce8acb063238bae3486856b78b2d992729f9ceb382321e63f",
+    "verifier_sha256": "dc9c43bb119289c86e2402ed71c53464fbb428ac8771ca396e096317fc47ce61",
+    "workflow_sha256": "288edf1ef22a61e9451144a9bde62698eacfe2aa748ac0d29a03d31ad10dc305",
+    "preflight_source_sha256": "aeccc63d626bc5998688da2db84b68898a73d1719c3f39f99ad31922fa106e9f",
+    "preflight_fixture_sha256": "cf71efabf14a22fdc0b0fced9b69e5119e026586e774826b0a06d6b70ccb10d1",
+    "preflight_test_sha256": "bc76559e6287b5abf40150c5e2b3d04b6c13a62732f843a3e0fe262eb6dc9f01",
+    "b0_preservation": {
+      "launcher_sha256": "00fbb530600f2fc3dbf32ac7e49a498a8b8ad0b107098aa68d4f50837a5d33c2",
+      "workflow_sha256": "482890960d1273a0058f6f10c05f25a8f50005f392b7f902f62f5c042054b3eb",
+      "manifest_sha256": "4ae95cc30306646887261956135389539e7d012e4ea75779f83153abff0aa8bd",
+      "runtime_harness_sha256": "e8ef9f8152a12a5c124939b9a59749194f16148f738612a7e9aa63159340d9d2",
+      "verifier_sha256": "39b00e9045c6bac4b2ace57c3b1589a003cd0fcc094546a683160a05865cfabd",
+      "preflight_fixture_sha256": "cf71efabf14a22fdc0b0fced9b69e5119e026586e774826b0a06d6b70ccb10d1"
+    }
+  }
+}

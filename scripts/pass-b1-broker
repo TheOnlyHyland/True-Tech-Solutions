@@ -1,0 +1,621 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+EXPECTED_LAUNCHER_SHA256="be79b17478a05074cbb10234453a854548dc99d84c4b778572b5c9d6890d5fa0"
+NODE_IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
+MOSQUITTO_IMAGE="docker.io/library/eclipse-mosquitto@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd"
+LABEL_KEY="true-family-pass-b1a"
+RUN_WATCHDOG_SECONDS=1920
+WORKFLOW_TIMEOUT_SECONDS=2700
+LONGEST_BOUNDED_COMMAND_SECONDS=270
+FAILURE_RECORD='{"failure_code":"verification_failed","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v1"}'
+
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+if [[ "$SCRIPT_SOURCE" == */* ]]; then
+    SCRIPT_PARENT="${SCRIPT_SOURCE%/*}"
+else
+    SCRIPT_PARENT="."
+fi
+SCRIPT_DIR="$(CDPATH= cd -- "$SCRIPT_PARENT" && pwd -P)"
+REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)"
+MANIFEST="$REPO_ROOT/tests/fixtures/physical_probe_pass_b1_manifest.json"
+RUNTIME="$REPO_ROOT/tests/js/test_physical_probe_broker_runtime.mjs"
+VERIFIER="$REPO_ROOT/tests/js/verify_physical_probe_broker_runtime.mjs"
+WORKFLOW="$REPO_ROOT/.github/workflows/pass-b1-broker.yaml"
+ARTIFACT="$REPO_ROOT/custom_components/true_family/probe/true_family_brt_probe.mjs"
+PREFLIGHT="$REPO_ROOT/custom_components/true_family/physical_probe_preflight.py"
+PREFLIGHT_FIXTURE="$REPO_ROOT/tests/fixtures/physical_probe_preflight_vectors.json"
+PREFLIGHT_TEST="$REPO_ROOT/tests/test_physical_probe_preflight.py"
+B0_LAUNCHER="$REPO_ROOT/scripts/pass-b-z2m-runtime"
+B0_WORKFLOW="$REPO_ROOT/.github/workflows/pass-b0-runtime.yaml"
+B0_MANIFEST="$REPO_ROOT/tests/fixtures/physical_probe_pass_b_manifest.json"
+B0_RUNTIME="$REPO_ROOT/tests/js/test_physical_probe_z2m_runtime.mjs"
+B0_VERIFIER="$REPO_ROOT/tests/js/verify_physical_probe_z2m_runtime.mjs"
+
+shell_self_check() {
+    [[ "$NODE_IMAGE" =~ ^docker\.io/library/node:20\.19\.2-bookworm-slim@sha256:[0-9a-f]{64}$ ]]
+    [[ "$MOSQUITTO_IMAGE" =~ ^docker\.io/library/eclipse-mosquitto@sha256:[0-9a-f]{64}$ ]]
+    [[ "$EXPECTED_LAUNCHER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+    [[ "$LABEL_KEY" == "true-family-pass-b1a" ]]
+    [[ "$RUN_WATCHDOG_SECONDS" -eq 1920 && "$WORKFLOW_TIMEOUT_SECONDS" -eq 2700 ]]
+    [[ "$LONGEST_BOUNDED_COMMAND_SECONDS" -eq 270 ]]
+    [[ $((WORKFLOW_TIMEOUT_SECONDS - RUN_WATCHDOG_SECONDS)) -eq 780 ]]
+    [[ $((WORKFLOW_TIMEOUT_SECONDS - RUN_WATCHDOG_SECONDS - LONGEST_BOUNDED_COMMAND_SECONDS)) -eq 510 ]]
+    [[ "$FAILURE_RECORD" == '{"failure_code":"verification_failed","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v1"}' ]]
+    local required
+    for required in "$MANIFEST" "$RUNTIME" "$VERIFIER" "$WORKFLOW" "$ARTIFACT" "$PREFLIGHT" "$PREFLIGHT_FIXTURE" "$PREFLIGHT_TEST" "$B0_LAUNCHER" "$B0_WORKFLOW" "$B0_MANIFEST" "$B0_RUNTIME" "$B0_VERIFIER"; do
+        [[ -f "$required" && ! -L "$required" ]]
+    done
+    printf '%s\n' '{"result":"pass","schema":"true-family-pass-b1a-shell-self-check-v1"}'
+}
+
+if [[ "${1:-}" == "--shell-self-check" ]]; then
+    [[ $# -eq 1 ]]
+    shell_self_check
+    exit 0
+fi
+
+if [[ "${1:-}" == "--self-check" ]]; then
+    [[ $# -eq 1 ]]
+    exec 3>&-
+    exec /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 90s node "$VERIFIER" --self-check \
+        "$MANIFEST" "$SCRIPT_DIR/pass-b1-broker" "$RUNTIME" "$VERIFIER" "$WORKFLOW" \
+        "$ARTIFACT" "$PREFLIGHT" "$PREFLIGHT_FIXTURE" "$PREFLIGHT_TEST" "$B0_LAUNCHER" "$B0_WORKFLOW" \
+        "$B0_MANIFEST" "$B0_RUNTIME" "$B0_VERIFIER"
+fi
+
+if ! [[ $# -eq 0 ]]; then
+    printf '%s\n' "$FAILURE_RECORD"
+    exit 1
+fi
+umask 077
+exec 3>&1
+exec 1>/dev/null 2>/dev/null
+
+ROOT=""
+RUN_ID=""
+OUTPUT_EMITTED=0
+DOCKER_HOME=""
+DOCKER_CONFIG_DIR=""
+WATCHDOG_PID=""
+HOST_UID=""
+HOST_GID=""
+
+host_for() (
+    exec 3>&-
+    local seconds="$1"
+    shift
+    exec /usr/bin/timeout --foreground --signal=TERM --kill-after=10s "${seconds}s" "$@"
+)
+
+docker_for() (
+    exec 3>&-
+    local seconds="$1"
+    shift
+    /usr/bin/timeout --foreground --signal=TERM --kill-after=10s "${seconds}s" \
+        /usr/bin/env -i \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        HOME="$DOCKER_HOME" \
+        DOCKER_CONFIG="$DOCKER_CONFIG_DIR" \
+        /usr/bin/docker "$@"
+)
+
+start_watchdog() {
+    local parent_pid="$$"
+    (
+        exec 3>&-
+        exec /usr/bin/timeout --signal=TERM --kill-after=5s "$((RUN_WATCHDOG_SECONDS + 10))s" \
+            /bin/bash -c '/usr/bin/sleep "$1"; kill -TERM "$2"' -- \
+            "$RUN_WATCHDOG_SECONDS" "$parent_pid"
+    ) >/dev/null 2>&1 &
+    WATCHDOG_PID="$!"
+}
+
+stop_watchdog() {
+    if [[ -n "$WATCHDOG_PID" ]]; then
+        kill "$WATCHDOG_PID" >/dev/null 2>&1 || true
+        wait "$WATCHDOG_PID" 2>/dev/null || true
+        WATCHDOG_PID=""
+    fi
+}
+
+prepare_root_for_removal() {
+    local candidate="$1"
+    [[ -n "$candidate" && -n "${RUNNER_TEMP:-}" ]]
+    [[ "$candidate" == "$RUNNER_TEMP"/true-family-pass-b1a.* ]]
+    [[ "$(host_for 10 dirname -- "$candidate")" == "$RUNNER_TEMP" ]]
+    [[ -d "$candidate" && ! -L "$candidate" ]]
+    [[ "$(host_for 10 stat -c '%u' -- "$candidate")" == "$HOST_UID" ]]
+    host_for 30 find -P "$candidate" -xdev -type l -delete
+    host_for 30 rm -rf --one-file-system -- "$candidate"
+    [[ ! -e "$candidate" && ! -L "$candidate" ]]
+}
+
+cleanup_labeled_resources() {
+    local ids
+    local restore_errexit=0
+    if [[ $- == *e* ]]; then
+        restore_errexit=1
+    fi
+    set +e
+    ids="$(docker_for 30 ps -aq --filter "label=$LABEL_KEY=$RUN_ID" 2>/dev/null)"
+    if [[ -n "$ids" ]]; then
+        # Container IDs contain no shell metacharacters and are intentionally word-split.
+        docker_for 30 rm -fv $ids >/dev/null 2>&1
+    fi
+    ids="$(docker_for 30 network ls -q --filter "label=$LABEL_KEY=$RUN_ID" 2>/dev/null)"
+    if [[ -n "$ids" ]]; then
+        docker_for 30 network rm $ids >/dev/null 2>&1
+    fi
+    if [[ "$restore_errexit" -eq 1 ]]; then
+        set -e
+    fi
+}
+
+cleanup_all() {
+    local containers networks
+    cleanup_labeled_resources
+    containers="$(docker_for 30 ps -aq --filter "label=$LABEL_KEY=$RUN_ID")"
+    networks="$(docker_for 30 network ls -q --filter "label=$LABEL_KEY=$RUN_ID")"
+    [[ -z "$containers" && -z "$networks" ]]
+    if [[ -n "$ROOT" && ( -e "$ROOT" || -L "$ROOT" ) ]]; then
+        prepare_root_for_removal "$ROOT"
+    fi
+}
+
+failure_exit() {
+    local status=$?
+    if [[ "$status" -eq 0 ]]; then
+        status=1
+    fi
+    trap - EXIT INT TERM HUP
+    set +e
+    stop_watchdog
+    if [[ "$OUTPUT_EMITTED" -eq 0 ]]; then
+        if [[ -n "$RUN_ID" ]]; then
+            cleanup_labeled_resources
+        fi
+        local remaining_containers=""
+        local remaining_networks=""
+        local cleanup_queries_ok=1
+        if [[ -n "$RUN_ID" ]]; then
+            remaining_containers="$(docker_for 30 ps -aq --filter "label=$LABEL_KEY=$RUN_ID" 2>/dev/null)" || cleanup_queries_ok=0
+            remaining_networks="$(docker_for 30 network ls -q --filter "label=$LABEL_KEY=$RUN_ID" 2>/dev/null)" || cleanup_queries_ok=0
+        fi
+        if [[ -n "$ROOT" && ( -e "$ROOT" || -L "$ROOT" ) ]]; then
+            prepare_root_for_removal "$ROOT" >/dev/null 2>&1
+        fi
+        printf '%s\n' "$FAILURE_RECORD" >&3
+    fi
+    exit "$status"
+}
+trap failure_exit EXIT INT TERM HUP
+
+validate_environment() {
+    [[ "${CI:-}" == "true" ]]
+    [[ "${GITHUB_ACTIONS:-}" == "true" ]]
+    [[ "${GITHUB_REF:-}" == "refs/heads/main" ]]
+    [[ "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]]
+    [[ "${GITHUB_WORKFLOW_REF:-}" == */.github/workflows/pass-b1-broker.yaml@refs/heads/main ]]
+    [[ "${RUNNER_OS:-}" == "Linux" ]]
+    [[ "${RUNNER_ARCH:-}" == "X64" ]]
+    [[ "${ImageOS:-}" == "ubuntu24" ]]
+    [[ "${RUNNER_TEMP:-}" == /* && -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]
+    HOST_UID="$(host_for 10 id -u)"
+    HOST_GID="$(host_for 10 id -g)"
+    [[ "$HOST_UID" -gt 0 && "$HOST_GID" -gt 0 ]]
+    local name
+    while IFS='=' read -r name _; do
+        case "$name" in
+            PATH|RUNNER_TEMP|CI|GITHUB_ACTIONS|GITHUB_REF|GITHUB_SHA|GITHUB_WORKFLOW_REF|RUNNER_OS|RUNNER_ARCH|ImageOS|PWD|SHLVL|_)
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    done < <(host_for 10 env)
+    [[ "$(host_for 10 uname -m)" == "x86_64" ]]
+    [[ "$(host_for 30 git -C "$REPO_ROOT" rev-parse HEAD)" == "$GITHUB_SHA" ]]
+    [[ -z "$(host_for 30 git -C "$REPO_ROOT" status --porcelain)" ]]
+}
+
+create_private_root() {
+    ROOT="$(host_for 10 mktemp -d "$RUNNER_TEMP/true-family-pass-b1a.XXXXXXXX")"
+    [[ "$ROOT" == "$RUNNER_TEMP"/true-family-pass-b1a.* ]]
+    [[ -d "$ROOT" && ! -L "$ROOT" ]]
+    host_for 10 chmod 0700 "$ROOT"
+    [[ "$(host_for 10 stat -c '%a' -- "$ROOT")" == "700" ]]
+    DOCKER_HOME="$ROOT/docker-home"
+    DOCKER_CONFIG_DIR="$ROOT/docker-config"
+    host_for 10 mkdir -m 0700 "$DOCKER_HOME" "$DOCKER_CONFIG_DIR"
+    printf '%s\n' '{}' >"$DOCKER_CONFIG_DIR/config.json"
+    host_for 10 chmod 0600 "$DOCKER_CONFIG_DIR/config.json"
+    RUN_ID="$(host_for 10 od -An -N16 -tx1 /dev/urandom | host_for 10 tr -d ' \n')"
+    [[ "$RUN_ID" =~ ^[0-9a-f]{32}$ ]]
+}
+
+container_security_client() {
+    printf '%s\n' \
+        "--user=$HOST_UID:$HOST_GID" \
+        "--read-only" \
+        "--cap-drop=ALL" \
+        "--security-opt=no-new-privileges" \
+        "--ipc=private" \
+        "--cgroupns=private" \
+        "--init" \
+        "--restart=no" \
+        "--memory=268435456" \
+        "--memory-swap=268435456" \
+        "--cpus=1.0" \
+        "--pids-limit=64" \
+        "--shm-size=16777216" \
+        "--ulimit=core=0:0" \
+        "--ulimit=nofile=256:256" \
+        "--log-driver=json-file" \
+        "--log-opt=max-size=1m" \
+        "--log-opt=max-file=1"
+}
+
+container_security_broker() {
+    printf '%s\n' \
+        "--user=$HOST_UID:$HOST_GID" \
+        "--read-only" \
+        "--cap-drop=ALL" \
+        "--security-opt=no-new-privileges" \
+        "--ipc=private" \
+        "--cgroupns=private" \
+        "--init" \
+        "--restart=no" \
+        "--memory=134217728" \
+        "--memory-swap=134217728" \
+        "--cpus=0.5" \
+        "--pids-limit=32" \
+        "--shm-size=16777216" \
+        "--ulimit=core=0:0" \
+        "--ulimit=nofile=256:256" \
+        "--log-driver=json-file" \
+        "--log-opt=max-size=1m" \
+        "--log-opt=max-file=1"
+}
+
+create_node_container() {
+    local name="$1"
+    local role="$2"
+    local network="$3"
+    local network_alias="$4"
+    local mode="$5"
+    local endpoint_host="$6"
+    local duration="$7"
+    local ordinal="$8"
+    shift 8
+    local client_options
+    local -a alias_options=()
+    client_options="$(container_security_client)"
+    if [[ "$network_alias" != "-" ]]; then
+        alias_options=(--network-alias "$network_alias")
+    fi
+    docker_for 30 create \
+        $client_options \
+        --platform linux/amd64 \
+        --network "$network" \
+        "${alias_options[@]}" \
+        --label "$LABEL_KEY=$RUN_ID" \
+        --label "$LABEL_KEY-replica=$ordinal" \
+        --label "$LABEL_KEY-role=$role" \
+        --name "$name" \
+        --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777 \
+        --mount "type=bind,src=$RUNTIME,dst=/harness/test_physical_probe_broker_runtime.mjs,readonly" \
+        --mount "type=bind,src=$MANIFEST,dst=/input/manifest.json,readonly" \
+        "$@" \
+        --entrypoint /usr/bin/timeout \
+        "$NODE_IMAGE" \
+        --foreground --signal=TERM --kill-after=10s "${duration}s" \
+        /usr/bin/env -i \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        NODE_VERSION=20.19.2 \
+        B1A_MODE="$mode" \
+        B1A_ENDPOINT_HOST="$endpoint_host" \
+        B1A_ENDPOINT_PORT="$([[ "$endpoint_host" == "broker" ]] && printf 18883 || printf 18884)" \
+        B1A_LISTEN_HOST=gateway \
+        B1A_LISTEN_PORT=18884 \
+        B1A_STATUS_PATH=/status/gateway-startup.json \
+        B1A_COORD_DIR=/coord \
+        B1A_OUTPUT_DIR=/out \
+        TMPDIR=/tmp \
+        /usr/local/bin/node /harness/test_physical_probe_broker_runtime.mjs --runtime >/dev/null
+}
+
+wait_for_private_file() {
+    local file="$1"
+    local attempts=0
+    local metadata
+    while [[ "$attempts" -lt 200 ]]; do
+        if [[ -f "$file" && ! -L "$file" ]]; then
+            metadata="$(host_for 10 stat -c '%F:%u:%a:%h:%s' -- "$file")"
+            [[ "$metadata" =~ ^regular\ file:$HOST_UID:600:1:([1-9][0-9]{0,6})$ ]]
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        host_for 1 sleep 0.05
+    done
+    return 1
+}
+
+run_replica() {
+    local ordinal="$1"
+    local replica="$ROOT/replica-$ordinal"
+    local credentials="$replica/credentials"
+    local generated="$replica/generated"
+    local observer_after_output="$replica/observer-after-output"
+    local config="$replica/config"
+    local data="$replica/data"
+    local logs="$replica/logs"
+    local inspect="$replica/inspect"
+    local evidence="$replica/evidence"
+    local coord="$replica/coord"
+    local status="$replica/status"
+    local backend="tf-pass-b1a-${RUN_ID:0:16}-$ordinal-backend"
+    local frontend="tf-pass-b1a-${RUN_ID:0:16}-$ordinal-frontend"
+    local prefix="tf-pass-b1a-${RUN_ID:0:12}-$ordinal"
+    local setup_name="$prefix-setup"
+    local broker_name="$prefix-broker"
+    local gateway_name="$prefix-gateway"
+    local install_name="$prefix-install"
+    local client_before_name="$prefix-client-before"
+    local observer_before_name="$prefix-observer-before"
+    local readback_before_name="$prefix-readback-before"
+    local backend_before_name="$prefix-backend-before"
+    local readback_after_name="$prefix-readback-after"
+    local backend_after_name="$prefix-backend-after"
+    local readiness_after_name="$prefix-readiness-after"
+    local observer_after_name="$prefix-observer-after"
+    local client_after_name="$prefix-client-after"
+    local readiness_final_name="$prefix-readiness-final"
+    local client_final_name="$prefix-client-final"
+    local backend_final_name="$prefix-backend-final"
+    local readback_final_name="$prefix-readback-final"
+    local client_options broker_options
+
+    host_for 10 mkdir -m 0700 "$replica" "$credentials" "$generated" "$observer_after_output" "$config" "$data" "$logs" "$inspect" "$evidence" "$coord" "$status"
+    host_for 60 node "$VERIFIER" --generate-admin-credentials "$MANIFEST" "$credentials" >"$logs/generate-admin-credentials.json"
+    host_for 60 node "$VERIFIER" --write-broker-config "$MANIFEST" "$config/pass-b1a.conf" >"$logs/write-config.json"
+
+    docker_for 30 network create \
+        --driver=bridge \
+        --internal \
+        --label "$LABEL_KEY=$RUN_ID" \
+        --label "$LABEL_KEY-replica=$ordinal" \
+        --label "$LABEL_KEY-plane=backend" \
+        "$backend" >/dev/null
+    docker_for 30 network create \
+        --driver=bridge \
+        --internal \
+        --label "$LABEL_KEY=$RUN_ID" \
+        --label "$LABEL_KEY-replica=$ordinal" \
+        --label "$LABEL_KEY-plane=frontend" \
+        "$frontend" >/dev/null
+
+    client_options="$(container_security_client)"
+    # The option helper emits one trusted argument per line; newline-only IFS preserves each argument.
+    docker_for 30 create \
+        $client_options \
+        --platform linux/amd64 \
+        --network=none \
+        --label "$LABEL_KEY=$RUN_ID" \
+        --label "$LABEL_KEY-replica=$ordinal" \
+        --label "$LABEL_KEY-role=setup" \
+        --name "$setup_name" \
+        --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777 \
+        --tmpfs /mosquitto/data:rw,noexec,nosuid,nodev,size=16777216,mode=0700 \
+        --tmpfs /mosquitto/log:rw,noexec,nosuid,nodev,size=16777216,mode=0700 \
+        --mount "type=bind,src=$credentials/admin.password,dst=/run/admin.password,readonly" \
+        --mount "type=bind,src=$data,dst=/out" \
+        --entrypoint /bin/ash \
+        "$MOSQUITTO_IMAGE" \
+        -ec 'set -eu; umask 077; test "$(id -u)" -ne 0; password="$(cat /run/admin.password)"; /usr/bin/mosquitto_ctrl dynsec init /out/dynamic-security.json tf-b1a-admin "$password"; unset password; chmod 0600 /out/dynamic-security.json' >/dev/null
+    docker_for 60 start -a "$setup_name" >"$logs/setup.stdout" 2>"$logs/setup.stderr"
+    docker_for 30 inspect "$setup_name" >"$inspect/setup.json"
+    host_for 60 node "$VERIFIER" --bind-admin-clientid "$data/dynamic-security.json" "$MANIFEST" >"$logs/bind-admin.json"
+    host_for 60 node "$VERIFIER" --verify-bootstrap "$data/dynamic-security.json" "$credentials/admin.json" "$MANIFEST" >"$logs/verify-bootstrap.json"
+
+    broker_options="$(container_security_broker)"
+    docker_for 30 create \
+        $broker_options \
+        --platform linux/amd64 \
+        --network "$backend" \
+        --network-alias broker \
+        --label "$LABEL_KEY=$RUN_ID" \
+        --label "$LABEL_KEY-replica=$ordinal" \
+        --label "$LABEL_KEY-role=broker" \
+        --name "$broker_name" \
+        --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777 \
+        --tmpfs /mosquitto/log:rw,noexec,nosuid,nodev,size=16777216,mode=0700 \
+        --mount "type=bind,src=$config/pass-b1a.conf,dst=/mosquitto/config/pass-b1a.conf,readonly" \
+        --mount "type=bind,src=$data,dst=/mosquitto/data" \
+        --entrypoint /usr/sbin/mosquitto \
+        "$MOSQUITTO_IMAGE" \
+        -c /mosquitto/config/pass-b1a.conf >/dev/null
+    docker_for 30 start "$broker_name" >/dev/null
+    docker_for 30 inspect "$broker_name" >"$inspect/broker-before.json"
+
+    create_node_container "$install_name" install "$backend" - install broker 240 "$ordinal" \
+        --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly" \
+        --mount "type=bind,src=$generated,dst=/out"
+    docker_for 270 start -a "$install_name" >"$evidence/install.json" 2>"$logs/install.stderr"
+    docker_for 30 inspect "$install_name" >"$inspect/install.json"
+    host_for 60 node "$VERIFIER" --verify-credential-set "$MANIFEST" "$credentials" "$generated" >"$logs/verify-credential-set.json"
+
+    create_node_container "$gateway_name" gateway "$frontend" gateway gateway broker 1200 "$ordinal" \
+        --mount "type=bind,src=$status,dst=/status"
+    docker_for 30 network connect "$backend" "$gateway_name"
+    docker_for 30 start "$gateway_name" >/dev/null
+    wait_for_private_file "$status/gateway-startup.json"
+
+    create_node_container "$client_before_name" client "$frontend" - client_before gateway 240 "$ordinal" \
+        --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly" \
+        --mount "type=bind,src=$ARTIFACT,dst=/input/true_family_brt_probe.mjs,readonly" \
+        --mount "type=bind,src=$coord,dst=/coord"
+    docker_for 30 start "$client_before_name" >/dev/null
+    wait_for_private_file "$coord/source-ready.json"
+
+    create_node_container "$observer_before_name" observer "$backend" - observer_before broker 120 "$ordinal" \
+        --mount "type=bind,src=$generated/observer-before.json,dst=/input/observer.json,readonly" \
+        --mount "type=bind,src=$ARTIFACT,dst=/input/true_family_brt_probe.mjs,readonly" \
+        --mount "type=bind,src=$coord,dst=/coord"
+    docker_for 150 start -a "$observer_before_name" >"$evidence/observer-before.json" 2>"$logs/observer-before.stderr"
+    [[ "$(docker_for 270 wait "$client_before_name")" == "0" ]]
+    docker_for 30 logs "$client_before_name" >"$evidence/client-before.json" 2>"$logs/client-before.stderr"
+    docker_for 30 inspect "$client_before_name" >"$inspect/client-before.json"
+    docker_for 30 inspect "$observer_before_name" >"$inspect/observer-before.json"
+
+    create_node_container "$readback_before_name" readback "$backend" - readback_before broker 180 "$ordinal" \
+        --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly"
+    docker_for 210 start -a "$readback_before_name" >"$evidence/readback-before.json" 2>"$logs/readback-before.stderr"
+    docker_for 30 inspect "$readback_before_name" >"$inspect/readback-before.json"
+
+    create_node_container "$backend_before_name" backend "$backend" - backend_before broker 180 "$ordinal" \
+        --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly"
+    docker_for 210 start -a "$backend_before_name" >"$evidence/backend-before.json" 2>"$logs/backend-before.stderr"
+    docker_for 30 inspect "$backend_before_name" >"$inspect/backend-before.json"
+
+    docker_for 30 stop --time 20 "$broker_name" >/dev/null
+    docker_for 30 inspect "$broker_name" >"$inspect/broker-stopped.json"
+    docker_for 30 start "$broker_name" >/dev/null
+    docker_for 30 inspect "$broker_name" >"$inspect/broker-after.json"
+
+    create_node_container "$readiness_after_name" readiness "$backend" - readiness_after broker 30 "$ordinal" \
+        --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly"
+    docker_for 60 start -a "$readiness_after_name" >"$evidence/readiness-after.json" 2>"$logs/readiness-after.stderr"
+    docker_for 30 inspect "$readiness_after_name" >"$inspect/readiness-after.json"
+
+    create_node_container "$backend_after_name" backend "$backend" - backend_after broker 180 "$ordinal" \
+        --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly"
+    docker_for 210 start -a "$backend_after_name" >"$evidence/backend-after.json" 2>"$logs/backend-after.stderr"
+    docker_for 30 inspect "$backend_after_name" >"$inspect/backend-after.json"
+
+    create_node_container "$readback_after_name" readback "$backend" - readback_after broker 180 "$ordinal" \
+        --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly" \
+        --mount "type=bind,src=$observer_after_output,dst=/out"
+    docker_for 210 start -a "$readback_after_name" >"$evidence/readback-after.json" 2>"$logs/readback-after.stderr"
+    docker_for 30 inspect "$readback_after_name" >"$inspect/readback-after.json"
+    host_for 60 node "$VERIFIER" --verify-credential-set "$MANIFEST" "$credentials" "$generated" "$observer_after_output" >"$logs/verify-credential-set-after.json"
+
+    create_node_container "$observer_after_name" observer "$backend" - observer_after broker 120 "$ordinal" \
+        --mount "type=bind,src=$observer_after_output/observer-after.json,dst=/input/observer.json,readonly" \
+        --mount "type=bind,src=$coord,dst=/coord"
+    docker_for 30 start "$observer_after_name" >/dev/null
+    wait_for_private_file "$coord/observer-after-ready.json"
+
+    create_node_container "$client_after_name" client "$frontend" - client_after gateway 180 "$ordinal" \
+        --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly"
+    docker_for 210 start -a "$client_after_name" >"$evidence/client-after.json" 2>"$logs/client-after.stderr"
+    [[ "$(docker_for 150 wait "$observer_after_name")" == "0" ]]
+    docker_for 30 logs "$observer_after_name" >"$evidence/observer-after.json" 2>"$logs/observer-after.stderr"
+    docker_for 30 inspect "$client_after_name" >"$inspect/client-after.json"
+    docker_for 30 inspect "$observer_after_name" >"$inspect/observer-after.json"
+
+    docker_for 30 stop --time 20 "$broker_name" >/dev/null
+    docker_for 30 inspect "$broker_name" >"$inspect/broker-stopped-final.json"
+    docker_for 30 start "$broker_name" >/dev/null
+    docker_for 30 inspect "$broker_name" >"$inspect/broker-final.json"
+
+    create_node_container "$readiness_final_name" readiness "$backend" - readiness_final broker 30 "$ordinal" \
+        --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly"
+    docker_for 60 start -a "$readiness_final_name" >"$evidence/readiness-final.json" 2>"$logs/readiness-final.stderr"
+    docker_for 30 inspect "$readiness_final_name" >"$inspect/readiness-final.json"
+
+    create_node_container "$client_final_name" client "$frontend" - client_final gateway 180 "$ordinal" \
+        --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly"
+    docker_for 210 start -a "$client_final_name" >"$evidence/client-final.json" 2>"$logs/client-final.stderr"
+    docker_for 30 inspect "$client_final_name" >"$inspect/client-final.json"
+
+    create_node_container "$backend_final_name" backend "$backend" - backend_final broker 180 "$ordinal" \
+        --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly"
+    docker_for 210 start -a "$backend_final_name" >"$evidence/backend-final.json" 2>"$logs/backend-final.stderr"
+    docker_for 30 inspect "$backend_final_name" >"$inspect/backend-final.json"
+
+    create_node_container "$readback_final_name" readback "$backend" - readback_final broker 180 "$ordinal" \
+        --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly"
+    docker_for 210 start -a "$readback_final_name" >"$evidence/readback-final.json" 2>"$logs/readback-final.stderr"
+    docker_for 30 inspect "$readback_final_name" >"$inspect/readback-final.json"
+    docker_for 30 inspect "$gateway_name" >"$inspect/gateway.json"
+    docker_for 30 network inspect "$backend" >"$inspect/network-backend.json"
+    docker_for 30 network inspect "$frontend" >"$inspect/network-frontend.json"
+    docker_for 30 logs "$broker_name" >"$logs/broker.log" 2>&1
+    docker_for 30 logs "$gateway_name" >"$logs/gateway.log" 2>&1
+
+    host_for 90 node "$VERIFIER" --verify-replica "$replica" "$MANIFEST" "$ARTIFACT" >"$evidence/replica.json"
+
+    docker_for 30 stop --time 20 "$gateway_name" >/dev/null
+    docker_for 30 stop --time 20 "$broker_name" >/dev/null
+    docker_for 30 inspect "$broker_name" >"$inspect/broker-redaction-stopped.json"
+    host_for 90 node "$VERIFIER" --scan-redaction "$ARTIFACT" "$MANIFEST" "$replica" \
+        "$data" "$inspect/broker-redaction-stopped.json" "$logs" "$inspect" "$evidence" \
+        "$config/pass-b1a.conf" "$status" "$coord" >/dev/null
+
+    docker_for 30 rm -fv \
+        "$setup_name" "$broker_name" "$gateway_name" "$install_name" \
+        "$client_before_name" "$observer_before_name" "$readback_before_name" \
+        "$backend_before_name" "$readback_after_name" "$readiness_after_name" "$backend_after_name" \
+        "$observer_after_name" "$client_after_name" "$readiness_final_name" "$client_final_name" \
+        "$backend_final_name" "$readback_final_name" >/dev/null
+    docker_for 30 network rm "$backend" "$frontend" >/dev/null
+    [[ -z "$(docker_for 30 ps -aq --filter "label=$LABEL_KEY=$RUN_ID" --filter "label=$LABEL_KEY-replica=$ordinal")" ]]
+    [[ -z "$(docker_for 30 network ls -q --filter "label=$LABEL_KEY=$RUN_ID" --filter "label=$LABEL_KEY-replica=$ordinal")" ]]
+}
+
+validate_environment
+create_private_root
+start_watchdog
+shell_self_check >"$ROOT/shell-self-check.json"
+host_for 90 node "$VERIFIER" --self-check \
+    "$MANIFEST" "$SCRIPT_DIR/pass-b1-broker" "$RUNTIME" "$VERIFIER" "$WORKFLOW" \
+    "$ARTIFACT" "$PREFLIGHT" "$PREFLIGHT_FIXTURE" "$PREFLIGHT_TEST" "$B0_LAUNCHER" "$B0_WORKFLOW" \
+    "$B0_MANIFEST" "$B0_RUNTIME" "$B0_VERIFIER" >"$ROOT/verifier-self-check.json"
+host_for 90 env -i PATH="$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 PYTHONNOUSERSITE=1 \
+    python3 "$REPO_ROOT/tests/test_physical_probe_preflight.py" >/dev/null 2>&1
+
+docker_for 270 pull --platform linux/amd64 "$NODE_IMAGE" >/dev/null
+docker_for 270 pull --platform linux/amd64 "$MOSQUITTO_IMAGE" >/dev/null
+docker_for 30 image inspect "$NODE_IMAGE" >"$ROOT/node-image.json"
+docker_for 30 image inspect "$MOSQUITTO_IMAGE" >"$ROOT/mosquitto-image.json"
+host_for 60 node "$VERIFIER" --validate-image-inspect node "$ROOT/node-image.json" "$MANIFEST" >/dev/null
+host_for 60 node "$VERIFIER" --validate-image-inspect mosquitto "$ROOT/mosquitto-image.json" "$MANIFEST" >/dev/null
+
+run_replica 1
+run_replica 2
+host_for 30 cmp -s "$ROOT/replica-1/evidence/replica.json" "$ROOT/replica-2/evidence/replica.json"
+
+COMMIT="$(host_for 30 git -C "$REPO_ROOT" rev-parse HEAD)"
+TREE="$(host_for 30 git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')"
+host_for 90 node "$VERIFIER" --combine-replicas \
+    "$ROOT/replica-1/evidence/replica.json" "$ROOT/replica-2/evidence/replica.json" \
+    "$ROOT/node-image.json" "$ROOT/mosquitto-image.json" \
+    "$MANIFEST" "$SCRIPT_DIR/pass-b1-broker" "$RUNTIME" "$VERIFIER" "$WORKFLOW" \
+    "$ARTIFACT" "$PREFLIGHT" "$PREFLIGHT_FIXTURE" "$PREFLIGHT_TEST" \
+    "$COMMIT" "$TREE" "$GITHUB_WORKFLOW_REF" >"$ROOT/base-evidence.json"
+
+host_for 90 node "$VERIFIER" --scan-redaction "$ARTIFACT" "$MANIFEST" "$ROOT/replica-1" \
+    "$ROOT/replica-1/data" "$ROOT/replica-1/inspect/broker-redaction-stopped.json" \
+    "$ROOT/replica-1/logs" "$ROOT/replica-1/inspect" "$ROOT/replica-1/evidence" \
+    "$ROOT/replica-1/config/pass-b1a.conf" "$ROOT/replica-1/status" "$ROOT/replica-1/coord" \
+    "$ROOT/base-evidence.json" "$ROOT/node-image.json" "$ROOT/mosquitto-image.json" \
+    "$ROOT/shell-self-check.json" "$ROOT/verifier-self-check.json" >/dev/null
+host_for 90 node "$VERIFIER" --scan-redaction "$ARTIFACT" "$MANIFEST" "$ROOT/replica-2" \
+    "$ROOT/replica-2/data" "$ROOT/replica-2/inspect/broker-redaction-stopped.json" \
+    "$ROOT/replica-2/logs" "$ROOT/replica-2/inspect" "$ROOT/replica-2/evidence" \
+    "$ROOT/replica-2/config/pass-b1a.conf" "$ROOT/replica-2/status" "$ROOT/replica-2/coord" \
+    "$ROOT/base-evidence.json" "$ROOT/node-image.json" "$ROOT/mosquitto-image.json" \
+    "$ROOT/shell-self-check.json" "$ROOT/verifier-self-check.json" >/dev/null
+
+BASE_EVIDENCE="$(<"$ROOT/base-evidence.json")"
+[[ -n "$BASE_EVIDENCE" ]]
+cleanup_all
+FINAL_EVIDENCE="$(host_for 60 node "$VERIFIER" --finalize-cleanup "$MANIFEST" <<<"$BASE_EVIDENCE")"
+[[ -n "$FINAL_EVIDENCE" ]]
+
+stop_watchdog
+trap - EXIT INT TERM HUP
+OUTPUT_EMITTED=1
+printf '%s\n' "$FINAL_EVIDENCE" >&3

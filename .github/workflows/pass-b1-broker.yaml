@@ -1,0 +1,90 @@
+name: "Non-Authoritative PASS B1A Composite MQTT Policy Foundation"
+
+# This same-repository CI gate proves a real disposable broker plus packet-gateway policy boundary.
+# It is not authoritative PASS B1, independent evidence, or physical-device proof.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/pass-b1-broker.yaml
+      - .github/workflows/pass-b0-runtime.yaml
+      - scripts/pass-b1-broker
+      - scripts/pass-b-z2m-runtime
+      - tests/js/test_physical_probe_broker_runtime.mjs
+      - tests/js/verify_physical_probe_broker_runtime.mjs
+      - tests/js/test_physical_probe_z2m_runtime.mjs
+      - tests/js/verify_physical_probe_z2m_runtime.mjs
+      - tests/fixtures/physical_probe_pass_b1_manifest.json
+      - tests/fixtures/physical_probe_pass_b_manifest.json
+      - tests/fixtures/physical_probe_preflight_vectors.json
+      - tests/test_physical_probe_preflight.py
+      - custom_components/true_family/physical_probe_preflight.py
+      - custom_components/true_family/probe/true_family_brt_probe.mjs
+      - README.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pass-b1-broker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pass-b1a-composite-policy:
+    name: "CI-only non-authoritative PASS B1A composite MQTT policy"
+    if: github.ref == 'refs/heads/main'
+    runs-on: "ubuntu-24.04"
+    timeout-minutes: 45
+    steps:
+      - name: "Check out reviewed source without credentials"
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: "Set up exact host Node.js"
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20.19.2"
+
+      - name: "Validate static syntax"
+        shell: bash
+        run: |
+          test "$(node --version)" = "v20.19.2"
+          bash -n scripts/pass-b1-broker
+          node --check tests/js/test_physical_probe_broker_runtime.mjs
+          node --check tests/js/verify_physical_probe_broker_runtime.mjs
+          node --test tests/js/test_physical_probe_broker_runtime.mjs
+          python3 -m unittest tests.test_physical_probe_preflight
+          python3 -m py_compile custom_components/true_family/physical_probe_preflight.py tests/test_physical_probe_preflight.py
+          jq -e 'type == "object"' tests/fixtures/physical_probe_pass_b1_manifest.json >/dev/null
+          jq -e 'type == "object"' tests/fixtures/physical_probe_preflight_vectors.json >/dev/null
+          yq -e 'type == "!!map"' .github/workflows/pass-b1-broker.yaml >/dev/null
+
+      - name: "Validate static bindings and adversarial fixtures"
+        shell: bash
+        run: |
+          env -i \
+            PATH="$PATH" \
+            scripts/pass-b1-broker --shell-self-check
+          exec env -i \
+            PATH="$PATH" \
+            scripts/pass-b1-broker --self-check
+
+      - name: "Run two fresh composite-policy replicas"
+        shell: bash
+        run: |
+          exec env -i \
+            PATH="$PATH" \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            CI="true" \
+            GITHUB_ACTIONS="true" \
+            GITHUB_REF="$GITHUB_REF" \
+            GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_WORKFLOW_REF="$GITHUB_WORKFLOW_REF" \
+            RUNNER_OS="$RUNNER_OS" \
+            RUNNER_ARCH="$RUNNER_ARCH" \
+            ImageOS="$ImageOS" \
+            scripts/pass-b1-broker

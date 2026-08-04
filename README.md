@@ -46,8 +46,8 @@ below is unreleased, unwired, and absent from that installed release.
   fresh-deployment identity.
 - `tests/fixtures/physical_probe_vectors.json`: shared Python/Node UTF-8
   canonicalization, digest, request, record, result, and frame vectors.
-- `tests/fixtures/physical_probe_preflight_vectors.json`: canonical good
-  deployment, pre-arm, request, report, and permit-candidate digests.
+- `tests/fixtures/physical_probe_preflight_vectors.json`: byte-preserved PASS B0
+  v1 deployment, pre-arm, request, report, and permit-candidate vectors.
 - `tests/fixtures/physical_probe_pass_b_manifest.json`: exact non-authoritative
   PASS B0 container, package, verifier, limit, and claim contract.
 - `tests/js/test_physical_probe_z2m_runtime.mjs`: brokerless real-loader smoke
@@ -58,6 +58,19 @@ below is unreleased, unwired, and absent from that installed release.
   execution deliberately fails when Docker or the amd64 CI runner is absent.
 - `.github/workflows/pass-b0-runtime.yaml`: main-branch-only non-authoritative
   PASS B0 smoke workflow.
+- `tests/fixtures/physical_probe_pass_b1_manifest.json`: exact PASS B1A
+  Mosquitto, packet-gateway, ACL-plan-v2 topic oracle, composite-policy,
+  principal, matrix, topology, evidence, and claim-limit contract.
+- `tests/js/test_physical_probe_broker_runtime.mjs`: zero-dependency raw MQTT v5
+  client and packet-aware enforcement gateway, Dynamic Security installer and
+  read-back client, and live composite-policy matrix harness.
+- `tests/js/verify_physical_probe_broker_runtime.mjs`: strict PASS B1A manifest,
+  preflight-policy, Docker inspect, read-back, redaction, cleanup, and canonical
+  evidence verifier.
+- `scripts/pass-b1-broker`: two-replica disposable Mosquitto plus gateway
+  launcher with separated private credentials and fixed sanitized output.
+- `.github/workflows/pass-b1-broker.yaml`: main-branch-only, fixed-runner,
+  non-authoritative PASS B1A composite MQTT policy workflow.
 - `custom_components/true_family/reference_projection.py`: strict semantic
   entity-reference projection for scalar fields and allowlisted Jinja helpers.
 - `custom_components/true_family/reference_journal_remote.py`: signed client for
@@ -139,9 +152,10 @@ scripts/verify
 The verification script uses the pinned disposable Home Assistant 2026.7.4
 harness and requires exact Node.js `20.19.2`. Set
 `TRUE_FAMILY_HA_HARNESS_ROOT` when the harness is elsewhere. The current gate
-passes 610 Home Assistant runtime tests, 300 pure Python protocol, persistence,
-deployment-preflight, release, and static contract tests, and 130 zero-dependency
-Node tests, for 1,040 total.
+passes 610 Home Assistant runtime tests, 301 pure Python protocol, persistence,
+deployment-preflight, release, and static contract tests, and 157 zero-dependency
+Node tests, for 1,068 total. The Docker-free PASS B1A shell and verifier
+self-checks are additional static gates and are not included in that test count.
 
 ### PASS B0 CI-Only Runtime Smoke
 
@@ -311,6 +325,180 @@ is limited to the strictly static `--shell-self-check`, `--self-check`, and
 project tests; neither self-check uses Docker, network access, or a temporary
 PASS B0 root.
 
+### PASS B1A CI-Only Composite MQTT Policy Foundation
+
+PASS B1A adds a separate same-repository, reviewed-source, non-authoritative
+broker plus packet-gateway policy gate in `.github/workflows/pass-b1-broker.yaml`. It runs only on
+`refs/heads/main` with fixed `ubuntu-24.04` and Linux amd64 expectations. It is
+not PASS B1 completion, independent attestation, malicious-source-resistant
+evidence, household equivalence, or an authorization input. No loose spare,
+coordinator, radio, valve, Home Assistant, household broker, or household
+Zigbee2MQTT instance is used. Until the main-branch workflow itself succeeds,
+the repository claims only the implemented and statically verified gate, not a
+completed live-broker result.
+
+The gate pins the exact Node child already used by PASS B0 and the exact
+Mosquitto `2.0.22` Linux amd64 child
+`docker.io/library/eclipse-mosquitto@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd`.
+The Mosquitto multi-platform index digest is reference metadata only. Image
+inspect must match the expected platform, exact child digest, Mosquitto OCI
+config digest, exact registry environment and OCI labels, entrypoint, and
+command. Each of two sequential replicas gets a fresh mode-`0700` private root,
+fresh separated credentials, fresh Dynamic Security database, fresh persistent
+broker data, and two fresh internal Docker networks. The broker, installer,
+read-back, and temporary source-observer containers are backend-only. Matrix
+clients are frontend-only. The packet gateway is the sole dual-homed container,
+with alias `gateway` on frontend port `18884`, and the broker has alias `broker`
+only on backend port `18883`. No host port is published and no client has a
+route or DNS name for the broker. Frontend probes also inspect the default-route
+state, resolve the common Docker host aliases where available, and attempt
+bounded host-alias and external TCP connections. Those observations do not prove
+isolation from the same GitHub runner host.
+
+Mosquitto Dynamic Security remains the authentication, delivery, and
+representable-ACL authority. Its
+initial admin is generated by the image's official isolated
+`mosquitto_ctrl dynsec init` path, with the mode-`0600` password supplied only to
+the private setup process and host-side redaction verifier. The required
+`mosquitto_ctrl` password argument is
+transiently visible to same-runner processes able to inspect that setup process's
+`/proc` command line; it is absent from Docker create/inspect data and emitted
+evidence. A backend-only installer receives only that admin
+credential, narrows the admin role, installs exact bound identities for
+synthetic Zigbee2MQTT, orchestrator, test-only collector, and authenticated
+no-access control principals, and emits a separate frontend credential set plus
+a single temporary observer credential. Frontend clients never receive admin or
+observer credential files. The gateway is provisioned no credential or probe
+artifact files, but password-bearing CONNECT frames and source-payload bytes do
+pass through its memory in transit. It parses the metadata needed for policy,
+does not decode those bytes as credentials or source, does not write or persist
+them, and forwards the original CONNECT for broker authentication. Anonymous,
+unknown, wrong-password, and right-password/wrong-client-ID connections must
+fail; gateway-close denials also prove that no broker ACK or PUBLISH preceded the
+close. The collector exists only for this disposable test and is not part of the
+production preflight principal model.
+
+The installed policy is compiled against the exact ACL-plan-v2 `topic_contract`
+and B1-only versioned oracle in `physical_probe_pass_b1_manifest.json`. The
+committed `physical_probe_preflight_vectors.json` remains byte-identical PASS B0
+v1 input; current v2 fencing rejects its old v1 ACL evidence rather than adding
+compatibility behavior. The orchestrator can publish
+only the two exact probe request topics and subscribe only to the five exact
+ready, status, result, response, and acknowledgement-response topics. Candidate,
+source, backup, descendant, broad, and repeated bridge-request cases are tested
+with broker-confirmed positive controls and gateway-close negative controls. The
+gateway enforces the exact preflight topic-validity oracle, including the
+256-Unicode-code-point bound and accepted internal empty segments. Exact-limit,
+overlength, empty, leading/trailing slash, ASCII and Unicode boundary whitespace,
+U+0000/U+0001-U+001F, U+007F-U+009F, surrogate, Unicode noncharacter, wildcard,
+and malformed UTF-8 cases are exercised without adding an NFC normalization
+rule. It denies any adjacent `bridge/request` segments at arbitrary depth, with
+explicit depth 0, 8, 32, and 100 cases. It also enforces orchestrator QoS 1 with retain disabled,
+allows Zigbee2MQTT QoS 0, 1, or 2 with either retain value on contract-valid
+topics inside or outside the base root, allows its sole `<base>/#` filter or any
+contract-valid concrete topic at requested QoS 0, 1, or 2, and denies all other
+wildcard or shared filters. Stateful PUBREC/PUBREL/PUBCOMP handling proxies both
+QoS2 directions, accepts only identity-exact DUP PUBLISH races before completion,
+rejects changed or stale retransmissions, and requires successful PUBREC and
+PUBCOMP results. Other and collector publishing remains denied. The broker and
+protocol endpoints still perform every successful PUBACK, PUBREC, PUBCOMP,
+SUBACK, and delivery; the gateway never forges a broker success acknowledgement.
+
+Every policy command carries unique correlation data, and command success comes
+only from the matching Dynamic Security response, never from request PUBACK.
+The verifier obtains canonical live lists and individual detail read-backs for
+defaults, anonymous-group state, clients, assignments, roles, ACL priorities,
+and groups. Missing, extra, duplicated, reordered, or changed objects fail. The
+Zigbee2MQTT role read-back must place the exact `<base>/#` literal subscription
+before its broad defense-in-depth `#` subscription pattern. Backend-only probes
+using application credentials sample native allows and denials, explicitly show
+that Mosquitto alone does not enforce the orchestrator QoS/retain envelope, and
+exercise Zigbee2MQTT outside the base root at QoS2. Two clean broker stops and
+restarts require bounded authenticated MQTT v5 readiness before backend probes,
+preserve the exact observed policy digest, and rerun the complete frontend
+authentication matrix after each restart.
+
+The source-privacy exercise publishes the exact source-derived retained inventory
+through the synthetic Zigbee2MQTT principal, proves a temporary narrow observer
+can replay it at QoS 1, and proves fresh and reconnect attempts by the
+orchestrator, collector, and other principal cannot subscribe through exact,
+base-wildcard, or shared-wildcard filters. The source is then cleared by the
+synthetic Zigbee2MQTT principal; after broker restart, the old retained payload
+must be absent while a new non-retained positive control remains deliverable.
+Raw source and credentials are excluded from evidence and logs. JSON and text
+outputs remain strict UTF-8. After live replica verification, the gateway and
+broker are cleanly stopped and the broker's zero-exit inspect is captured before
+the exact data-directory target is scanned. Its one bounded, regular, single-link
+`mosquitto.db` is scanned as raw bytes for exact source and credential canaries.
+Credential inputs are separately metadata- and containment-validated to obtain
+those canaries; they are never scanned against themselves or included in the
+explicit non-secret output roots. Request topics
+must finish non-retained, and private broker
+state is deleted before final pass output. `check_retain_source` is configured,
+but this layer deliberately does not claim an adversarial source-authorization
+change that proves that option's behavior. The pre-restart observer is revoked
+before read-back, a freshly generated post-restart observer is used only for the
+old-retained-absence and non-retained positive-delivery controls, and that second
+observer is also revoked before final read-back.
+
+A separate application-credential sentinel is published retained at QoS 2,
+replayed after the first broker restart, cleared at QoS 2, immediately checked
+absent, and checked absent again after the second restart with a positive
+non-retained QoS2 control. This proves sampled native retained persistence and
+clear behavior; it is distinct from the exact Dynamic Security read-back and
+does not claim the untested adversarial `check_retain_source` transition.
+
+The two replicas must produce byte-identical normalized verifier records after
+random names, credentials, container IDs, network IDs, timestamps, and
+nondeterministic inspect collection order are validated and omitted. Containers
+run as the non-root runner UID/GID with a read-only root, all capabilities
+dropped, `no-new-privileges`, private IPC and
+cgroup namespaces, an observed Docker seccomp filter, bounded
+memory/CPU/pids/file descriptors, bounded
+`json-file` logs, and no forbidden host paths or Docker socket. Cleanup uses only
+the validated private root and labeled resources, does not follow symlinks or
+chmod regular files, and requires zero labeled containers and networks plus root
+and credential absence before the one canonical final record is emitted. The
+internal watchdog fires after 1,920 seconds; against the 2,700-second workflow
+limit this is 780 seconds of nominal headroom, or 510 seconds after the longest
+270-second command. Workflow setup occurs before the watchdog starts, so this is
+not a mathematically guaranteed external-timeout cleanup reserve and an overall
+GitHub timeout is not cleanup proof. Host commands are bounded, the final-output descriptor is closed in
+children, and failure handling attempts private-root removal even when resource
+cleanup or its read-back fails. Seccomp is an observed hardening setting, not a
+complete host or kernel isolation boundary. No workflow artifact is uploaded.
+
+The effective policy is explicitly composite. Dynamic Security provides broker
+authentication, successful delivery, and its representable defense-in-depth ACL
+rules. Those broker ACLs are intentionally broad enough for the shared preflight
+Zigbee2MQTT semantics; they are defense in depth, not the exact envelope. The
+packet-aware Node MQTT v5 gateway enforces the missing exact
+topic-validity, arbitrary-depth containment, QoS, retain, concrete-subscription,
+source-privacy, and candidate-privacy rules before forwarding frames. It also
+uses bounded handshake/idle timers, rejects residual post-CONNECT bytes, closes
+backend-connect races, applies backpressure in both directions, and unreferences
+its timers. Frontend malformed input closes only that session; malformed or
+unsupported broker-origin packets latch the disposable gateway globally, while
+normal client-close races do not. Gateway,
+broker-policy, preflight-ACL, read-back, matrix, source, image, launcher, runtime,
+verifier, and workflow digests are bound into canonical evidence. Unsupported or
+malformed packet states fail closed. The run proves that the listener remains
+healthy through the sequence; backend and listener fault injection are explicitly
+not claimed.
+
+Final evidence distinguishes the exact Dynamic Security read-back, sampled
+native broker outcomes, exact gateway matrix enforcement, and tested pure
+composite equivalence. The launcher reruns the Python preflight oracle against
+the same bound matrix before starting Docker. It does not collapse any one of
+those layers into proof of the others.
+
+PASS B1A still does not exercise the real Zigbee2MQTT MQTT/ExternalJS retained-source
+path, broker delivery to a real Zigbee2MQTT process, atomic permit consumption,
+a continuously held writer fence, physical response provenance, coordinator or
+radio ordering, or actual-spare behavior. It does not authorize pairing or any
+live-home action. Those limitations are embedded in the manifest and final
+evidence and keep overall PASS B1 incomplete.
+
 The physical-probe source is offline and unwired: integration setup does not
 import or register it, and this project contains no automatic external-extension
 deployment, save, or removal path. The pure preflight module validates only
@@ -465,8 +653,10 @@ runtimes rather than inheriting the different behavior of `strip()` and `trim()`
 Both reject ill-formed Unicode, including lone UTF-16 surrogates, and both treat an
 observed proof at its exact proof deadline as expired.
 
-The v1 preflight contract now defines, but does not deploy or collect, the exact
-runtime/build, external-extension identity, lifecycle collision, privacy, and
+The raw snapshot contract remains v1, while the unreleased normalized ACL plan
+is v2 with a domain-separated digest and explicit topic contract. It defines,
+but does not deploy or collect, the exact runtime/build, external-extension
+identity, lifecycle collision, privacy, and
 writer-fence evidence required by this source. Its first raw temporal snapshot is
 fresh-deployment-only: the semantic digest of the complete immutable manifest,
 exact clean artifact, pinned runtimes and upstream references, normalized
@@ -526,16 +716,14 @@ This is a report boundary, not operational readiness. Raw evidence establishes
 only internal self-consistency until an authenticated trusted collector proves
 real candidate-alias ownership, obtains authoritative broker/lifecycle evidence,
 and continuously holds the external fence lease. Two point-in-time mappings do
-not acquire or hold a lease. Actual broker ACL
-installation and read-back, atomic permit consumption, cross-instance lifecycle
-enforcement, retained-source privacy proof, deployment/removal workflow, an
-authoritative full-runtime harness, final adapter/radio ordering, and actual-spare
-physical bench proof all remain blocked. PASS B0 provides only a CI smoke of the
-reviewed loader/adapter shell and does not satisfy any of these gates. These
-offline reports do not establish bench or deployment readiness. PASS B1 is the
-next gate and must provide disposable real-broker ACL installation/read-back,
-retained replay and source-privacy evidence, and atomic permit consumption under
-a continuously held writer fence.
+not acquire or hold a lease. PASS B1A now supplies a non-authoritative disposable
+real-broker plus packet-gateway composite policy, exact installation/read-back,
+and synthetic retained-source privacy foundation. It does not supply atomic permit consumption, a continuously held
+writer fence, the real Zigbee2MQTT source path, cross-instance lifecycle
+enforcement, deployment/removal workflow, authoritative full-runtime evidence,
+final adapter/radio ordering, or actual-spare physical bench proof. PASS B0
+remains only the reviewed loader/adapter smoke. Neither gate establishes bench or
+deployment readiness, and overall PASS B1 remains incomplete.
 
 ## Preview Frontend
 

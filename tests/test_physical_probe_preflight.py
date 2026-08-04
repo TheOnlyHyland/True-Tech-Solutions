@@ -20,6 +20,7 @@ ROOT = Path(__file__).parents[1]
 PACKAGE_ROOT = ROOT / "custom_components" / "true_family"
 PACKAGE_NAME = "custom_components.true_family"
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "physical_probe_preflight_vectors.json"
+B1_MANIFEST_PATH = ROOT / "tests" / "fixtures" / "physical_probe_pass_b1_manifest.json"
 MANIFEST_PATH = PACKAGE_ROOT / "probe" / "true_family_brt_probe.manifest.json"
 EXTENSION_PATH = PACKAGE_ROOT / "probe" / "true_family_brt_probe.mjs"
 
@@ -69,8 +70,9 @@ def strict_equal(left, right):
 
 preflight = load_module()
 FIXTURE_TEXT = FIXTURE_PATH.read_text(encoding="utf-8")
-VECTORS = strict_json_loads(FIXTURE_TEXT)
-NOW = VECTORS["now_ms"]
+LEGACY_VECTORS = strict_json_loads(FIXTURE_TEXT)
+B1_MANIFEST = strict_json_loads(B1_MANIFEST_PATH.read_text(encoding="utf-8"))
+NOW = LEGACY_VECTORS["now_ms"]
 
 
 def projection(value):
@@ -81,6 +83,45 @@ def projection(value):
             projected = projected.value
         result[item.name] = projected
     return result
+
+
+def current_vectors():
+    """Project the committed v1 fixture through the unreleased v2 ACL fence."""
+
+    result = deepcopy(LEGACY_VECTORS)
+    plan = preflight.build_acl_plan(result["scope"])
+    result["deployment_snapshot"]["effective_acl"] = preflight._thaw(
+        plan.effective_policy
+    )
+    result["deployment_snapshot"]["fence"]["acl_digest"] = plan.policy_digest
+    result["prearm_snapshot"]["deployment_snapshot_digest"] = (
+        preflight.canonical_digest(
+            result["deployment_snapshot"], domain=preflight._DEPLOYMENT_DIGEST_DOMAIN
+        )
+    )
+    result["prearm_snapshot"]["fence"]["acl_digest_before"] = plan.policy_digest
+    result["prearm_snapshot"]["fence"]["acl_digest_after"] = plan.policy_digest
+
+    deployment = preflight.attest_deployment(result["deployment_snapshot"], NOW)
+    before_arm = preflight.validate_prearm(
+        result["prearm_snapshot"], result["deployment_snapshot"], NOW
+    )
+    arm_permit = preflight.authorize_arm(
+        result["deployment_snapshot"],
+        result["prearm_snapshot"],
+        result["arm_request_json"],
+        NOW,
+    )
+    result["expected"]["acl_scope_digest"] = plan.scope_digest
+    result["expected"]["acl_policy_digest"] = plan.policy_digest
+    result["expected"]["fence_digest"] = deployment.fence_digest
+    result["expected"]["deployment_attestation"] = projection(deployment)
+    result["expected"]["prearm_attestation"] = projection(before_arm)
+    result["expected"]["arm_permit"] = projection(arm_permit)
+    return result
+
+
+VECTORS = current_vectors()
 
 
 def deployment_snapshot():
@@ -173,8 +214,13 @@ class ManifestIdentityTests(unittest.TestCase):
     def test_fixture_loader_rejects_duplicates_and_preserves_bool_integer_types(self) -> None:
         self.assertEqual(
             FIXTURE_TEXT,
-            json.dumps(VECTORS, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(LEGACY_VECTORS, ensure_ascii=False, indent=2) + "\n",
         )
+        self.assertEqual(
+            hashlib.sha256(FIXTURE_PATH.read_bytes()).hexdigest(),
+            "cf71efabf14a22fdc0b0fced9b69e5119e026586e774826b0a06d6b70ccb10d1",
+        )
+        self.assertNotIn("topic_oracle", LEGACY_VECTORS)
         self.assertIs(type(VECTORS["deployment_snapshot"]["manifest_version"]), int)
         self.assertIs(
             type(VECTORS["deployment_snapshot"]["controls"]["frontend_enabled"]),
@@ -187,6 +233,10 @@ class ManifestIdentityTests(unittest.TestCase):
                     '"now_ms": 0,\n  "now_ms": 1800000002001,',
                     1,
                 )
+            )
+        with self.assertRaises(preflight.PhysicalProbePreflightError):
+            preflight.attest_deployment(
+                deepcopy(LEGACY_VECTORS["deployment_snapshot"]), NOW
             )
 
     def test_manifest_binds_actual_artifact_and_upstream_immutable_refs(self) -> None:
@@ -690,15 +740,130 @@ class CanonicalAndTopicTests(unittest.TestCase):
 
 
 class AclContractTests(unittest.TestCase):
+    def test_topic_oracle_enforces_mqtt_utf8_boundaries_without_normalizing(self) -> None:
+        vectors = B1_MANIFEST["topic_oracle"]
+        self.assertEqual(vectors["schema"], "true-family-pass-b1a-topic-oracle-v1")
+        for topic in vectors["valid_topics"]:
+            with self.subTest(valid_topic=repr(topic)):
+                self.assertTrue(preflight._topic_is_valid(topic))
+        for topic in vectors["invalid_topics"]:
+            with self.subTest(invalid_topic=repr(topic)):
+                self.assertFalse(preflight._topic_is_valid(topic))
+        for codepoint in vectors["valid_codepoints"]:
+            with self.subTest(valid_codepoint=hex(codepoint)):
+                self.assertTrue(
+                    preflight._topic_is_valid(f"safe/{chr(codepoint)}/topic")
+                )
+        for codepoint in vectors["invalid_codepoints"]:
+            with self.subTest(invalid_codepoint=hex(codepoint)):
+                self.assertFalse(
+                    preflight._topic_is_valid(f"safe/{chr(codepoint)}/topic")
+                )
+        for codepoint in range(0xD800, 0xE000):
+            with self.subTest(surrogate=hex(codepoint)):
+                self.assertFalse(preflight._topic_is_valid(f"safe/{chr(codepoint)}/topic"))
+        for plane in range(17):
+            for ending in (0xFFFE, 0xFFFF):
+                codepoint = plane * 0x10000 + ending
+                with self.subTest(noncharacter=hex(codepoint)):
+                    self.assertFalse(
+                        preflight._topic_is_valid(f"safe/{chr(codepoint)}/topic")
+                    )
+        for codepoint in range(0xFDD0, 0xFDF0):
+            with self.subTest(noncharacter=hex(codepoint)):
+                self.assertFalse(
+                    preflight._topic_is_valid(f"safe/{chr(codepoint)}/topic")
+                )
+        maximum = "x" * vectors["maximum_codepoints"]
+        self.assertTrue(preflight._topic_is_valid(maximum))
+        self.assertFalse(preflight._topic_is_valid(f"{maximum}x"))
+        self.assertTrue(preflight._topic_is_valid("cafe\u0301/topic"))
+        self.assertTrue(preflight._topic_is_valid("caf\u00e9/topic"))
+
+        manifest = strict_json_loads(B1_MANIFEST_PATH.read_text(encoding="utf-8"))
+        base_topic = manifest["scope"]["base_topic"]
+
+        def matrix_topic(value, fixture):
+            if fixture is None:
+                return value
+            fixed = {
+                "maximum": f"{base_topic}/{('a' * 244)}",
+                "overlength": f"{base_topic}/{('a' * 245)}",
+                "empty": "",
+                "leading_slash": f"/{base_topic}/invalid",
+                "trailing_slash": f"{base_topic}/invalid/",
+                "boundary_space": f" {base_topic}/invalid",
+                "boundary_unicode": f"\u00a0{base_topic}/invalid",
+                "control": f"{base_topic}/\u0001invalid",
+                "c1_delete": f"{base_topic}/\u007finvalid",
+                "c1_first": f"{base_topic}/\u0080invalid",
+                "c1_last": f"{base_topic}/\u009finvalid",
+                "noncharacter_fdd0": f"{base_topic}/\ufdd0invalid",
+                "noncharacter_fdef": f"{base_topic}/\ufdefinvalid",
+                "noncharacter_fffe": f"{base_topic}/\ufffeinvalid",
+                "noncharacter_ffff": f"{base_topic}/\uffffinvalid",
+                "noncharacter_plane_end": f"{base_topic}/{chr(0x10FFFF)}invalid",
+                "surrogate_utf8": f"{base_topic}/{chr(0xD800)}invalid",
+                "malformed_utf8": f"{base_topic}/{chr(0xD800)}invalid",
+                "wildcard_plus": f"{base_topic}/+",
+                "wildcard_hash": f"{base_topic}/#",
+            }
+            if fixture in fixed:
+                return fixed[fixture]
+            depth = int(fixture.removeprefix("bridge_request_depth_"))
+            prefix = "" if depth == 0 else f"{('/'.join(['a'] * depth))}/"
+            return f"{base_topic}/{prefix}bridge/request/action"
+
+        for item in manifest["matrix"]["publish"]:
+            if item["principal"] not in ("orchestrator", "z2m", "other"):
+                continue
+            topic = matrix_topic(item.get("topic"), item.get("topic_fixture"))
+            role = "zigbee2mqtt" if item["principal"] == "z2m" else item["principal"]
+            observed = preflight.acl_allows(
+                VECTORS["scope"],
+                role,
+                "publish",
+                topic,
+                qos=item.get("qos", 1),
+                retain=item.get("retain", False),
+            )
+            with self.subTest(kind="publish", item=item):
+                self.assertEqual(observed, item["allowed"])
+        for item in manifest["matrix"]["subscribe"]:
+            if item["principal"] not in ("orchestrator", "z2m", "other"):
+                continue
+            topic = matrix_topic(item.get("filter"), item.get("filter_fixture"))
+            role = "zigbee2mqtt" if item["principal"] == "z2m" else item["principal"]
+            observed = preflight.acl_allows(
+                VECTORS["scope"], role, "subscribe", topic
+            )
+            with self.subTest(kind="subscribe", item=item):
+                self.assertEqual(observed, item["allowed"])
+
     def test_acl_policy_matches_fixture_and_is_deeply_immutable(self) -> None:
         plan = preflight.build_acl_plan(VECTORS["scope"])
         self.assertEqual(plan.scope_digest, VECTORS["expected"]["acl_scope_digest"])
         self.assertEqual(plan.policy_digest, VECTORS["expected"]["acl_policy_digest"])
+        self.assertEqual(plan.schema, "true-family-physical-probe-acl-plan-v2")
+        self.assertEqual(plan.scope_digest, B1_MANIFEST["preflight_acl"]["scope_digest"])
+        self.assertEqual(plan.policy_digest, B1_MANIFEST["preflight_acl"]["policy_digest"])
         self.assertTrue(
             strict_equal(
                 preflight._thaw(plan.effective_policy),
                 VECTORS["deployment_snapshot"]["effective_acl"],
             )
+        )
+        self.assertTrue(
+            strict_equal(
+                preflight._thaw(plan.effective_policy),
+                B1_MANIFEST["preflight_acl"]["effective_policy"],
+            )
+        )
+        self.assertEqual(
+            plan.effective_policy["topic_contract"][
+                "zigbee2mqtt_exact_base_wildcard_subscription"
+            ],
+            "zigbee2mqtt/#",
         )
         enforcement = plan.effective_policy["enforcement"]
         self.assertEqual(enforcement["anonymous_access"], "disabled")
@@ -872,6 +1037,32 @@ class AclContractTests(unittest.TestCase):
                     VECTORS["scope"], "zigbee2mqtt", "subscribe", wildcard
                 )
             )
+
+        for shared in ("$share/group/safe/topic", "$share/group/zigbee2mqtt/#"):
+            self.assertFalse(
+                preflight.acl_allows(
+                    VECTORS["scope"], "zigbee2mqtt", "subscribe", shared
+                )
+            )
+
+        for topic in ("outside/root", "safe//topic"):
+            self.assertTrue(
+                preflight.acl_allows(
+                    VECTORS["scope"], "zigbee2mqtt", "subscribe", topic
+                )
+            )
+            for qos in (0, 1, 2):
+                for retain in (False, True):
+                    self.assertTrue(
+                        preflight.acl_allows(
+                            VECTORS["scope"],
+                            "zigbee2mqtt",
+                            "publish",
+                            topic,
+                            qos=qos,
+                            retain=retain,
+                        )
+                    )
 
         class HostileRole:
             def __str__(self):
