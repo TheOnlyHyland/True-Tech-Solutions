@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-EXPECTED_LAUNCHER_SHA256="b924a849d4519927d8a3e75923294ce6f5ffb0599bf0065fcca90b65037c74e5"
+EXPECTED_LAUNCHER_SHA256="499edb329a2272dab75f5b4160a6706f630d55d5b6c65cb9ff3d0663281616de"
 NODE_IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 MOSQUITTO_IMAGE="docker.io/library/eclipse-mosquitto@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd"
 LABEL_KEY="true-family-pass-b1a"
@@ -42,7 +42,7 @@ failure_stage_valid() {
             return 0
             ;;
     esac
-    [[ "$stage" =~ ^replica_[12]_(prepare|networks|setup|broker|install|install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)|gateway|client_before|observer_before|readback_before|backend_before|restart_one|after_restart|observer_after|client_after|restart_two|final_auth|final_backend|final_readback|inspect|verify|redaction|cleanup)$ ]]
+    [[ "$stage" =~ ^replica_[12]_(prepare|networks|setup|broker|install|install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)|install_inspect|install_verify|install_verify_(content|uniqueness|files|root_mode|file_mode|unknown)|gateway|client_before|observer_before|readback_before|backend_before|restart_one|after_restart|observer_after|client_after|restart_two|final_auth|final_backend|final_readback|inspect|verify|redaction|cleanup)$ ]]
 }
 
 failure_stage_projection() {
@@ -84,8 +84,12 @@ shell_self_check() {
     [[ "$(failure_stage_projection)" == "startup" ]]
     [[ "$(failure_stage_projection "replica_2_final_readback")" == "replica_2_final_readback" ]]
     [[ "$(failure_stage_projection "replica_1_install_command_rejected")" == "replica_1_install_command_rejected" ]]
+    [[ "$(failure_stage_projection "replica_2_install_inspect")" == "replica_2_install_inspect" ]]
+    [[ "$(failure_stage_projection "replica_1_install_verify")" == "replica_1_install_verify" ]]
+    [[ "$(failure_stage_projection "replica_2_install_verify_file_mode")" == "replica_2_install_verify_file_mode" ]]
     [[ "$(failure_stage_projection $'arbitrary/path\nvalue')" == "unknown" ]]
     [[ "$(failure_stage_projection "replica_1_install_control_response_error")" == "unknown" ]]
+    [[ "$(failure_stage_projection "replica_1_install_verify_private_path")" == "unknown" ]]
     [[ "$(failure_record)" == '{"failure_code":"verification_failed","failure_stage":"startup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
     [[ "$(failure_record "replica_1_setup")" == '{"failure_code":"verification_failed","failure_stage":"replica_1_setup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
     [[ "$(failure_record "not_allowlisted")" == '{"failure_code":"verification_failed","failure_stage":"unknown","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
@@ -431,6 +435,7 @@ run_replica() {
     local backend_final_name="$prefix-backend-final"
     local readback_final_name="$prefix-readback-final"
     local client_options broker_options install_status install_failure_category
+    local credential_verify_status credential_verify_category
 
     host_for 10 mkdir -m 0700 "$replica" "$credentials" "$generated" "$observer_after_output" "$config" "$data" "$logs" "$inspect" "$evidence" "$coord" "$status"
     host_for 60 node "$VERIFIER" --generate-admin-credentials "$MANIFEST" "$credentials" >"$logs/generate-admin-credentials.json"
@@ -520,8 +525,27 @@ run_replica() {
         set_failure_stage "replica_${ordinal}_install_${install_failure_category}"
         return "$install_status"
     fi
+    set_failure_stage "replica_${ordinal}_install_inspect"
     docker_for 30 inspect "$install_name" >"$inspect/install.json"
-    host_for 60 node "$VERIFIER" --verify-credential-set "$MANIFEST" "$credentials" "$generated" >"$logs/verify-credential-set.json"
+    set_failure_stage "replica_${ordinal}_install_verify"
+    if credential_verify_category="$(host_for 60 node "$VERIFIER" --verify-credential-set-diagnostic "$MANIFEST" "$credentials" "$generated")"; then
+        if [[ "$credential_verify_category" != "pass" ]]; then
+            credential_verify_category="unknown"
+            set_failure_stage "replica_${ordinal}_install_verify_${credential_verify_category}"
+            return 1
+        fi
+    else
+        credential_verify_status=$?
+        case "$credential_verify_category" in
+            content|uniqueness|files|root_mode|file_mode|unknown)
+                ;;
+            *)
+                credential_verify_category="unknown"
+                ;;
+        esac
+        set_failure_stage "replica_${ordinal}_install_verify_${credential_verify_category}"
+        return "$credential_verify_status"
+    fi
 
     set_failure_stage "replica_${ordinal}_gateway"
     create_node_container "$gateway_name" gateway "$frontend" gateway gateway broker 1200 "$ordinal" \

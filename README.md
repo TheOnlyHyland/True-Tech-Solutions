@@ -337,6 +337,11 @@ Zigbee2MQTT instance is used. Until the main-branch workflow itself succeeds,
 the repository claims only the implemented and statically verified gate, not a
 completed live-broker result.
 
+Under the accelerated policy, one successful B1A run is sufficient to proceed
+to the minimum B1B gate; there is no repeat-attestation requirement. This does
+not authorize a loose spare: no spare may be paired until the minimum permit
+consumption and continuously held writer-fence gate passes.
+
 The gate pins the exact Node child already used by PASS B0 and the exact
 Mosquitto `2.0.22` Linux amd64 child
 `docker.io/library/eclipse-mosquitto@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd`.

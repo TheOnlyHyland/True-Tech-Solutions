@@ -1457,6 +1457,8 @@
         "setup",
         "broker",
         "install",
+        "install_inspect",
+        "install_verify",
         "gateway",
         "client_before",
         "observer_before",
@@ -1483,6 +1485,14 @@
         "command_transport",
         "command_rejected",
         "security",
+        "unknown"
+      ],
+      "install_verify_failure_categories": [
+        "content",
+        "uniqueness",
+        "files",
+        "root_mode",
+        "file_mode",
         "unknown"
       ],
       "invalid_stage": "unknown",
@@ -1558,9 +1568,9 @@
   },
   "bindings": {
     "launcher_normalization": "sha256 after replacing the sole EXPECTED_LAUNCHER_SHA256 lowercase-hex literal with 64 zeroes",
-    "launcher_normalized_sha256": "b924a849d4519927d8a3e75923294ce6f5ffb0599bf0065fcca90b65037c74e5",
+    "launcher_normalized_sha256": "499edb329a2272dab75f5b4160a6706f630d55d5b6c65cb9ff3d0663281616de",
     "runtime_harness_sha256": "199174f5926d70962107899375e1b9b58b73e332e36f2aaddee96d60c88cde4a",
-    "verifier_sha256": "70516a59c9c4ccd2ac67c4b9535d7e9f57489c15a3fa846337d41ea4e6f8eddc",
+    "verifier_sha256": "f466fb73d938af8b8573c73436056bf17c95790b4fd95b0aef03071613e038f9",
     "workflow_sha256": "288edf1ef22a61e9451144a9bde62698eacfe2aa748ac0d29a03d31ad10dc305",
     "preflight_source_sha256": "aeccc63d626bc5998688da2db84b68898a73d1719c3f39f99ad31922fa106e9f",
     "preflight_fixture_sha256": "cf71efabf14a22fdc0b0fced9b69e5119e026586e774826b0a06d6b70ccb10d1",

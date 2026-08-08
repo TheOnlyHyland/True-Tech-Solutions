@@ -2,6 +2,7 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
@@ -36,13 +37,36 @@ const INSTALL_FAILURE_CATEGORIES = [
     "context", "credentials", "broker_connect", "broker_subscribe",
     "command_transport", "command_rejected", "security", "unknown",
 ];
+const CREDENTIAL_VERIFY_FAILURE_CATEGORIES = [
+    "content", "uniqueness", "files", "root_mode", "file_mode", "unknown",
+];
+const CREDENTIAL_VERIFY_FAILURE_CATEGORY_BY_CODE = Object.freeze({
+    admin_credentials_json: "content",
+    frontend_credentials_json: "content",
+    observer_credentials_json: "content",
+    admin_credentials_shape: "content",
+    frontend_credentials_shape: "content",
+    observer_credentials_shape: "content",
+    credential_shape: "content",
+    admin_credentials_schema: "content",
+    frontend_credentials_schema: "content",
+    observer_credentials_schema: "content",
+    frontend_credentials_principals: "content",
+    credential_identity: "content",
+    credential_duplicate: "uniqueness",
+    admin_credentials_files: "files",
+    generated_credentials_files: "files",
+    observer_after_credentials_files: "files",
+    credentials_root: "root_mode",
+    credential_mode: "file_mode",
+});
 const LAUNCHER_TOP_LEVEL_FAILURE_STAGES = [
     "startup", "environment", "private_root", "static_shell", "static_verifier", "static_python",
     "pull_node", "pull_mosquitto", "inspect_node", "inspect_mosquitto", "compare", "combine",
     "final_scan_one", "final_scan_two", "cleanup", "finalize",
 ];
 const LAUNCHER_REPLICA_FAILURE_PHASES = [
-    "prepare", "networks", "setup", "broker", "install", "gateway", "client_before", "observer_before",
+    "prepare", "networks", "setup", "broker", "install", "install_inspect", "install_verify", "gateway", "client_before", "observer_before",
     "readback_before", "backend_before", "restart_one", "after_restart", "observer_after", "client_after",
     "restart_two", "final_auth", "final_backend", "final_readback", "inspect", "verify", "redaction", "cleanup",
 ];
@@ -50,6 +74,7 @@ const LAUNCHER_FAILURE_STAGES = new Set([
     ...LAUNCHER_TOP_LEVEL_FAILURE_STAGES,
     ...[1, 2].flatMap((ordinal) => LAUNCHER_REPLICA_FAILURE_PHASES.map((phase) => `replica_${ordinal}_${phase}`)),
     ...[1, 2].flatMap((ordinal) => INSTALL_FAILURE_CATEGORIES.map((category) => `replica_${ordinal}_install_${category}`)),
+    ...[1, 2].flatMap((ordinal) => CREDENTIAL_VERIFY_FAILURE_CATEGORIES.map((category) => `replica_${ordinal}_install_verify_${category}`)),
 ]);
 const CLASSIFICATION = "ci-only-same-repository-non-authoritative-composite-policy-foundation";
 const RUNTIME_HARNESS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "test_physical_probe_broker_runtime.mjs");
@@ -87,6 +112,12 @@ class VerifyFailure extends Error {
 
 function gate(condition, code) {
     if (!condition) throw new VerifyFailure(code);
+}
+
+function credentialVerificationFailureCategory(error) {
+    if (!(error instanceof VerifyFailure) || typeof error.code !== "string") return "unknown";
+    if (!Object.hasOwn(CREDENTIAL_VERIFY_FAILURE_CATEGORY_BY_CODE, error.code)) return "unknown";
+    return CREDENTIAL_VERIFY_FAILURE_CATEGORY_BY_CODE[error.code];
 }
 
 function exactKeys(value, keys, code) {
@@ -522,7 +553,7 @@ export function validateManifest(manifest) {
     exactKeys(manifest.source_privacy, ["synthetic_publisher", "real_externaljs_path", "inventory_shape", "principals", "denied_filters", "source_canary", "raw_source_emitted", "retained_clear", "restart_old_replay_expected"], "manifest_source_shape");
     exactKeys(manifest.artifact, ["path", "filename", "byte_length", "sha256"], "manifest_artifact_shape");
     exactKeys(manifest.evidence, ["runtime_schema", "replica_schema", "gateway_startup_schema", "final_schema", "failure_schema", "failure_record", "runtime_failure_record", "replicas", "normalized_byte_identical", "uploaded_artifacts", "stdout_records", "raw_stderr", "max_runtime_bytes", "max_final_bytes", "claim_limits"], "manifest_evidence_shape");
-    exactKeys(manifest.evidence.failure_record, ["exact_keys", "failure_code", "top_level_stages", "replica_ordinals", "replica_phases", "install_failure_categories", "invalid_stage", "only_diagnostic_field", "max_bytes"], "manifest_failure_record_shape");
+    exactKeys(manifest.evidence.failure_record, ["exact_keys", "failure_code", "top_level_stages", "replica_ordinals", "replica_phases", "install_failure_categories", "install_verify_failure_categories", "invalid_stage", "only_diagnostic_field", "max_bytes"], "manifest_failure_record_shape");
     exactKeys(manifest.evidence.runtime_failure_record, ["schema", "exact_keys", "categories", "detailed_mode", "generic_error_category", "other_mode_category", "max_bytes"], "manifest_runtime_failure_record_shape");
     exactKeys(manifest.cleanup, ["label", "root_pattern", "root_mode", "find_mode", "symlinks_followed", "files_chmodded", "zero_labeled_containers_before_delete", "zero_labeled_networks_before_delete", "run_watchdog_seconds", "workflow_timeout_seconds", "longest_bounded_command_seconds", "nominal_headroom_if_watchdog_started_at_job_start_seconds", "nominal_headroom_after_longest_command_seconds", "workflow_timeout_cleanup_guaranteed", "private_root_removal_attempted_after_cleanup_failure", "credentials_absent_before_pass", "root_absent_before_pass"], "manifest_cleanup_shape");
     exactKeys(manifest.bindings, ["launcher_normalization", "launcher_normalized_sha256", "runtime_harness_sha256", "verifier_sha256", "workflow_sha256", "preflight_source_sha256", "preflight_fixture_sha256", "preflight_test_sha256", "b0_preservation"], "manifest_bindings_shape");
@@ -689,6 +720,7 @@ export function validateManifest(manifest) {
         replica_ordinals: [1, 2],
         replica_phases: LAUNCHER_REPLICA_FAILURE_PHASES,
         install_failure_categories: INSTALL_FAILURE_CATEGORIES,
+        install_verify_failure_categories: CREDENTIAL_VERIFY_FAILURE_CATEGORIES,
         invalid_stage: "unknown",
         only_diagnostic_field: "failure_stage",
         max_bytes: 256,
@@ -1850,7 +1882,7 @@ function staticSourceChecks(paths, manifest) {
     const stageProjectionSource = launcher.slice(launcher.indexOf("failure_stage_projection()"), launcher.indexOf("set_failure_stage()"));
     const failureRecordSource = launcher.slice(launcher.indexOf("failure_record()"), launcher.indexOf("shell_self_check()"));
     gate(launcher.indexOf('FAILURE_STAGE="startup"') >= 0 && launcher.indexOf('FAILURE_STAGE="startup"') < launcher.indexOf('if [[ "${1:-}" == "--shell-self-check" ]]'), "launcher_failure_stage_default");
-    gate(stageValidatorSource.includes('startup|environment|private_root|static_shell|static_verifier|static_python|pull_node|pull_mosquitto|inspect_node|inspect_mosquitto|compare|combine|final_scan_one|final_scan_two|cleanup|finalize') && stageValidatorSource.includes('install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)') && stageValidatorSource.includes('^replica_[12]_'), "launcher_failure_stage_allowlist");
+    gate(stageValidatorSource.includes('startup|environment|private_root|static_shell|static_verifier|static_python|pull_node|pull_mosquitto|inspect_node|inspect_mosquitto|compare|combine|final_scan_one|final_scan_two|cleanup|finalize') && stageValidatorSource.includes('install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)') && stageValidatorSource.includes('install_inspect|install_verify|install_verify_(content|uniqueness|files|root_mode|file_mode|unknown)') && stageValidatorSource.includes('^replica_[12]_'), "launcher_failure_stage_allowlist");
     gate(stageProjectionSource.includes('printf \'%s\' "unknown"') && failureRecordSource.includes('{"failure_code":"%s","failure_stage":"%s","result":"fail","schema":"%s"}') && !failureRecordSource.includes("status") && (launcher.match(/failure_record "\$FAILURE_STAGE"/gu) ?? []).length === 2, "launcher_failure_projection");
     const topLevelStageAssignments = [...launcher.matchAll(/^set_failure_stage "([a-z0-9_]+)"$/gmu)].map((match) => match[1]);
     const replicaStageAssignments = [...launcher.matchAll(/^\s+set_failure_stage "replica_\$\{ordinal\}_([a-z0-9_]+)"$/gmu)].map((match) => match[1]);
@@ -1862,7 +1894,7 @@ function staticSourceChecks(paths, manifest) {
     const shellSelfCheck = launcher.slice(shellStart, verifierStart);
     const verifierSelfCheck = launcher.slice(verifierStart, normalStart);
     const shellSelfCheckFunction = launcher.slice(launcher.indexOf("shell_self_check()"), shellStart);
-    gate(shellSelfCheckFunction.includes("failure_stage_projection") && shellSelfCheckFunction.includes("replica_2_final_readback") && shellSelfCheckFunction.includes("replica_1_install_command_rejected") && shellSelfCheckFunction.includes("replica_1_install_control_response_error") && shellSelfCheckFunction.includes("arbitrary/path") && shellSelfCheckFunction.includes('"failure_stage":"unknown"'), "launcher_failure_shell_self_check");
+    gate(shellSelfCheckFunction.includes("failure_stage_projection") && shellSelfCheckFunction.includes("replica_2_final_readback") && shellSelfCheckFunction.includes("replica_1_install_command_rejected") && shellSelfCheckFunction.includes("replica_2_install_inspect") && shellSelfCheckFunction.includes("replica_1_install_verify") && shellSelfCheckFunction.includes("replica_2_install_verify_file_mode") && shellSelfCheckFunction.includes("replica_1_install_control_response_error") && shellSelfCheckFunction.includes("replica_1_install_verify_private_path") && shellSelfCheckFunction.includes("arbitrary/path") && shellSelfCheckFunction.includes('"failure_stage":"unknown"'), "launcher_failure_shell_self_check");
     for (const source of [shellSelfCheck, verifierSelfCheck]) {
         gate(source.length > 0 && !source.includes("docker") && !source.includes("mktemp") && !source.includes("RUNNER_TEMP"), "self_check_offline");
     }
@@ -1873,6 +1905,9 @@ function staticSourceChecks(paths, manifest) {
     const installLauncherSource = launcher.slice(launcher.indexOf('set_failure_stage "replica_${ordinal}_install"'), launcher.indexOf('set_failure_stage "replica_${ordinal}_gateway"'));
     gate(installLauncherSource.includes('if docker_for 270 start -a "$install_name"') && installLauncherSource.includes('--classify-runtime-failure install "$evidence/install.json" "$MANIFEST"') && installLauncherSource.includes('set_failure_stage "replica_${ordinal}_install_${install_failure_category}"') && installLauncherSource.includes('return "$install_status"') && !installLauncherSource.includes("printf") && !installLauncherSource.includes("cat "), "launcher_install_failure_projection");
     gate(installLauncherSource.includes('context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown'), "launcher_install_failure_allowlist");
+    gate(installLauncherSource.includes('set_failure_stage "replica_${ordinal}_install_inspect"\n    docker_for 30 inspect "$install_name"') && installLauncherSource.includes('set_failure_stage "replica_${ordinal}_install_verify"\n    if credential_verify_category="$(host_for 60 node "$VERIFIER" --verify-credential-set-diagnostic "$MANIFEST" "$credentials" "$generated")"') && installLauncherSource.includes('content|uniqueness|files|root_mode|file_mode|unknown') && installLauncherSource.includes('set_failure_stage "replica_${ordinal}_install_verify_${credential_verify_category}"') && installLauncherSource.includes('return "$credential_verify_status"'), "launcher_credential_verify_projection");
+    const credentialDiagnosticSource = verifier.slice(verifier.indexOf("const CREDENTIAL_VERIFY_FAILURE_CATEGORY_BY_CODE"), verifier.indexOf("const LAUNCHER_TOP_LEVEL_FAILURE_STAGES"));
+    gate(CREDENTIAL_VERIFY_FAILURE_CATEGORIES.every((category) => credentialDiagnosticSource.includes(`: "${category}"`) || category === "unknown") && credentialDiagnosticSource.includes('admin_credentials_json: "content"') && credentialDiagnosticSource.includes('credential_duplicate: "uniqueness"') && credentialDiagnosticSource.includes('admin_credentials_files: "files"') && credentialDiagnosticSource.includes('credentials_root: "root_mode"') && credentialDiagnosticSource.includes('credential_mode: "file_mode"') && !credentialDiagnosticSource.includes("error.message") && !credentialDiagnosticSource.includes("error.stack"), "verifier_credential_diagnostic_mapping");
     const runtimeClassifierSource = verifier.slice(verifier.indexOf("function runtimeFailureCategoryFromBytes"), verifier.indexOf("function readCanonicalRuntime"));
     gate(runtimeClassifierSource.includes("contract.max_bytes") && runtimeClassifierSource.includes("runtime_failure_canonical") && runtimeClassifierSource.includes("contract.categories.includes(value.failure_category)") && verifier.includes('if (process.argv[2] !== "--classify-runtime-failure") process.stdout.write(failureToken())'), "verifier_runtime_failure_classifier");
     gate(runtime.includes("sendAndExpectClose") && runtime.includes("gateway_close_denials") && runtime.includes(".noMessage("), "runtime_gateway_denial");
@@ -1915,7 +1950,7 @@ function staticSourceChecks(paths, manifest) {
 
 function selfTests(paths, manifest) {
     gate(canonical({b: 2, a: 1}) === '{"a":1,"b":2}', "canonical_self_test");
-    gate(launcherFailureStageProjection() === "startup" && launcherFailureStageProjection("replica_1_restart_two") === "replica_1_restart_two" && launcherFailureStageProjection("replica_2_install_security") === "replica_2_install_security" && launcherFailureStageProjection("replica_2_install_control_response_error") === "unknown" && launcherFailureStageProjection("private/path\nvalue") === "unknown", "launcher_failure_projection_self_test");
+    gate(launcherFailureStageProjection() === "startup" && launcherFailureStageProjection("replica_1_restart_two") === "replica_1_restart_two" && launcherFailureStageProjection("replica_2_install_security") === "replica_2_install_security" && launcherFailureStageProjection("replica_1_install_inspect") === "replica_1_install_inspect" && launcherFailureStageProjection("replica_2_install_verify") === "replica_2_install_verify" && launcherFailureStageProjection("replica_1_install_verify_content") === "replica_1_install_verify_content" && launcherFailureStageProjection("replica_2_install_control_response_error") === "unknown" && launcherFailureStageProjection("private/path\nvalue") === "unknown", "launcher_failure_projection_self_test");
     gate(launcherFailureRecord() === '{"failure_code":"verification_failed","failure_stage":"startup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}\n' && launcherFailureRecord("private/path") === '{"failure_code":"verification_failed","failure_stage":"unknown","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}\n', "launcher_failure_record_self_test");
     const runtimeFailureContract = manifest.evidence.runtime_failure_record;
     for (const category of INSTALL_FAILURE_CATEGORIES) {
@@ -2021,6 +2056,70 @@ function selfTests(paths, manifest) {
     validateFrontendCredential(frontendCredential, manifest);
     validateObserverCredential(observerCredential, manifest);
     validateCredentialUniqueness([adminCredential, frontendCredential, observerCredential]);
+    for (const [code, category] of Object.entries(CREDENTIAL_VERIFY_FAILURE_CATEGORY_BY_CODE)) {
+        gate(credentialVerificationFailureCategory(new VerifyFailure(code)) === category, "credential_diagnostic_mapping_self_test");
+    }
+    for (const error of [
+        new Error("credential_mode"),
+        new VerifyFailure("manifest_json"),
+        new VerifyFailure("credential_mode\n/private/path"),
+        {code: "credential_mode"},
+        undefined,
+        null,
+    ]) gate(credentialVerificationFailureCategory(error) === "unknown", "credential_diagnostic_mapping_adversarial_self_test");
+
+    const diagnosticRoot = fs.mkdtempSync(path.join(os.tmpdir(), "true-family-b1a-credential-diagnostic-"));
+    try {
+        fs.chmodSync(diagnosticRoot, 0o700);
+        const adminDirectory = path.join(diagnosticRoot, "admin");
+        const generatedDirectory = path.join(diagnosticRoot, "generated");
+        fs.mkdirSync(adminDirectory, {mode: 0o700});
+        fs.mkdirSync(generatedDirectory, {mode: 0o700});
+        const adminPath = path.join(adminDirectory, "admin.json");
+        const passwordPath = path.join(adminDirectory, "admin.password");
+        const frontendPath = path.join(generatedDirectory, "frontend.json");
+        const observerPath = path.join(generatedDirectory, "observer-before.json");
+        const writeCredential = (file, value) => fs.writeFileSync(file, `${canonical(value)}\n`, {encoding: "utf8", mode: 0o600});
+        const writeFrontendCredential = (value) => fs.writeFileSync(frontendPath, `${JSON.stringify(value)}\n`, {encoding: "utf8", mode: 0o600});
+        writeCredential(adminPath, adminCredential);
+        fs.writeFileSync(passwordPath, adminCredential.principal.password, {encoding: "utf8", mode: 0o600});
+        writeFrontendCredential(frontendCredential);
+        writeCredential(observerPath, observerCredential);
+        const runDiagnostic = (...modeArgs) => spawnSync(process.execPath, [paths.verifier, "--verify-credential-set-diagnostic", ...modeArgs], {
+            encoding: "utf8",
+            env: {PATH: process.env.PATH ?? "/usr/bin:/bin"},
+            timeout: 5_000,
+            maxBuffer: 1_024,
+        });
+        const expectDiagnostic = (result, token, status) => {
+            gate(result.status === status && result.signal === null && result.stderr === "" && result.stdout === `${token}\n`, "credential_diagnostic_cli_self_test");
+            gate(["pass", ...CREDENTIAL_VERIFY_FAILURE_CATEGORIES].includes(token) && !result.stdout.includes("/") && result.stdout.split("\n").length === 2, "credential_diagnostic_cli_privacy_self_test");
+        };
+        const args = [paths.manifest, adminDirectory, generatedDirectory];
+        expectDiagnostic(runDiagnostic(...args), "pass", 0);
+        fs.writeFileSync(frontendPath, "{\n", {encoding: "utf8"});
+        expectDiagnostic(runDiagnostic(...args), "content", 1);
+        writeFrontendCredential(frontendCredential);
+        writeCredential(observerPath, {schema: manifest.credentials.observer_schema, principal: {...observerCredential.principal, password: adminCredential.principal.password}});
+        expectDiagnostic(runDiagnostic(...args), "uniqueness", 1);
+        writeCredential(observerPath, observerCredential);
+        fs.writeFileSync(path.join(generatedDirectory, "extra"), "private", {encoding: "utf8", mode: 0o600});
+        expectDiagnostic(runDiagnostic(...args), "files", 1);
+        fs.rmSync(path.join(generatedDirectory, "extra"));
+        fs.chmodSync(generatedDirectory, 0o750);
+        expectDiagnostic(runDiagnostic(...args), "root_mode", 1);
+        fs.chmodSync(generatedDirectory, 0o700);
+        fs.chmodSync(passwordPath, 0o640);
+        expectDiagnostic(runDiagnostic(...args), "file_mode", 1);
+        fs.chmodSync(passwordPath, 0o600);
+        const missingPrincipal = structuredClone(frontendCredential);
+        delete missingPrincipal.principals.other;
+        writeFrontendCredential(missingPrincipal);
+        expectDiagnostic(runDiagnostic(...args), "content", 1);
+        expectDiagnostic(runDiagnostic("/private/path\nvalue"), "unknown", 1);
+    } finally {
+        fs.rmSync(diagnosticRoot, {recursive: true, force: true});
+    }
     const mutations = [
         (value) => { value.gateway.generation = 2; },
         (value) => { value.composite_policy.preflight_acl_digest = "0".repeat(64); },
@@ -2136,6 +2235,11 @@ async function main() {
         verifyCredentialSet(args[0], args[1], args[2], args[3]);
         return `${canonical({schema: "true-family-pass-b1a-verify-credential-set-v1", result: "pass"})}\n`;
     }
+    if (mode === "--verify-credential-set-diagnostic") {
+        gate(args.length === 3 || args.length === 4, "credential_set_arguments");
+        verifyCredentialSet(args[0], args[1], args[2], args[3]);
+        return "pass\n";
+    }
     if (mode === "--bind-admin-clientid") {
         gate(args.length === 2, "bind_admin_arguments");
         bindAdminClientId(args[0], args[1]);
@@ -2195,8 +2299,9 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 if (isMain) {
     try {
         process.stdout.write(await main());
-    } catch {
-        if (process.argv[2] !== "--classify-runtime-failure") process.stdout.write(failureToken());
+    } catch (error) {
+        if (process.argv[2] === "--verify-credential-set-diagnostic") process.stdout.write(`${credentialVerificationFailureCategory(error)}\n`);
+        else if (process.argv[2] !== "--classify-runtime-failure") process.stdout.write(failureToken());
         process.exitCode = 1;
     }
 }
