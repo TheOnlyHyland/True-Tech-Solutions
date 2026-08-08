@@ -10,7 +10,7 @@ import {fileURLToPath} from "node:url";
 
 const MANIFEST_SCHEMA = "true-family-pass-b1a-manifest-v1";
 const RUNTIME_SCHEMA = "true-family-pass-b1a-runtime-v1";
-const FAILURE_SCHEMA = "true-family-pass-b1a-runtime-failure-v1";
+const FAILURE_SCHEMA = "true-family-pass-b1a-runtime-failure-v2";
 const CONTROL_REQUEST_TOPIC = "$CONTROL/dynamic-security/v1";
 const CONTROL_RESPONSE_TOPIC = "$CONTROL/dynamic-security/v1/response";
 const GATEWAY_POLICY_SCHEMA = "true-family-pass-b1a-gateway-policy-v1";
@@ -35,6 +35,73 @@ class B1AFailure extends Error {
         super(code);
         this.code = code;
     }
+}
+
+const RUNTIME_FAILURE_CATEGORIES = Object.freeze([
+    "context", "credentials", "broker_connect", "broker_subscribe",
+    "command_transport", "command_rejected", "security", "unknown",
+]);
+const INSTALL_FAILURE_CATEGORY_BY_CODE = Object.freeze({
+    runtime_environment: "context",
+    runtime_mode: "context",
+    runtime_endpoint: "context",
+    manifest_json: "context",
+    manifest_identity: "context",
+    manifest_classification: "context",
+    manifest_scope: "context",
+    manifest_preflight_acl: "context",
+    manifest_artifact: "context",
+    runtime_gateway_policy: "context",
+    runtime_output_size: "context",
+    admin_credentials_json: "credentials",
+    admin_credential_shape: "credentials",
+    admin_credential_schema: "credentials",
+    credential_shape: "credentials",
+    credential_identity: "credentials",
+    frontend_credential_shape: "credentials",
+    frontend_credential_schema: "credentials",
+    frontend_credential_principals: "credentials",
+    observer_credential_shape: "credentials",
+    observer_credential_schema: "credentials",
+    credential_uniqueness: "credentials",
+    install_password_uniqueness: "credentials",
+    control_connect: "broker_connect",
+    principal_connect: "broker_connect",
+    control_subscribe: "broker_subscribe",
+    subscribe_closed: "broker_subscribe",
+    suback_shape: "broker_subscribe",
+    suback_packetid: "broker_subscribe",
+    suback_reasons: "broker_subscribe",
+    suback_reason: "broker_subscribe",
+    control_correlation_shape: "command_transport",
+    control_correlation_unique: "command_transport",
+    control_puback: "command_transport",
+    control_response_json: "command_transport",
+    control_response_shape: "command_transport",
+    control_response_count: "command_transport",
+    control_response_identity: "command_transport",
+    mqtt_timeout: "command_transport",
+    message_closed: "command_transport",
+    unexpected_packet: "command_transport",
+    control_response_error: "command_rejected",
+    container_security: "security",
+});
+
+export function installFailureCategoryForCode(code) {
+    return typeof code === "string" && Object.hasOwn(INSTALL_FAILURE_CATEGORY_BY_CODE, code)
+        ? INSTALL_FAILURE_CATEGORY_BY_CODE[code]
+        : "unknown";
+}
+
+export function runtimeFailureCategory(mode, error) {
+    return mode === "install" && error instanceof B1AFailure
+        ? installFailureCategoryForCode(error.code)
+        : "unknown";
+}
+
+export function runtimeFailureRecord(category) {
+    const safe = RUNTIME_FAILURE_CATEGORIES.includes(category) ? category : "unknown";
+    return `${canonical({schema: FAILURE_SCHEMA, result: "fail", failure_category: safe})}\n`;
 }
 
 function gate(condition, code) {
@@ -2923,11 +2990,29 @@ async function registerTests() {
         assert.equal(sha256Bytes(source), "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1");
     });
 
-    test("reason classes never expose broker text or credentials", () => {
+    test("reason and installer failure classes never expose private detail", () => {
         assert.equal(reasonClass(0), "success");
         assert.equal(reasonClass(0x86), "bad_username_or_password");
         assert.equal(reasonClass("closed"), "connection_closed");
         assert.equal(reasonClass(0x80), "negative_reason");
+        for (const [code, category] of [
+            ["runtime_environment", "context"],
+            ["admin_credentials_json", "credentials"],
+            ["control_connect", "broker_connect"],
+            ["control_subscribe", "broker_subscribe"],
+            ["mqtt_timeout", "command_transport"],
+            ["control_response_error", "command_rejected"],
+            ["container_security", "security"],
+        ]) assert.equal(installFailureCategoryForCode(code), category);
+        for (const value of [undefined, null, "", "toString", "__proto__", "CONTROL_RESPONSE_ERROR", "control_response_error\n/private/path", {code: "control_response_error"}]) {
+            assert.equal(installFailureCategoryForCode(value), "unknown");
+        }
+        assert.equal(runtimeFailureCategory("install", new Error("control_response_error")), "unknown");
+        assert.equal(runtimeFailureCategory("client_before", new B1AFailure("control_response_error")), "unknown");
+        assert.equal(runtimeFailureCategory("install", new B1AFailure("control_response_error")), "command_rejected");
+        assert.equal(runtimeFailureRecord("command_rejected"), '{"failure_category":"command_rejected","result":"fail","schema":"true-family-pass-b1a-runtime-failure-v2"}\n');
+        assert.equal(runtimeFailureRecord("/private/path\ncontrol_response_error"), '{"failure_category":"unknown","result":"fail","schema":"true-family-pass-b1a-runtime-failure-v2"}\n');
+        assert.equal(runtimeFailureRecord("command_rejected").includes("control_response_error"), false);
     });
 }
 
@@ -2940,8 +3025,8 @@ if (isMain && process.argv[2] === "--runtime") {
             gate(Buffer.byteLength(output, "utf8") <= 128 * 1024, "runtime_output_size");
             process.stdout.write(output);
         }
-    } catch {
-        if (process.env.B1A_MODE !== "gateway") process.stdout.write(`${canonical({schema: FAILURE_SCHEMA, result: "fail", failure_code: "runtime_failed"})}\n`);
+    } catch (error) {
+        if (process.env.B1A_MODE !== "gateway") process.stdout.write(runtimeFailureRecord(runtimeFailureCategory(process.env.B1A_MODE, error)));
         process.exitCode = 1;
     }
 } else if (isMain) {

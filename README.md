@@ -469,8 +469,12 @@ cleanup or its read-back fails. Seccomp is an observed hardening setting, not a
 complete host or kernel isolation boundary. On failure, only the launcher emits
 one small canonical `true-family-pass-b1a-launcher-failure-v2` record containing
 the fixed failure code and one finite allowlisted `failure_stage`; invalid stage
-state projects to `unknown`. No command, status, path, log, stderr, random value,
-or other diagnostic field is emitted. No workflow artifact is uploaded.
+state projects to `unknown`. A failed installer writes only a private canonical
+`true-family-pass-b1a-runtime-failure-v2` category record; a bounded verifier
+reduces that record to one of eight tokens for the launcher stage suffix, with
+generic or malformed failures becoming `unknown`. The private record is never
+emitted separately. No command, status, path, log, stderr, random value, or other
+diagnostic field is emitted. No workflow artifact is uploaded.
 
 The effective policy is explicitly composite. Dynamic Security provides broker
 authentication, successful delivery, and its representable defense-in-depth ACL

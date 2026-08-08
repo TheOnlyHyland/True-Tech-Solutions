@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-EXPECTED_LAUNCHER_SHA256="390f3613d43b9e15b50ce921fb8981e95d184f97c4a8a419f2eafd2b28a1d1be"
+EXPECTED_LAUNCHER_SHA256="b924a849d4519927d8a3e75923294ce6f5ffb0599bf0065fcca90b65037c74e5"
 NODE_IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 MOSQUITTO_IMAGE="docker.io/library/eclipse-mosquitto@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd"
 LABEL_KEY="true-family-pass-b1a"
@@ -42,7 +42,7 @@ failure_stage_valid() {
             return 0
             ;;
     esac
-    [[ "$stage" =~ ^replica_[12]_(prepare|networks|setup|broker|install|gateway|client_before|observer_before|readback_before|backend_before|restart_one|after_restart|observer_after|client_after|restart_two|final_auth|final_backend|final_readback|inspect|verify|redaction|cleanup)$ ]]
+    [[ "$stage" =~ ^replica_[12]_(prepare|networks|setup|broker|install|install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)|gateway|client_before|observer_before|readback_before|backend_before|restart_one|after_restart|observer_after|client_after|restart_two|final_auth|final_backend|final_readback|inspect|verify|redaction|cleanup)$ ]]
 }
 
 failure_stage_projection() {
@@ -83,7 +83,9 @@ shell_self_check() {
     [[ "$FAILURE_SCHEMA" == "true-family-pass-b1a-launcher-failure-v2" && "$FAILURE_CODE" == "verification_failed" ]]
     [[ "$(failure_stage_projection)" == "startup" ]]
     [[ "$(failure_stage_projection "replica_2_final_readback")" == "replica_2_final_readback" ]]
+    [[ "$(failure_stage_projection "replica_1_install_command_rejected")" == "replica_1_install_command_rejected" ]]
     [[ "$(failure_stage_projection $'arbitrary/path\nvalue')" == "unknown" ]]
+    [[ "$(failure_stage_projection "replica_1_install_control_response_error")" == "unknown" ]]
     [[ "$(failure_record)" == '{"failure_code":"verification_failed","failure_stage":"startup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
     [[ "$(failure_record "replica_1_setup")" == '{"failure_code":"verification_failed","failure_stage":"replica_1_setup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
     [[ "$(failure_record "not_allowlisted")" == '{"failure_code":"verification_failed","failure_stage":"unknown","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}' ]]
@@ -428,7 +430,7 @@ run_replica() {
     local client_final_name="$prefix-client-final"
     local backend_final_name="$prefix-backend-final"
     local readback_final_name="$prefix-readback-final"
-    local client_options broker_options
+    local client_options broker_options install_status install_failure_category
 
     host_for 10 mkdir -m 0700 "$replica" "$credentials" "$generated" "$observer_after_output" "$config" "$data" "$logs" "$inspect" "$evidence" "$coord" "$status"
     host_for 60 node "$VERIFIER" --generate-admin-credentials "$MANIFEST" "$credentials" >"$logs/generate-admin-credentials.json"
@@ -499,7 +501,25 @@ run_replica() {
     create_node_container "$install_name" install "$backend" - install broker 240 "$ordinal" \
         --mount "type=bind,src=$credentials/admin.json,dst=/input/admin.json,readonly" \
         --mount "type=bind,src=$generated,dst=/out"
-    docker_for 270 start -a "$install_name" >"$evidence/install.json" 2>"$logs/install.stderr"
+    if docker_for 270 start -a "$install_name" >"$evidence/install.json" 2>"$logs/install.stderr"; then
+        :
+    else
+        install_status=$?
+        if install_failure_category="$(host_for 30 node "$VERIFIER" --classify-runtime-failure install "$evidence/install.json" "$MANIFEST")"; then
+            :
+        else
+            install_failure_category="unknown"
+        fi
+        case "$install_failure_category" in
+            context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)
+                ;;
+            *)
+                install_failure_category="unknown"
+                ;;
+        esac
+        set_failure_stage "replica_${ordinal}_install_${install_failure_category}"
+        return "$install_status"
+    fi
     docker_for 30 inspect "$install_name" >"$inspect/install.json"
     host_for 60 node "$VERIFIER" --verify-credential-set "$MANIFEST" "$credentials" "$generated" >"$logs/verify-credential-set.json"
 

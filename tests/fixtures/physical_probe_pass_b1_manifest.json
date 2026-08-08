@@ -1475,8 +1475,40 @@
         "redaction",
         "cleanup"
       ],
+      "install_failure_categories": [
+        "context",
+        "credentials",
+        "broker_connect",
+        "broker_subscribe",
+        "command_transport",
+        "command_rejected",
+        "security",
+        "unknown"
+      ],
       "invalid_stage": "unknown",
       "only_diagnostic_field": "failure_stage",
+      "max_bytes": 256
+    },
+    "runtime_failure_record": {
+      "schema": "true-family-pass-b1a-runtime-failure-v2",
+      "exact_keys": [
+        "failure_category",
+        "result",
+        "schema"
+      ],
+      "categories": [
+        "context",
+        "credentials",
+        "broker_connect",
+        "broker_subscribe",
+        "command_transport",
+        "command_rejected",
+        "security",
+        "unknown"
+      ],
+      "detailed_mode": "install",
+      "generic_error_category": "unknown",
+      "other_mode_category": "unknown",
       "max_bytes": 256
     },
     "replicas": 2,
@@ -1526,9 +1558,9 @@
   },
   "bindings": {
     "launcher_normalization": "sha256 after replacing the sole EXPECTED_LAUNCHER_SHA256 lowercase-hex literal with 64 zeroes",
-    "launcher_normalized_sha256": "390f3613d43b9e15b50ce921fb8981e95d184f97c4a8a419f2eafd2b28a1d1be",
-    "runtime_harness_sha256": "0607c5e9f3f66e2ce8acb063238bae3486856b78b2d992729f9ceb382321e63f",
-    "verifier_sha256": "31a5ff1fec2841c29076fb510e3599d1356f8b1a4cd9dcdb6033115c63f0b2fe",
+    "launcher_normalized_sha256": "b924a849d4519927d8a3e75923294ce6f5ffb0599bf0065fcca90b65037c74e5",
+    "runtime_harness_sha256": "199174f5926d70962107899375e1b9b58b73e332e36f2aaddee96d60c88cde4a",
+    "verifier_sha256": "70516a59c9c4ccd2ac67c4b9535d7e9f57489c15a3fa846337d41ea4e6f8eddc",
     "workflow_sha256": "288edf1ef22a61e9451144a9bde62698eacfe2aa748ac0d29a03d31ad10dc305",
     "preflight_source_sha256": "aeccc63d626bc5998688da2db84b68898a73d1719c3f39f99ad31922fa106e9f",
     "preflight_fixture_sha256": "cf71efabf14a22fdc0b0fced9b69e5119e026586e774826b0a06d6b70ccb10d1",
