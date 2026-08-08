@@ -1035,7 +1035,7 @@ function validateAdminCredential(value, manifest) {
 function validateFrontendCredential(value, manifest) {
     exactKeys(value, ["schema", "principals", "wrong_password"], "frontend_credentials_shape");
     gate(value.schema === manifest.credentials.frontend_schema && PASSWORD_PATTERN.test(value.wrong_password), "frontend_credentials_schema");
-    gate(same(Object.keys(value.principals), ["z2m", "orchestrator", "collector", "other"]), "frontend_credentials_principals");
+    gate(same(Object.keys(value.principals).sort(), ["z2m", "orchestrator", "collector", "other"].sort()), "frontend_credentials_principals");
     for (const principal of Object.keys(value.principals)) validatePrincipalCredential(value.principals[principal], manifest, principal);
 }
 
@@ -2080,7 +2080,7 @@ function selfTests(paths, manifest) {
         const frontendPath = path.join(generatedDirectory, "frontend.json");
         const observerPath = path.join(generatedDirectory, "observer-before.json");
         const writeCredential = (file, value) => fs.writeFileSync(file, `${canonical(value)}\n`, {encoding: "utf8", mode: 0o600});
-        const writeFrontendCredential = (value) => fs.writeFileSync(frontendPath, `${JSON.stringify(value)}\n`, {encoding: "utf8", mode: 0o600});
+        const writeFrontendCredential = (value) => fs.writeFileSync(frontendPath, `${canonical(value)}\n`, {encoding: "utf8", mode: 0o600});
         writeCredential(adminPath, adminCredential);
         fs.writeFileSync(passwordPath, adminCredential.principal.password, {encoding: "utf8", mode: 0o600});
         writeFrontendCredential(frontendCredential);
