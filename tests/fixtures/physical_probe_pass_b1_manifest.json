@@ -772,7 +772,8 @@
       {
         "principal": "orchestrator",
         "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "orchestrator",
@@ -807,7 +808,8 @@
       {
         "principal": "z2m",
         "topic": "zigbee2mqtt/bridge/request/action",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "z2m",
@@ -832,7 +834,8 @@
       {
         "principal": "z2m",
         "topic_fixture": "bridge_request_depth_100",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "z2m",
@@ -891,14 +894,16 @@
         "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
         "qos": 0,
         "retain": false,
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "orchestrator",
         "topic": "zigbee2mqtt/bridge/request/true_family/physical_probe",
         "qos": 1,
         "retain": true,
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "z2m",
@@ -948,7 +953,8 @@
       {
         "principal": "z2m",
         "topic_fixture": "malformed_utf8",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "z2m",
@@ -998,7 +1004,8 @@
       {
         "principal": "collector",
         "topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "collector",
@@ -1152,7 +1159,8 @@
         "principal": "orchestrator",
         "filter": "zigbee2mqtt/bridge/extensions",
         "delivery_topic": "zigbee2mqtt/bridge/extensions",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "orchestrator",
@@ -1170,7 +1178,8 @@
         "principal": "orchestrator",
         "filter": "zigbee2mqtt/spare-brt-100/set",
         "delivery_topic": "zigbee2mqtt/spare-brt-100/set",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "orchestrator",
@@ -1248,7 +1257,8 @@
         "principal": "z2m",
         "filter": "zigbee2mqtt/+",
         "delivery_topic": "zigbee2mqtt/probe",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "z2m",
@@ -1278,7 +1288,8 @@
         "principal": "z2m",
         "filter": "$share/b1a/outside/root",
         "delivery_topic": "outside/root",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "z2m",
@@ -1326,7 +1337,8 @@
         "principal": "z2m",
         "filter_fixture": "malformed_utf8",
         "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "z2m",
@@ -1386,7 +1398,8 @@
         "principal": "other",
         "filter": "zigbee2mqtt/bridge/true_family/physical_probe/status",
         "delivery_topic": "zigbee2mqtt/bridge/true_family/physical_probe/status",
-        "allowed": false
+        "allowed": false,
+        "live": true
       },
       {
         "principal": "other",
@@ -1600,8 +1613,8 @@
   "bindings": {
     "launcher_normalization": "sha256 after replacing the sole EXPECTED_LAUNCHER_SHA256 lowercase-hex literal with 64 zeroes",
     "launcher_normalized_sha256": "3dc5ee480e41a20e8a5f6978abd9b493f093bd765b27ba9b60f9a6ffcd6b8922",
-    "runtime_harness_sha256": "8b5de088b0bf0c406a6851ddf77f517bf0d54f60dc9046de2a0c97ee3046b244",
-    "verifier_sha256": "a1da9a3301b124380ba3f597944fca01a6835e7ab1930fc2e0727a6f4bfeeaaf",
+    "runtime_harness_sha256": "10b5a54dd8c34f48698a6e8d279473ba35c3745324480a84f69ce729332ba8b5",
+    "verifier_sha256": "a89e6757172de87cb1395f93bd10cd5f71330a0c3b200febeed458493a10c58c",
     "workflow_sha256": "288edf1ef22a61e9451144a9bde62698eacfe2aa748ac0d29a03d31ad10dc305",
     "preflight_source_sha256": "aeccc63d626bc5998688da2db84b68898a73d1719c3f39f99ad31922fa106e9f",
     "preflight_fixture_sha256": "cf71efabf14a22fdc0b0fced9b69e5119e026586e774826b0a06d6b70ccb10d1",

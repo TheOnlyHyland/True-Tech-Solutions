@@ -89,6 +89,12 @@ const PASSWORD_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const MAX_RUNTIME_BYTES = 128 * 1024;
 const MAX_FINAL_BYTES = 64 * 1024;
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
+const PURE_MATRIX_SHA256 = "56286ef18ee53f8d691a61b49751a37ece86d246bb8c5b019c194443f7de78bb";
+const MARKED_MATRIX_SHA256 = "28f3a4e5ca8529a5979926ed92dd602e833b3823217192cb9c7db5fe275d4a51";
+const PUBLISH_PURE_PROOF_COVERAGE = Object.freeze(["allowed", "deep_containment", "principal", "qos", "retain", "topic_validity"]);
+const PUBLISH_LIVE_COVERAGE = Object.freeze(["denied_principal", "malformed_utf8", "orchestrator_retain_true", "orchestrator_wrong_qos", "orchestrator_wrong_topic_principal_boundary", "z2m_bridge_request_depth_0", "z2m_bridge_request_depth_100"]);
+const SUBSCRIBE_PURE_PROOF_COVERAGE = Object.freeze(["allowed", "candidate_privacy", "principal", "shared", "source_privacy", "topic_validity", "wildcard"]);
+const SUBSCRIBE_LIVE_COVERAGE = Object.freeze(["candidate_privacy", "denied_principal", "malformed_utf8", "shared_concrete", "source_privacy", "wildcard"]);
 const CLAIM_LIMITS = Object.freeze([
     "pass_b1_not_complete",
     "authorization_not_proven",
@@ -304,6 +310,35 @@ function publishAllowedByManifest(manifest, principal, topic) {
     return matching.length > 0 ? matching[0].allow : false;
 }
 
+function stripLiveMarker(item) {
+    return Object.fromEntries(Object.entries(item).filter(([key]) => key !== "live"));
+}
+
+function publishLiveCoverage(manifest, item) {
+    const matches = [];
+    if (item.principal === "orchestrator" && item.topic === manifest.topics.status && item.qos === undefined && item.retain === undefined) matches.push("orchestrator_wrong_topic_principal_boundary");
+    if (item.principal === "orchestrator" && manifest.topics.request_topics.includes(item.topic) && item.qos === 0 && item.retain === false) matches.push("orchestrator_wrong_qos");
+    if (item.principal === "orchestrator" && manifest.topics.request_topics.includes(item.topic) && item.qos === 1 && item.retain === true) matches.push("orchestrator_retain_true");
+    if (item.principal === "z2m" && item.topic === `${manifest.scope.base_topic}/bridge/request/action`) matches.push("z2m_bridge_request_depth_0");
+    if (item.principal === "z2m" && item.topic_fixture === "bridge_request_depth_100") matches.push("z2m_bridge_request_depth_100");
+    if (item.topic_fixture === "malformed_utf8") matches.push("malformed_utf8");
+    if (["collector", "other"].includes(item.principal)) matches.push("denied_principal");
+    gate(matches.length === 1, "manifest_publish_live_coverage");
+    return matches[0];
+}
+
+function subscribeLiveCoverage(manifest, item) {
+    const matches = [];
+    if (item.principal === "z2m" && item.filter === `${manifest.scope.base_topic}/+`) matches.push("wildcard");
+    if (item.principal === "z2m" && item.filter === "$share/b1a/outside/root") matches.push("shared_concrete");
+    if (item.filter_fixture === "malformed_utf8") matches.push("malformed_utf8");
+    if (item.principal !== "z2m" && item.filter === manifest.topics.source) matches.push("source_privacy");
+    if (item.principal !== "z2m" && [manifest.topics.candidate_friendly, manifest.topics.candidate_friendly_set, manifest.topics.candidate_ieee, manifest.topics.candidate_ieee_descendant].includes(item.filter)) matches.push("candidate_privacy");
+    if (item.principal === "other") matches.push("denied_principal");
+    gate(matches.length === 1, "manifest_subscribe_live_coverage");
+    return matches[0];
+}
+
 function validatePolicy(manifest) {
     const policy = manifest.policy;
     exactKeys(policy, ["defaults", "admin_role", "roles", "observer_role", "clients", "canonical_sha256", "expected_readback_sha256"], "manifest_policy_shape");
@@ -412,12 +447,19 @@ function validateMatrix(manifest) {
     exactKeys(manifest.matrix, ["publish", "subscribe"], "manifest_matrix_shape");
     gate(Array.isArray(manifest.matrix.publish) && manifest.matrix.publish.length === 56, "manifest_publish_matrix");
     gate(Array.isArray(manifest.matrix.subscribe) && manifest.matrix.subscribe.length === 60, "manifest_subscribe_matrix");
-    gate(new Set(manifest.matrix.publish.map(canonical)).size === manifest.matrix.publish.length, "manifest_publish_duplicate");
-    gate(new Set(manifest.matrix.subscribe.map(canonical)).size === manifest.matrix.subscribe.length, "manifest_subscribe_duplicate");
-    gate(sha256Bytes(Buffer.from(canonical(manifest.matrix), "utf8")) === "56286ef18ee53f8d691a61b49751a37ece86d246bb8c5b019c194443f7de78bb", "manifest_matrix_digest");
+    const pureMatrix = {
+        publish: manifest.matrix.publish.map(stripLiveMarker),
+        subscribe: manifest.matrix.subscribe.map(stripLiveMarker),
+    };
+    gate(new Set(pureMatrix.publish.map(canonical)).size === pureMatrix.publish.length, "manifest_publish_duplicate");
+    gate(new Set(pureMatrix.subscribe.map(canonical)).size === pureMatrix.subscribe.length, "manifest_subscribe_duplicate");
+    gate(sha256Bytes(Buffer.from(canonical(pureMatrix), "utf8")) === PURE_MATRIX_SHA256, "manifest_pure_matrix_digest");
+    gate(sha256Bytes(Buffer.from(canonical(manifest.matrix), "utf8")) === MARKED_MATRIX_SHA256, "manifest_marked_matrix_digest");
     for (const item of manifest.matrix.publish) {
         const keys = Object.keys(item).sort();
-        gate(same(keys, ["allowed", "principal", "topic"].sort()) || same(keys, ["allowed", "principal", "topic_fixture"].sort()) || same(keys, ["allowed", "principal", "qos", "retain", "topic"].sort()), "manifest_publish_case_shape");
+        const pureKeys = keys.filter((key) => key !== "live");
+        gate(same(pureKeys, ["allowed", "principal", "topic"].sort()) || same(pureKeys, ["allowed", "principal", "topic_fixture"].sort()) || same(pureKeys, ["allowed", "principal", "qos", "retain", "topic"].sort()), "manifest_publish_case_shape");
+        gate(!Object.hasOwn(item, "live") || (item.live === true && item.allowed === false), "manifest_publish_live_marker");
         gate(["orchestrator", "z2m", "collector", "other"].includes(item.principal), "manifest_publish_principal");
         gate(typeof item.allowed === "boolean", "manifest_publish_case");
         if (item.topic !== undefined) gate(typeof item.topic === "string" && !/[+#]/u.test(item.topic), "manifest_publish_case");
@@ -426,7 +468,9 @@ function validateMatrix(manifest) {
     }
     for (const item of manifest.matrix.subscribe) {
         const keys = Object.keys(item).sort();
-        gate(same(keys, ["allowed", "delivery_topic", "filter", "principal"].sort()) || same(keys, ["allowed", "delivery_topic", "filter_fixture", "principal"].sort()) || same(keys, ["allowed", "delivery_topic", "filter", "principal", "qos"].sort()), "manifest_subscribe_case_shape");
+        const pureKeys = keys.filter((key) => key !== "live");
+        gate(same(pureKeys, ["allowed", "delivery_topic", "filter", "principal"].sort()) || same(pureKeys, ["allowed", "delivery_topic", "filter_fixture", "principal"].sort()) || same(pureKeys, ["allowed", "delivery_topic", "filter", "principal", "qos"].sort()), "manifest_subscribe_case_shape");
+        gate(!Object.hasOwn(item, "live") || (item.live === true && item.allowed === false), "manifest_subscribe_live_marker");
         gate(["orchestrator", "z2m", "collector", "other"].includes(item.principal), "manifest_subscribe_principal");
         gate(typeof item.delivery_topic === "string" && typeof item.allowed === "boolean" && !/[+#]/u.test(item.delivery_topic), "manifest_subscribe_case");
         if (item.filter !== undefined) gate(typeof item.filter === "string", "manifest_subscribe_filter");
@@ -475,6 +519,10 @@ function validateMatrix(manifest) {
     gate(manifest.matrix.subscribe.some((item) => item.principal === "z2m" && item.filter === `${manifest.scope.base_topic}/#` && item.allowed), "manifest_z2m_root_filter");
     gate(manifest.matrix.subscribe.some((item) => item.principal === "z2m" && item.filter === `${manifest.scope.base_topic}/a//b` && item.allowed), "manifest_internal_empty_filter");
     gate(manifest.matrix.subscribe.filter((item) => item.filter === `${manifest.scope.base_topic}/#` && item.principal !== "z2m").every((item) => !item.allowed), "manifest_broad_filter_denial");
+    const publishLive = manifest.matrix.publish.filter((item) => item.live === true);
+    const subscribeLive = manifest.matrix.subscribe.filter((item) => item.live === true);
+    gate(publishLive.length === PUBLISH_LIVE_COVERAGE.length && same(publishLive.map((item) => publishLiveCoverage(manifest, item)).sort(), [...PUBLISH_LIVE_COVERAGE]), "manifest_publish_live_selection");
+    gate(subscribeLive.length === SUBSCRIBE_LIVE_COVERAGE.length && same(subscribeLive.map((item) => subscribeLiveCoverage(manifest, item)).sort(), [...SUBSCRIBE_LIVE_COVERAGE]), "manifest_subscribe_live_selection");
 }
 
 function validatePreflightBinding(manifest) {
@@ -1406,6 +1454,22 @@ function countExpected(items, allowed) {
     return items.filter((item) => item.allowed === allowed).length;
 }
 
+function validateMatrixEvidence(value, manifest) {
+    exactKeys(value, ["publish", "subscribe"], "runtime_matrix_shape");
+    exactKeys(value.publish, ["pure_cases", "pure_allowed", "pure_denied", "pure_proof_coverage", "pure_deep_containment_depths", "exhaustive_pure_oracle_equivalent", "representative_live_denials", "representative_live_coverage", "representative_gateway_close_denials", "live_denials_without_ack_or_publish", "per_matrix_positive_deliveries"], "runtime_publish_matrix_shape");
+    gate(value.publish.pure_cases === manifest.matrix.publish.length && value.publish.pure_allowed === countExpected(manifest.matrix.publish, true) && value.publish.pure_denied === countExpected(manifest.matrix.publish, false), "runtime_publish_matrix_counts");
+    gate(same(value.publish.pure_proof_coverage, PUBLISH_PURE_PROOF_COVERAGE) && same(value.publish.pure_deep_containment_depths, [0, 8, 32, 100]) && value.publish.exhaustive_pure_oracle_equivalent === true, "runtime_publish_pure_matrix");
+    const publishLive = manifest.matrix.publish.filter((item) => item.live === true).length;
+    gate(value.publish.representative_live_denials === publishLive && value.publish.representative_gateway_close_denials === publishLive && same(value.publish.representative_live_coverage, PUBLISH_LIVE_COVERAGE), "runtime_publish_live_matrix");
+    gate(value.publish.live_denials_without_ack_or_publish === true && value.publish.per_matrix_positive_deliveries === 0, "runtime_publish_live_controls");
+    exactKeys(value.subscribe, ["pure_cases", "pure_allowed", "pure_denied", "pure_proof_coverage", "exhaustive_pure_oracle_equivalent", "representative_live_denials", "representative_live_coverage", "representative_gateway_close_denials", "live_denials_without_ack_or_publish", "per_matrix_positive_deliveries"], "runtime_subscribe_matrix_shape");
+    gate(value.subscribe.pure_cases === manifest.matrix.subscribe.length && value.subscribe.pure_allowed === countExpected(manifest.matrix.subscribe, true) && value.subscribe.pure_denied === countExpected(manifest.matrix.subscribe, false), "runtime_subscribe_matrix_counts");
+    gate(same(value.subscribe.pure_proof_coverage, SUBSCRIBE_PURE_PROOF_COVERAGE) && value.subscribe.exhaustive_pure_oracle_equivalent === true, "runtime_subscribe_pure_matrix");
+    const subscribeLive = manifest.matrix.subscribe.filter((item) => item.live === true).length;
+    gate(value.subscribe.representative_live_denials === subscribeLive && value.subscribe.representative_gateway_close_denials === subscribeLive && same(value.subscribe.representative_live_coverage, SUBSCRIBE_LIVE_COVERAGE), "runtime_subscribe_live_matrix");
+    gate(value.subscribe.live_denials_without_ack_or_publish === true && value.subscribe.per_matrix_positive_deliveries === 0, "runtime_subscribe_live_controls");
+}
+
 function validateControl(value, minimum) {
     exactKeys(value, ["correlation_data_unique", "command_success_from_response_not_puback", "response_count"], "runtime_control_shape");
     gate(value.correlation_data_unique === true && value.command_success_from_response_not_puback === true && Number.isInteger(value.response_count) && value.response_count >= minimum, "runtime_control");
@@ -1421,20 +1485,14 @@ function validateInstall(value, manifest) {
 }
 
 function validateClientBefore(value, manifest) {
-    exactKeys(value, ["schema", "result", "phase", "security", "network", "authentication", "matrix", "enforcement", "source", "request_topics_retained_absent"], "client_before_shape");
+    exactKeys(value, ["schema", "result", "phase", "security", "network", "authentication", "matrix", "positive_controls", "enforcement", "source", "request_topics_retained_absent"], "client_before_shape");
     gate(value.phase === "client_before", "client_before_phase");
     validateSecurity(value.security);
     validateFrontendNetwork(value.network);
     validateAuthentication(value.authentication, manifest);
-    exactKeys(value.matrix, ["publish", "subscribe"], "client_before_matrix_shape");
-    exactKeys(value.matrix.publish, ["cases", "allowed", "denied", "gateway_close_denials", "broker_positive_deliveries", "deep_containment_depths", "qos_enforced", "retain_enforced", "topic_contract_enforced", "pure_oracle_equivalent"], "client_before_publish_shape");
-    gate(value.matrix.publish.cases === manifest.matrix.publish.length && value.matrix.publish.allowed === countExpected(manifest.matrix.publish, true) && value.matrix.publish.denied === countExpected(manifest.matrix.publish, false), "client_before_publish_counts");
-    gate(value.matrix.publish.gateway_close_denials === value.matrix.publish.denied && value.matrix.publish.broker_positive_deliveries === value.matrix.publish.allowed && value.matrix.publish.qos_enforced === true && value.matrix.publish.retain_enforced === true && value.matrix.publish.topic_contract_enforced === true && value.matrix.publish.pure_oracle_equivalent === true, "client_before_publish_controls");
-    gate(same(value.matrix.publish.deep_containment_depths, [0, 8, 32, 100]), "client_before_deep_containment");
-    exactKeys(value.matrix.subscribe, ["cases", "allowed", "denied", "gateway_close_denials", "broker_positive_deliveries", "wildcard_enforced", "shared_enforced", "concrete_subscription_policy_enforced", "pure_oracle_equivalent"], "client_before_subscribe_shape");
-    gate(value.matrix.subscribe.cases === manifest.matrix.subscribe.length && value.matrix.subscribe.allowed === countExpected(manifest.matrix.subscribe, true) && value.matrix.subscribe.denied === countExpected(manifest.matrix.subscribe, false), "client_before_subscribe_counts");
-    gate(value.matrix.subscribe.gateway_close_denials === value.matrix.subscribe.denied && value.matrix.subscribe.broker_positive_deliveries === value.matrix.subscribe.allowed && value.matrix.subscribe.wildcard_enforced === true && value.matrix.subscribe.shared_enforced === true && value.matrix.subscribe.concrete_subscription_policy_enforced === true && value.matrix.subscribe.pure_oracle_equivalent === true, "client_before_subscribe_controls");
-    gate(same(value.enforcement, {gateway_exact_enforcement: true, deep_containment: true, qos_enforced: true, qos2_stateful_proxy: true, retain_enforced: true, pure_oracle_matrix_equivalent: true, composite_equivalence_tested: true, broker_native_qos_retain: false}), "client_before_enforcement");
+    validateMatrixEvidence(value.matrix, manifest);
+    gate(same(value.positive_controls, {retained_source_publish_replay_and_clear: true, orchestrator_request_puback_and_z2m_delivery: true}), "client_before_positive_controls");
+    gate(same(value.enforcement, {exhaustive_pure_oracle_matrix_equivalent: true, representative_live_gateway_denials: true, representative_live_denials_without_ack_or_publish: true, qos2_stateful_proxy_unit_tested: true, composite_equivalence_tested_purely: true, broker_native_qos_retain: false}), "client_before_enforcement");
     exactKeys(value.source, ["synthetic_source", "real_externaljs_source_path", "retained_payload_sha256", "source_sha256", "source_acl_privacy_cases", "fresh_gateway_close_proven", "reconnect_gateway_close_proven", "wildcard_and_shared_gateway_close_proven", "retained_source_cleared_by_z2m", "raw_source_emitted"], "client_before_source_shape");
     gate(value.source.synthetic_source === true && value.source.real_externaljs_source_path === false && value.source.source_sha256 === manifest.artifact.sha256 && SHA256_PATTERN.test(value.source.retained_payload_sha256), "client_before_source");
     gate(value.source.source_acl_privacy_cases === manifest.source_privacy.principals.length * manifest.source_privacy.denied_filters.length, "client_before_source");
@@ -1626,11 +1684,12 @@ function verifyReplica(args) {
         classification: CLASSIFICATION,
         authoritative: false,
         broker: {real_mosquitto: true, version: manifest.images.mosquitto.version, dedicated_listener: true, anonymous_disabled: true, dynamic_security_only: true, persistence_private_bind: true, check_retain_source_configured: true, check_retain_source_behavior_tested: false, exact_readback_before_and_after_restarts: true, application_credential_acl_samples: true, retained_persistence_sentinel: true, clean_two_restarts_exit_zero: true, authenticated_readiness_after_each_restart: true, backend_internal_network: true, published_host_ports: false},
-        gateway: {packet_aware_mqtt_v5: true, qos2_state_machine: true, policy_sha256: startup.policy_sha256, composite_policy_sha256: manifest.composite_policy.effective_sha256, runtime_loaded_policy_digest: true, credential_files_provisioned: false, artifact_files_provisioned: false, connect_password_in_transit: true, connect_password_decoded: false, connect_password_persisted: false, broker_ack_authority: true, exact_preflight_envelope_enforcement: true, pure_oracle_matrix_equivalent: true, bounded_handshake_and_idle_timers: true, bidirectional_backpressure: true, parser_and_unsupported_packets_fail_closed: true, broker_origin_malformed_latches_gateway: true, run_wide_listener_healthy: true, sole_dual_homed_container: true, frontend_broker_dns_absent: true, frontend_broker_tcp_absent: true},
-        policy: {broker_sha256: manifest.policy.canonical_sha256, gateway_sha256: manifest.gateway.policy_sha256, composite_sha256: manifest.composite_policy.effective_sha256, preflight_acl_schema: manifest.preflight_acl.schema, preflight_acl_sha256: manifest.preflight_acl.policy_digest, expected_readback_sha256: manifest.policy.expected_readback_sha256, observed_before_restart_sha256: beforeDigest, observed_after_restart_sha256: afterDigest, observed_final_sha256: finalDigest, dynamic_security_exact_set_no_extras: true, assignments_acl_priorities_and_order_read_back: true, native_application_samples_exercised: true, gateway_matrix_exercised: true, pure_preflight_oracle_tested_same_run: true, pure_composite_equivalence_tested: true, correlated_control_responses: true},
+        gateway: {packet_aware_mqtt_v5: true, qos2_state_machine: true, policy_sha256: startup.policy_sha256, composite_policy_sha256: manifest.composite_policy.effective_sha256, runtime_loaded_policy_digest: true, credential_files_provisioned: false, artifact_files_provisioned: false, connect_password_in_transit: true, connect_password_decoded: false, connect_password_persisted: false, broker_ack_authority: true, exhaustive_pure_preflight_envelope_equivalence: true, exhaustive_pure_oracle_matrix_equivalent: true, representative_live_denials_without_ack_or_publish: true, bounded_handshake_and_idle_timers: true, bidirectional_backpressure: true, parser_and_unsupported_packets_fail_closed: true, broker_origin_malformed_latches_gateway: true, run_wide_listener_healthy: true, sole_dual_homed_container: true, frontend_broker_dns_absent: true, frontend_broker_tcp_absent: true},
+        policy: {broker_sha256: manifest.policy.canonical_sha256, gateway_sha256: manifest.gateway.policy_sha256, composite_sha256: manifest.composite_policy.effective_sha256, preflight_acl_schema: manifest.preflight_acl.schema, preflight_acl_sha256: manifest.preflight_acl.policy_digest, expected_readback_sha256: manifest.policy.expected_readback_sha256, observed_before_restart_sha256: beforeDigest, observed_after_restart_sha256: afterDigest, observed_final_sha256: finalDigest, dynamic_security_exact_set_no_extras: true, assignments_acl_priorities_and_order_read_back: true, native_application_samples_exercised: true, representative_gateway_denials_exercised: true, pure_preflight_oracle_tested_same_run: true, pure_composite_equivalence_tested: true, correlated_control_responses: true},
         native_broker_samples: {...backendBefore.native_acl_samples, backend_only_application_credentials: true, retained_sentinel_replayed_after_restart_qos2: true, retained_sentinel_cleared_qos2: true, retained_sentinel_absent_after_second_restart: true},
         authentication: {exact_principal_client_id_binding: true, wrong_password_denied: true, wrong_client_id_denied: true, anonymous_denied: true, unknown_denied: true, admin_and_observer_frontend_denied: true, gateway_denials_without_ack_or_publish: true, frontend_matrix_before_restart: true, frontend_matrix_after_first_restart: true, frontend_matrix_after_second_restart: true, reason_classes: {wrong_password: clientBefore.authentication.wrong_password_broker_reason, wrong_client_id: "connection_closed", anonymous: "connection_closed", unknown: "connection_closed"}},
-        matrix: {publish_cases: clientBefore.matrix.publish.cases, publish_allowed: clientBefore.matrix.publish.allowed, publish_denied: clientBefore.matrix.publish.denied, subscribe_cases: clientBefore.matrix.subscribe.cases, subscribe_allowed: clientBefore.matrix.subscribe.allowed, subscribe_denied: clientBefore.matrix.subscribe.denied, gateway_publish_close_denials: clientBefore.matrix.publish.gateway_close_denials, gateway_subscribe_close_denials: clientBefore.matrix.subscribe.gateway_close_denials, deep_containment_denied_depths: clientBefore.matrix.publish.deep_containment_depths, qos_enforced: true, qos2_proxy_exercised: true, retain_enforced: true, strict_mqtt_utf8_enforced: true, wildcard_and_shared_subscriptions_denied: true, source_and_candidate_privacy_enforced: true, positive_broker_ack_and_delivery_controls: true, pure_oracle_equivalent: true},
+        matrix: clientBefore.matrix,
+        positive_controls: clientBefore.positive_controls,
         retained_source: {synthetic_publisher: true, real_externaljs_path: false, mqtt_payload_sha256: observerBefore.payload_sha256, source_sha256: observerBefore.source_sha256, observer_replay_qos1_retained: true, fresh_and_reconnect_privacy: true, wildcard_and_shared_privacy: true, raw_source_emitted: false, cleared_before_restart: true, absent_after_restart: true, request_topics_retained_absent: true, native_sentinel_replayed_after_restart_qos2: true, native_sentinel_absent_after_clear_and_second_restart: true},
         limitations: {check_retain_source_behavior_tested: false, backend_fault_injection_tested: false, listener_fault_injection_tested: false, same_runner_host_isolation_proven: false, seccomp_isolation_boundary: false, permit_consumption: false, writer_fence: false, real_zigbee2mqtt_mqtt_externaljs_source_path: false, physical_provenance: false, coordinator_radio_valve_exercised: false},
         security: {clients_nonroot: true, broker_nonroot: true, gateway_nonroot: true, read_only_roots: true, cap_drop_all: true, no_new_privileges: true, seccomp_filter_observed: true, bounded_resources: true, forbidden_host_paths_absent: true, exact_two_internal_networks: true, host_aliases_and_external_route_probed: true, same_runner_host_isolation_proven: false},
@@ -1649,7 +1708,7 @@ function canonicalFile(file, maximum, schema) {
 }
 
 function validateReplicaEvidence(value, manifest, sourceBytes) {
-    exactKeys(value, ["schema", "result", "pass", "classification", "authoritative", "broker", "gateway", "policy", "native_broker_samples", "authentication", "matrix", "retained_source", "limitations", "security", "container_image_config_digests", "normalized_random_fields_removed_after_shape_validation"], "replica_evidence_shape");
+    exactKeys(value, ["schema", "result", "pass", "classification", "authoritative", "broker", "gateway", "policy", "native_broker_samples", "authentication", "matrix", "positive_controls", "retained_source", "limitations", "security", "container_image_config_digests", "normalized_random_fields_removed_after_shape_validation"], "replica_evidence_shape");
     gate(value.schema === REPLICA_SCHEMA && value.result === "pass" && value.pass === "B1A" && value.classification === CLASSIFICATION && value.authoritative === false, "replica_evidence_identity");
     gate(same(value.broker, {
         real_mosquitto: true,
@@ -1680,8 +1739,9 @@ function validateReplicaEvidence(value, manifest, sourceBytes) {
         connect_password_decoded: false,
         connect_password_persisted: false,
         broker_ack_authority: true,
-        exact_preflight_envelope_enforcement: true,
-        pure_oracle_matrix_equivalent: true,
+        exhaustive_pure_preflight_envelope_equivalence: true,
+        exhaustive_pure_oracle_matrix_equivalent: true,
+        representative_live_denials_without_ack_or_publish: true,
         bounded_handshake_and_idle_timers: true,
         bidirectional_backpressure: true,
         parser_and_unsupported_packets_fail_closed: true,
@@ -1704,7 +1764,7 @@ function validateReplicaEvidence(value, manifest, sourceBytes) {
         dynamic_security_exact_set_no_extras: true,
         assignments_acl_priorities_and_order_read_back: true,
         native_application_samples_exercised: true,
-        gateway_matrix_exercised: true,
+        representative_gateway_denials_exercised: true,
         pure_preflight_oracle_tested_same_run: true,
         pure_composite_equivalence_tested: true,
         correlated_control_responses: true,
@@ -1725,12 +1785,8 @@ function validateReplicaEvidence(value, manifest, sourceBytes) {
     gate(Object.entries(value.authentication).filter(([key]) => key !== "reason_classes").every(([, item]) => item === true), "replica_evidence_auth");
     exactKeys(value.authentication.reason_classes, ["wrong_password", "wrong_client_id", "anonymous", "unknown"], "replica_evidence_auth_reasons");
     gate(Object.values(value.authentication.reason_classes).every((item) => manifest.authentication.accepted_negative_reason_classes.includes(item)), "replica_evidence_auth_reasons");
-    exactKeys(value.matrix, ["publish_cases", "publish_allowed", "publish_denied", "subscribe_cases", "subscribe_allowed", "subscribe_denied", "gateway_publish_close_denials", "gateway_subscribe_close_denials", "deep_containment_denied_depths", "qos_enforced", "qos2_proxy_exercised", "retain_enforced", "strict_mqtt_utf8_enforced", "wildcard_and_shared_subscriptions_denied", "source_and_candidate_privacy_enforced", "positive_broker_ack_and_delivery_controls", "pure_oracle_equivalent"], "replica_evidence_matrix_shape");
-    gate(value.matrix.publish_cases === manifest.matrix.publish.length && value.matrix.publish_allowed === countExpected(manifest.matrix.publish, true) && value.matrix.publish_denied === countExpected(manifest.matrix.publish, false), "replica_evidence_matrix");
-    gate(value.matrix.subscribe_cases === manifest.matrix.subscribe.length && value.matrix.subscribe_allowed === countExpected(manifest.matrix.subscribe, true) && value.matrix.subscribe_denied === countExpected(manifest.matrix.subscribe, false), "replica_evidence_matrix");
-    gate(value.matrix.gateway_publish_close_denials === value.matrix.publish_denied && value.matrix.gateway_subscribe_close_denials === value.matrix.subscribe_denied, "replica_evidence_matrix");
-    gate(same(value.matrix.deep_containment_denied_depths, [0, 8, 32, 100]), "replica_evidence_matrix");
-    for (const key of ["qos_enforced", "qos2_proxy_exercised", "retain_enforced", "strict_mqtt_utf8_enforced", "wildcard_and_shared_subscriptions_denied", "source_and_candidate_privacy_enforced", "positive_broker_ack_and_delivery_controls", "pure_oracle_equivalent"]) gate(value.matrix[key] === true, "replica_evidence_matrix");
+    validateMatrixEvidence(value.matrix, manifest);
+    gate(same(value.positive_controls, {retained_source_publish_replay_and_clear: true, orchestrator_request_puback_and_z2m_delivery: true}), "replica_evidence_positive_controls");
     const sourcePayload = buildSourceInventory(sourceBytes, manifest.artifact.filename);
     exactKeys(value.retained_source, ["synthetic_publisher", "real_externaljs_path", "mqtt_payload_sha256", "source_sha256", "observer_replay_qos1_retained", "fresh_and_reconnect_privacy", "wildcard_and_shared_privacy", "raw_source_emitted", "cleared_before_restart", "absent_after_restart", "request_topics_retained_absent", "native_sentinel_replayed_after_restart_qos2", "native_sentinel_absent_after_clear_and_second_restart"], "replica_evidence_source_shape");
     gate(value.retained_source.synthetic_publisher === true && value.retained_source.real_externaljs_path === false && value.retained_source.mqtt_payload_sha256 === sha256Bytes(sourcePayload) && value.retained_source.source_sha256 === manifest.artifact.sha256, "replica_evidence_source");
@@ -1954,7 +2010,7 @@ function staticSourceChecks(paths, manifest) {
     gate(CREDENTIAL_VERIFY_FAILURE_CATEGORIES.every((category) => credentialDiagnosticSource.includes(`: "${category}"`) || category === "unknown") && credentialDiagnosticSource.includes('admin_credentials_json: "content"') && credentialDiagnosticSource.includes('credential_duplicate: "uniqueness"') && credentialDiagnosticSource.includes('admin_credentials_files: "files"') && credentialDiagnosticSource.includes('credentials_root: "root_mode"') && credentialDiagnosticSource.includes('credential_mode: "file_mode"') && !credentialDiagnosticSource.includes("error.message") && !credentialDiagnosticSource.includes("error.stack"), "verifier_credential_diagnostic_mapping");
     const runtimeClassifierSource = verifier.slice(verifier.indexOf("function runtimeFailureCategoryFromBytes"), verifier.indexOf("function readCanonicalRuntime"));
     gate(runtimeClassifierSource.includes("contract.max_bytes") && runtimeClassifierSource.includes("runtime_failure_canonical") && runtimeClassifierSource.includes("categories.includes(value.failure_category)") && runtimeClassifierSource.includes("contract.client_before_categories") && verifier.includes('if (process.argv[2] !== "--classify-runtime-failure") process.stdout.write(failureToken())'), "verifier_runtime_failure_classifier");
-    gate(runtime.includes("sendAndExpectClose") && runtime.includes("gateway_close_denials") && runtime.includes(".noMessage("), "runtime_gateway_denial");
+    gate(runtime.includes("sendAndExpectClose") && runtime.includes("representative_gateway_close_denials") && runtime.includes("per_matrix_positive_deliveries: 0") && runtime.includes(".noMessage("), "runtime_gateway_denial");
     gate(runtime.includes("gatewayPolicyDigest") && runtime.includes("MqttFrameStream") && runtime.includes("broker_ack_authority: true"), "runtime_gateway_policy");
     const gatewaySource = runtime.slice(runtime.indexOf("async function runGateway"), runtime.indexOf("function encodePuback"));
     gate(gatewaySource.includes("forwardFrame(client, session.upstream, frame") && gatewaySource.includes("forwardFrame(upstream, client, brokerFrame"), "runtime_gateway_forwarding");
@@ -2213,6 +2269,9 @@ function selfTests(paths, manifest) {
         (value) => { value.policy.roles.find((role) => role.rolename === value.principals.z2m.role).acls.push({acltype: "publishClientSend", topic: `${value.scope.base_topic}/bridge/request/#`, allow: false, priority: 1000}); },
         (value) => { value.matrix.publish = value.matrix.publish.filter((item) => item.topic_fixture !== "bridge_request_depth_100"); },
         (value) => { value.matrix.subscribe.find((item) => item.principal === "z2m" && item.filter === `${value.scope.base_topic}/#`).allowed = false; },
+        (value) => { value.matrix.publish.find((item) => item.live === true).live = false; },
+        (value) => { value.matrix.publish.find((item) => item.allowed === true).live = true; },
+        (value) => { delete value.matrix.subscribe.find((item) => item.filter_fixture === "malformed_utf8").live; },
         (value) => { value.broker.config_lines.push("port 1883"); value.broker.config_sha256 = sha256Bytes(Buffer.from(`${value.broker.config_lines.join("\n")}\n`, "utf8")); },
     ];
     for (const mutate of mutations) {

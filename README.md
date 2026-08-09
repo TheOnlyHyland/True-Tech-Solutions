@@ -63,7 +63,8 @@ below is unreleased, unwired, and absent from that installed release.
   principal, matrix, topology, evidence, and claim-limit contract.
 - `tests/js/test_physical_probe_broker_runtime.mjs`: zero-dependency raw MQTT v5
   client and packet-aware enforcement gateway, Dynamic Security installer and
-  read-back client, and live composite-policy matrix harness.
+  read-back client, exhaustive pure policy matrix, and representative live-denial
+  harness.
 - `tests/js/verify_physical_probe_broker_runtime.mjs`: strict PASS B1A manifest,
   preflight-policy, Docker inspect, read-back, redaction, cleanup, and canonical
   evidence verifier.
@@ -390,15 +391,28 @@ v1 input; current v2 fencing rejects its old v1 ACL evidence rather than adding
 compatibility behavior. The orchestrator can publish
 only the two exact probe request topics and subscribe only to the five exact
 ready, status, result, response, and acknowledgement-response topics. Candidate,
-source, backup, descendant, broad, and repeated bridge-request cases are tested
-with broker-confirmed positive controls and gateway-close negative controls. The
-gateway enforces the exact preflight topic-validity oracle, including the
+source, backup, descendant, broad, and repeated bridge-request cases remain in
+an exhaustive pure matrix: all 56 publish and 60 subscribe cases are evaluated
+for gateway-oracle and preflight equivalence before any matrix socket opens. An
+exact `live: true` subset then runs 7 publish and 6 subscribe representative
+black-box denials. Unmarked cases are pure-only. Every marked case must close at
+the gateway without a preceding ACK or PUBLISH, and no matrix case performs a
+positive delivery. Separate positive end-to-end controls remain the retained
+source publish/replay/clear path and both orchestrator-to-Zigbee2MQTT request
+publish/delivery paths.
+
+The exhaustive pure oracle includes the
 256-Unicode-code-point bound and accepted internal empty segments. Exact-limit,
 overlength, empty, leading/trailing slash, ASCII and Unicode boundary whitespace,
 U+0000/U+0001-U+001F, U+007F-U+009F, surrogate, Unicode noncharacter, wildcard,
 and malformed UTF-8 cases are exercised without adding an NFC normalization
-rule. It denies any adjacent `bridge/request` segments at arbitrary depth, with
-explicit depth 0, 8, 32, and 100 cases. It also enforces orchestrator QoS 1 with retain disabled,
+rule. Pure coverage denies adjacent `bridge/request` segments at arbitrary depth,
+with explicit depth 0, 8, 32, and 100 cases; depths 0 and 100 are also live
+representatives. Live publish denials additionally cover the orchestrator topic
+boundary, wrong QoS, retain enabled, malformed UTF-8, and a denied
+collector/other principal. Live subscribe denials cover wildcard and concrete
+shared filters, malformed UTF-8, source and candidate privacy, and a denied
+principal. The policy also enforces orchestrator QoS 1 with retain disabled,
 allows Zigbee2MQTT QoS 0, 1, or 2 with either retain value on contract-valid
 topics inside or outside the base root, allows its sole `<base>/#` filter or any
 contract-valid concrete topic at requested QoS 0, 1, or 2, and denies all other
@@ -406,8 +420,9 @@ wildcard or shared filters. Stateful PUBREC/PUBREL/PUBCOMP handling proxies both
 QoS2 directions, accepts only identity-exact DUP PUBLISH races before completion,
 rejects changed or stale retransmissions, and requires successful PUBREC and
 PUBCOMP results. Other and collector publishing remains denied. The broker and
-protocol endpoints still perform every successful PUBACK, PUBREC, PUBCOMP,
-SUBACK, and delivery; the gateway never forges a broker success acknowledgement.
+protocol endpoints still perform every successful ACK and delivery used by the
+separate positive controls and native broker samples; the gateway never forges a
+broker success acknowledgement.
 
 Every policy command carries unique correlation data, and command success comes
 only from the matching Dynamic Security response, never from request PUBACK.
@@ -500,10 +515,12 @@ healthy through the sequence; backend and listener fault injection are explicitl
 not claimed.
 
 Final evidence distinguishes the exact Dynamic Security read-back, sampled
-native broker outcomes, exact gateway matrix enforcement, and tested pure
-composite equivalence. The launcher reruns the Python preflight oracle against
-the same bound matrix before starting Docker. It does not collapse any one of
-those layers into proof of the others.
+native broker outcomes, exhaustive pure policy equivalence, representative
+black-box live denials, and the separate retained-source and request-topic
+positive end-to-end controls. It reports zero per-matrix positive deliveries.
+The launcher reruns the Python preflight oracle against the same bound 56/60 pure
+case set before starting Docker. It does not collapse any one of those layers
+into proof of the others or claim that every matrix case ran live.
 
 PASS B1A still does not exercise the real Zigbee2MQTT MQTT/ExternalJS retained-source
 path, broker delivery to a real Zigbee2MQTT process, atomic permit consumption,

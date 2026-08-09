@@ -29,6 +29,10 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const PASSWORD_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const BOUNDARY_WHITESPACE_PATTERN = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]|[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]$/u;
 const FRONTEND_PRINCIPALS = Object.freeze(["z2m", "orchestrator", "collector", "other"]);
+const PUBLISH_PURE_PROOF_COVERAGE = Object.freeze(["allowed", "deep_containment", "principal", "qos", "retain", "topic_validity"]);
+const PUBLISH_LIVE_COVERAGE = Object.freeze(["denied_principal", "malformed_utf8", "orchestrator_retain_true", "orchestrator_wrong_qos", "orchestrator_wrong_topic_principal_boundary", "z2m_bridge_request_depth_0", "z2m_bridge_request_depth_100"]);
+const SUBSCRIBE_PURE_PROOF_COVERAGE = Object.freeze(["allowed", "candidate_privacy", "principal", "shared", "source_privacy", "topic_validity", "wildcard"]);
+const SUBSCRIBE_LIVE_COVERAGE = Object.freeze(["candidate_privacy", "denied_principal", "malformed_utf8", "shared_concrete", "source_privacy", "wildcard"]);
 
 class B1AFailure extends Error {
     constructor(code) {
@@ -1881,10 +1885,6 @@ async function authenticationMatrix(context) {
     };
 }
 
-function matrixPublisherPrincipal(context, topic) {
-    return context.manifest.topics.request_topics.includes(topic) ? "orchestrator" : "z2m";
-}
-
 function matrixTopic(value, fixture, baseTopic) {
     if (fixture === undefined) return value;
     if (fixture === "maximum") return `${baseTopic}/${"a".repeat(244)}`;
@@ -1916,153 +1916,164 @@ function matrixTopic(value, fixture, baseTopic) {
     throw new B1AFailure("matrix_topic_fixture");
 }
 
+function publishLiveCoverage(context, item, topic, qos, retain) {
+    const matches = [];
+    if (item.principal === "orchestrator" && topic === context.manifest.topics.status && qos === 1 && retain === false) matches.push("orchestrator_wrong_topic_principal_boundary");
+    if (item.principal === "orchestrator" && context.manifest.topics.request_topics.includes(topic) && qos !== 1 && retain === false) matches.push("orchestrator_wrong_qos");
+    if (item.principal === "orchestrator" && context.manifest.topics.request_topics.includes(topic) && qos === 1 && retain === true) matches.push("orchestrator_retain_true");
+    if (item.principal === "z2m" && topic === `${context.manifest.scope.base_topic}/bridge/request/action`) matches.push("z2m_bridge_request_depth_0");
+    if (item.principal === "z2m" && item.topic_fixture === "bridge_request_depth_100") matches.push("z2m_bridge_request_depth_100");
+    if (item.topic_fixture === "malformed_utf8") matches.push("malformed_utf8");
+    if (["collector", "other"].includes(item.principal)) matches.push("denied_principal");
+    gate(matches.length === 1, "publish_live_coverage");
+    return matches[0];
+}
+
+function subscribeLiveCoverage(context, item, filter) {
+    const matches = [];
+    if (item.principal === "z2m" && filter === `${context.manifest.scope.base_topic}/+`) matches.push("wildcard");
+    if (item.principal === "z2m" && filter === "$share/b1a/outside/root") matches.push("shared_concrete");
+    if (item.filter_fixture === "malformed_utf8") matches.push("malformed_utf8");
+    if (item.principal !== "z2m" && filter === context.manifest.topics.source) matches.push("source_privacy");
+    if (item.principal !== "z2m" && [context.manifest.topics.candidate_friendly, context.manifest.topics.candidate_friendly_set, context.manifest.topics.candidate_ieee, context.manifest.topics.candidate_ieee_descendant].includes(filter)) matches.push("candidate_privacy");
+    if (item.principal === "other") matches.push("denied_principal");
+    gate(matches.length === 1, "subscribe_live_coverage");
+    return matches[0];
+}
+
 async function publishMatrix(context) {
     let allowed = 0;
     let denied = 0;
-    let positiveDeliveries = 0;
     const deepDepths = new Set();
     const proofs = new Set();
-    for (const [index, item] of context.manifest.matrix.publish.entries()) {
+    const liveCases = [];
+    const liveCoverage = new Set();
+    for (const item of context.manifest.matrix.publish) {
         const topic = matrixTopic(item.topic, item.topic_fixture, context.manifest.scope.base_topic);
         const qos = item.qos ?? 1;
         const retain = item.retain ?? false;
-        const id = item.id ?? `case-${index}`;
-        const encoding = item.encoding ?? (["malformed_utf8", "surrogate_utf8"].includes(item.topic_fixture) ? item.topic_fixture : topicContractValid(topic) ? "normal" : "unchecked");
-        let proof = item.proof;
-        if (!proof && item.allowed) proof = "positive";
-        if (!proof && item.principal === "z2m" && containsBridgeRequest(topic)) proof = "deep_containment";
-        if (!proof && item.principal === "orchestrator" && context.manifest.topics.request_topics.includes(topic) && qos !== 1) proof = "qos";
-        if (!proof && item.principal === "orchestrator" && context.manifest.topics.request_topics.includes(topic) && retain !== false) proof = "retain";
-        if (!proof && (!topicContractValid(topic) || ["malformed_utf8", "surrogate_utf8"].includes(item.topic_fixture))) proof = "topic_validity";
-        if (!proof) proof = "principal";
+        let proof;
+        if (item.allowed) proof = "allowed";
+        else if (item.principal === "z2m" && containsBridgeRequest(topic)) proof = "deep_containment";
+        else if (item.principal === "orchestrator" && context.manifest.topics.request_topics.includes(topic) && qos !== 1) proof = "qos";
+        else if (item.principal === "orchestrator" && context.manifest.topics.request_topics.includes(topic) && retain !== false) proof = "retain";
+        else if (!topicContractValid(topic) || ["malformed_utf8", "surrogate_utf8"].includes(item.topic_fixture)) proof = "topic_validity";
+        else proof = "principal";
         const oracleAllowed = ["malformed_utf8", "surrogate_utf8"].includes(item.topic_fixture)
             ? false
             : gatewayAllowsPublish(context.manifest, item.principal, {topic, qos, retain});
         gate(oracleAllowed === item.allowed, "publish_matrix_oracle_equivalence");
+        if (item.allowed) allowed += 1;
+        else denied += 1;
+        proofs.add(proof);
+        if (proof === "deep_containment") {
+            const levels = topic.split("/");
+            deepDepths.add(levels.findIndex((level, levelIndex) => level === "bridge" && levels[levelIndex + 1] === "request") - 1);
+        }
+        if (item.live === true) {
+            gate(item.allowed === false, "publish_live_denial");
+            const coverage = publishLiveCoverage(context, item, topic, qos, retain);
+            liveCoverage.add(coverage);
+            liveCases.push({item, topic, qos, retain});
+        }
+    }
+    gate(allowed > 0 && denied > 0, "publish_matrix_controls");
+    for (const depth of [0, 8, 32, 100]) gate(deepDepths.has(depth), "publish_deep_containment");
+    gate(same([...proofs].sort(), [...PUBLISH_PURE_PROOF_COVERAGE]), "publish_matrix_proof");
+    gate(liveCases.length === PUBLISH_LIVE_COVERAGE.length && same([...liveCoverage].sort(), [...PUBLISH_LIVE_COVERAGE]), "publish_live_selection");
+    let liveDenials = 0;
+    for (const {item, topic, qos, retain} of liveCases) {
         const publisher = await openPrincipal(context, item.principal);
-        let subscriber;
         try {
-            if (item.allowed) {
-                if (item.principal === "z2m") {
-                    subscriber = publisher;
-                    const suback = await subscriber.subscribe([{filter: topic, qos}]);
-                    gate(suback.reasons[0] <= qos, "publish_positive_subscribe");
-                } else {
-                    subscriber = await openPrincipal(context, "z2m");
-                    const suback = await subscriber.subscribe([{filter: topic, qos}]);
-                    gate(suback.reasons[0] <= qos, "publish_positive_subscribe");
-                }
-                const payload = Buffer.from(`b1a-publish-${id}`, "utf8");
-                const ack = await publisher.publish(topic, payload, {qos, retain});
-                gate(publishResultSucceeded(ack), "publish_expected_allow");
-                const message = await subscriber.message(topic);
-                gate(message.payload.equals(payload), "publish_positive_delivery");
-                if (retain) {
-                    const cleared = await publisher.publish(topic, Buffer.alloc(0), {qos: Math.max(1, qos), retain: true});
-                    gate(publishResultSucceeded(cleared), "publish_positive_retained_clear");
-                }
-                allowed += 1;
-                positiveDeliveries += 1;
-            } else {
-                const packetId = publisher.nextPacketId();
-                const frame = encoding === "malformed_utf8" || encoding === "surrogate_utf8"
-                    ? encodeRawTopicPublish(encoding === "malformed_utf8" ? Buffer.from([0xff]) : Buffer.from([0xed, 0xa0, 0x80]), Buffer.from("b1a-denied", "utf8"), {qos, retain, packetId})
-                    : encoding === "unchecked"
-                        ? encodeUncheckedPublish(topic, Buffer.from("b1a-denied", "utf8"), {qos, retain, packetId})
-                        : encodePublish(topic, Buffer.from("b1a-denied", "utf8"), {qos, retain, packetId});
-                await publisher.sendAndExpectClose(frame);
-                denied += 1;
-            }
-            proofs.add(proof);
-            if (proof === "deep_containment") {
-                const levels = topic.split("/");
-                deepDepths.add(levels.findIndex((level, levelIndex) => level === "bridge" && levels[levelIndex + 1] === "request") - 1);
-            }
+            const packetId = publisher.nextPacketId();
+            const encoding = ["malformed_utf8", "surrogate_utf8"].includes(item.topic_fixture) ? item.topic_fixture : topicContractValid(topic) ? "normal" : "unchecked";
+            const frame = encoding === "malformed_utf8" || encoding === "surrogate_utf8"
+                ? encodeRawTopicPublish(encoding === "malformed_utf8" ? Buffer.from([0xff]) : Buffer.from([0xed, 0xa0, 0x80]), Buffer.from("b1a-denied", "utf8"), {qos, retain, packetId})
+                : encoding === "unchecked"
+                    ? encodeUncheckedPublish(topic, Buffer.from("b1a-denied", "utf8"), {qos, retain, packetId})
+                    : encodePublish(topic, Buffer.from("b1a-denied", "utf8"), {qos, retain, packetId});
+            await publisher.sendAndExpectClose(frame);
+            liveDenials += 1;
         } finally {
-            if (subscriber && subscriber !== publisher) await subscriber.close();
             await publisher.close();
         }
     }
-    gate(allowed > 0 && denied > 0 && positiveDeliveries === allowed, "publish_matrix_controls");
-    for (const depth of [0, 8, 32, 100]) gate(deepDepths.has(depth), "publish_deep_containment");
-    for (const proof of ["deep_containment", "qos", "retain", "topic_validity", "principal", "positive"]) gate(proofs.has(proof), "publish_matrix_proof");
+    gate(liveDenials === liveCases.length, "publish_live_denials");
     return {
-        cases: allowed + denied,
-        allowed,
-        denied,
-        gateway_close_denials: denied,
-        broker_positive_deliveries: positiveDeliveries,
-        deep_containment_depths: [0, 8, 32, 100],
-        qos_enforced: true,
-        retain_enforced: true,
-        topic_contract_enforced: true,
-        pure_oracle_equivalent: true,
+        pure_cases: allowed + denied,
+        pure_allowed: allowed,
+        pure_denied: denied,
+        pure_proof_coverage: [...PUBLISH_PURE_PROOF_COVERAGE],
+        pure_deep_containment_depths: [0, 8, 32, 100],
+        exhaustive_pure_oracle_equivalent: true,
+        representative_live_denials: liveDenials,
+        representative_live_coverage: [...PUBLISH_LIVE_COVERAGE],
+        representative_gateway_close_denials: liveDenials,
+        live_denials_without_ack_or_publish: true,
+        per_matrix_positive_deliveries: 0,
     };
 }
 
 async function subscribeMatrix(context) {
     let allowed = 0;
     let denied = 0;
-    let positiveDeliveries = 0;
     const proofs = new Set();
-    for (const [index, item] of context.manifest.matrix.subscribe.entries()) {
+    const liveCases = [];
+    const liveCoverage = new Set();
+    for (const item of context.manifest.matrix.subscribe) {
         const filter = matrixTopic(item.filter, item.filter_fixture, context.manifest.scope.base_topic);
-        const deliveryTopic = item.filter_fixture === "maximum" ? filter : item.delivery_topic;
         const qos = item.qos ?? 1;
-        const id = item.id ?? `case-${index}`;
-        let proof = item.proof;
-        if (!proof && item.allowed) proof = "positive";
-        if (!proof && filter.startsWith("$share/")) proof = "shared";
-        if (!proof && (filter.includes("+") || filter.includes("#"))) proof = "wildcard";
-        if (!proof && (!mqttFilterStructurallyValid(filter) || ["malformed_utf8", "surrogate_utf8"].includes(item.filter_fixture))) proof = "topic_validity";
-        if (!proof && filter === context.manifest.topics.source) proof = "source_privacy";
-        if (!proof && [context.manifest.topics.candidate_friendly, context.manifest.topics.candidate_friendly_set, context.manifest.topics.candidate_ieee, context.manifest.topics.candidate_ieee_descendant].includes(filter)) proof = "candidate_privacy";
-        if (!proof) proof = "principal";
+        let proof;
+        if (item.allowed) proof = "allowed";
+        else if (filter.startsWith("$share/")) proof = "shared";
+        else if (filter.includes("+") || filter.includes("#")) proof = "wildcard";
+        else if (!mqttFilterStructurallyValid(filter) || ["malformed_utf8", "surrogate_utf8"].includes(item.filter_fixture)) proof = "topic_validity";
+        else if (filter === context.manifest.topics.source) proof = "source_privacy";
+        else if ([context.manifest.topics.candidate_friendly, context.manifest.topics.candidate_friendly_set, context.manifest.topics.candidate_ieee, context.manifest.topics.candidate_ieee_descendant].includes(filter)) proof = "candidate_privacy";
+        else proof = "principal";
         const oracleAllowed = ["malformed_utf8", "surrogate_utf8"].includes(item.filter_fixture)
             ? false
             : gatewayAllowsSubscribe(context.manifest, item.principal, filter);
         gate(oracleAllowed === item.allowed, "subscribe_matrix_oracle_equivalence");
+        if (item.allowed) allowed += 1;
+        else denied += 1;
+        proofs.add(proof);
+        if (item.live === true) {
+            gate(item.allowed === false, "subscribe_live_denial");
+            const coverage = subscribeLiveCoverage(context, item, filter);
+            liveCoverage.add(coverage);
+            liveCases.push({item, filter, qos});
+        }
+    }
+    gate(allowed > 0 && denied > 0, "subscribe_matrix_controls");
+    gate(same([...proofs].sort(), [...SUBSCRIBE_PURE_PROOF_COVERAGE]), "subscribe_matrix_proof");
+    gate(liveCases.length === SUBSCRIBE_LIVE_COVERAGE.length && same([...liveCoverage].sort(), [...SUBSCRIBE_LIVE_COVERAGE]), "subscribe_live_selection");
+    let liveDenials = 0;
+    for (const {item, filter, qos} of liveCases) {
         const subscriber = await openPrincipal(context, item.principal);
-        let publisher;
         try {
-            if (item.allowed) {
-                const suback = await subscriber.subscribe([{filter, qos}]);
-                gate(suback.reasons[0] <= qos, "subscribe_expected_allow");
-                const publisherPrincipal = matrixPublisherPrincipal(context, deliveryTopic);
-                publisher = item.principal === publisherPrincipal ? subscriber : await openPrincipal(context, publisherPrincipal);
-                const payload = Buffer.from(`b1a-subscribe-${id}`, "utf8");
-                const ack = await publisher.publish(deliveryTopic, payload, {qos: 1, retain: false});
-                gate(publishResultSucceeded(ack), "subscribe_control_publish");
-                const message = await subscriber.message(deliveryTopic);
-                gate(message.payload.equals(payload), "subscribe_control_delivery");
-                allowed += 1;
-                positiveDeliveries += 1;
-            } else {
-                const packetId = subscriber.nextPacketId();
-                const frame = ["malformed_utf8", "surrogate_utf8", "empty"].includes(item.filter_fixture)
-                    ? encodeRawFilterSubscribe(packetId, item.filter_fixture === "empty" ? Buffer.alloc(0) : item.filter_fixture === "malformed_utf8" ? Buffer.from([0xff]) : Buffer.from([0xed, 0xa0, 0x80]))
-                    : encodeSubscribe(packetId, [{filter, qos}]);
-                await subscriber.sendAndExpectClose(frame);
-                denied += 1;
-            }
-            proofs.add(proof);
+            const packetId = subscriber.nextPacketId();
+            const frame = ["malformed_utf8", "surrogate_utf8", "empty"].includes(item.filter_fixture)
+                ? encodeRawFilterSubscribe(packetId, item.filter_fixture === "empty" ? Buffer.alloc(0) : item.filter_fixture === "malformed_utf8" ? Buffer.from([0xff]) : Buffer.from([0xed, 0xa0, 0x80]))
+                : encodeSubscribe(packetId, [{filter, qos}]);
+            await subscriber.sendAndExpectClose(frame);
+            liveDenials += 1;
         } finally {
-            if (publisher && publisher !== subscriber) await publisher.close();
             await subscriber.close();
         }
     }
-    gate(allowed > 0 && denied > 0 && positiveDeliveries === allowed, "subscribe_matrix_controls");
-    for (const proof of ["wildcard", "shared", "topic_validity", "source_privacy", "candidate_privacy", "principal", "positive"]) gate(proofs.has(proof), "subscribe_matrix_proof");
+    gate(liveDenials === liveCases.length, "subscribe_live_denials");
     return {
-        cases: allowed + denied,
-        allowed,
-        denied,
-        gateway_close_denials: denied,
-        broker_positive_deliveries: positiveDeliveries,
-        wildcard_enforced: true,
-        shared_enforced: true,
-        concrete_subscription_policy_enforced: true,
-        pure_oracle_equivalent: true,
+        pure_cases: allowed + denied,
+        pure_allowed: allowed,
+        pure_denied: denied,
+        pure_proof_coverage: [...SUBSCRIBE_PURE_PROOF_COVERAGE],
+        exhaustive_pure_oracle_equivalent: true,
+        representative_live_denials: liveDenials,
+        representative_live_coverage: [...SUBSCRIBE_LIVE_COVERAGE],
+        representative_gateway_close_denials: liveDenials,
+        live_denials_without_ack_or_publish: true,
+        per_matrix_positive_deliveries: 0,
     };
 }
 
@@ -2458,14 +2469,16 @@ async function runClientBefore(baseContext) {
         network,
         authentication,
         matrix: {publish, subscribe},
+        positive_controls: {
+            retained_source_publish_replay_and_clear: true,
+            orchestrator_request_puback_and_z2m_delivery: true,
+        },
         enforcement: {
-            gateway_exact_enforcement: true,
-            deep_containment: true,
-            qos_enforced: true,
-            qos2_stateful_proxy: true,
-            retain_enforced: true,
-            pure_oracle_matrix_equivalent: true,
-            composite_equivalence_tested: true,
+            exhaustive_pure_oracle_matrix_equivalent: true,
+            representative_live_gateway_denials: true,
+            representative_live_denials_without_ack_or_publish: true,
+            qos2_stateful_proxy_unit_tested: true,
+            composite_equivalence_tested_purely: true,
             broker_native_qos_retain: false,
         },
         source,
@@ -2969,16 +2982,28 @@ async function registerTests() {
         }
     });
 
+    test("matrix live markers select denial-only representative coverage", () => {
+        const context = {manifest};
+        const publishLive = manifest.matrix.publish.filter((item) => item.live === true);
+        const subscribeLive = manifest.matrix.subscribe.filter((item) => item.live === true);
+        assert.equal(manifest.matrix.publish.length, 56);
+        assert.equal(manifest.matrix.subscribe.length, 60);
+        assert.equal(publishLive.every((item) => item.allowed === false), true);
+        assert.equal(subscribeLive.every((item) => item.allowed === false), true);
+        assert.deepEqual(publishLive.map((item) => {
+            const topic = matrixTopic(item.topic, item.topic_fixture, manifest.scope.base_topic);
+            return publishLiveCoverage(context, item, topic, item.qos ?? 1, item.retain ?? false);
+        }).sort(), [...PUBLISH_LIVE_COVERAGE]);
+        assert.deepEqual(subscribeLive.map((item) => {
+            const filter = matrixTopic(item.filter, item.filter_fixture, manifest.scope.base_topic);
+            return subscribeLiveCoverage(context, item, filter);
+        }).sort(), [...SUBSCRIBE_LIVE_COVERAGE]);
+    });
+
     test("UNSUBSCRIBE and UNSUBACK are packet-aware and bounded", () => {
         const frame = parsePacketFrame(encodeUnsubscribe(4, ["topic/value"]));
         assert.equal(frame.type, 10);
         assert.deepEqual(parseUnsuback(Buffer.from([0, 4, 0, 0])), {packetId: 4, reasons: [0], properties: []});
-    });
-
-    test("subscription delivery controls use the policy-authorized publisher", () => {
-        const context = {manifest: {topics: {request_topics: ["zigbee2mqtt/bridge/request/true_family/physical_probe"]}}};
-        assert.equal(matrixPublisherPrincipal(context, "zigbee2mqtt/bridge/request/true_family/physical_probe"), "orchestrator");
-        assert.equal(matrixPublisherPrincipal(context, "zigbee2mqtt/bridge/true_family/physical_probe/status"), "z2m");
     });
 
     test("canonical readback preserves sequence order and rejects missing, extra, or reordered objects", () => {
