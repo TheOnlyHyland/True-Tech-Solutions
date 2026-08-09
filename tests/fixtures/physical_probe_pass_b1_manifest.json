@@ -235,6 +235,18 @@
       "same_runner_host_isolation_proven": false
     }
   },
+  "timing": {
+    "private_file_poll_milliseconds": 500,
+    "quick_record_wait_seconds": 10,
+    "quick_record_wait_attempts": 20,
+    "source_ready_wait_seconds": 180,
+    "source_ready_wait_attempts": 360,
+    "client_exit_inspect_interval_milliseconds": 500,
+    "client_before_container_timeout_seconds": 240,
+    "client_before_timeout_reserve_seconds": 60,
+    "client_failure_log_tail_lines": 1,
+    "client_failure_log_capture_timeout_seconds": 30
+  },
   "credentials": {
     "admin_schema": "true-family-pass-b1a-admin-credential-v1",
     "frontend_schema": "true-family-pass-b1a-frontend-credentials-v1",
@@ -1495,6 +1507,15 @@
         "file_mode",
         "unknown"
       ],
+      "client_before_failure_categories": [
+        "network",
+        "authentication",
+        "publish_matrix",
+        "subscribe_matrix",
+        "source_privacy",
+        "retained_control",
+        "unknown"
+      ],
       "invalid_stage": "unknown",
       "only_diagnostic_field": "failure_stage",
       "max_bytes": 256
@@ -1517,6 +1538,16 @@
         "unknown"
       ],
       "detailed_mode": "install",
+      "client_before_categories": [
+        "network",
+        "authentication",
+        "publish_matrix",
+        "subscribe_matrix",
+        "source_privacy",
+        "retained_control",
+        "unknown"
+      ],
+      "client_before_mode": "client_before",
       "generic_error_category": "unknown",
       "other_mode_category": "unknown",
       "max_bytes": 256
@@ -1568,9 +1599,9 @@
   },
   "bindings": {
     "launcher_normalization": "sha256 after replacing the sole EXPECTED_LAUNCHER_SHA256 lowercase-hex literal with 64 zeroes",
-    "launcher_normalized_sha256": "499edb329a2272dab75f5b4160a6706f630d55d5b6c65cb9ff3d0663281616de",
-    "runtime_harness_sha256": "199174f5926d70962107899375e1b9b58b73e332e36f2aaddee96d60c88cde4a",
-    "verifier_sha256": "613d76a460ca211e85c80bf42df98839eb781fbb50f4d8a348bf631bdbf665f0",
+    "launcher_normalized_sha256": "3dc5ee480e41a20e8a5f6978abd9b493f093bd765b27ba9b60f9a6ffcd6b8922",
+    "runtime_harness_sha256": "8b5de088b0bf0c406a6851ddf77f517bf0d54f60dc9046de2a0c97ee3046b244",
+    "verifier_sha256": "a1da9a3301b124380ba3f597944fca01a6835e7ab1930fc2e0727a6f4bfeeaaf",
     "workflow_sha256": "288edf1ef22a61e9451144a9bde62698eacfe2aa748ac0d29a03d31ad10dc305",
     "preflight_source_sha256": "aeccc63d626bc5998688da2db84b68898a73d1719c3f39f99ad31922fa106e9f",
     "preflight_fixture_sha256": "cf71efabf14a22fdc0b0fced9b69e5119e026586e774826b0a06d6b70ccb10d1",

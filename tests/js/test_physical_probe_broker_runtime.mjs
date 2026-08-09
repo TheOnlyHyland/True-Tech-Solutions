@@ -37,10 +37,25 @@ class B1AFailure extends Error {
     }
 }
 
-const RUNTIME_FAILURE_CATEGORIES = Object.freeze([
+class B1AClientBeforeFailure extends Error {
+    constructor(category) {
+        super("client_before_failure");
+        this.category = category;
+    }
+}
+
+const INSTALL_FAILURE_CATEGORIES = Object.freeze([
     "context", "credentials", "broker_connect", "broker_subscribe",
     "command_transport", "command_rejected", "security", "unknown",
 ]);
+const CLIENT_BEFORE_FAILURE_CATEGORIES = Object.freeze([
+    "network", "authentication", "publish_matrix", "subscribe_matrix",
+    "source_privacy", "retained_control", "unknown",
+]);
+const RUNTIME_FAILURE_CATEGORIES = Object.freeze([...new Set([
+    ...INSTALL_FAILURE_CATEGORIES,
+    ...CLIENT_BEFORE_FAILURE_CATEGORIES,
+])]);
 const INSTALL_FAILURE_CATEGORY_BY_CODE = Object.freeze({
     runtime_environment: "context",
     runtime_mode: "context",
@@ -94,14 +109,28 @@ export function installFailureCategoryForCode(code) {
 }
 
 export function runtimeFailureCategory(mode, error) {
-    return mode === "install" && error instanceof B1AFailure
-        ? installFailureCategoryForCode(error.code)
-        : "unknown";
+    if (mode === "install" && error instanceof B1AFailure) return installFailureCategoryForCode(error.code);
+    if (
+        mode === "client_before"
+        && error instanceof B1AClientBeforeFailure
+        && CLIENT_BEFORE_FAILURE_CATEGORIES.includes(error.category)
+    ) return error.category;
+    return "unknown";
 }
 
 export function runtimeFailureRecord(category) {
     const safe = RUNTIME_FAILURE_CATEGORIES.includes(category) ? category : "unknown";
     return `${canonical({schema: FAILURE_SCHEMA, result: "fail", failure_category: safe})}\n`;
+}
+
+async function runClientBeforePhase(category, operation) {
+    gate(CLIENT_BEFORE_FAILURE_CATEGORIES.includes(category) && category !== "unknown" && typeof operation === "function", "client_before_phase");
+    try {
+        return await operation();
+    } catch (error) {
+        if (error instanceof B1AFailure) throw new B1AClientBeforeFailure(category);
+        throw error;
+    }
 }
 
 function gate(condition, code) {
@@ -1488,6 +1517,31 @@ function validateManifestIdentity(manifest) {
     gate(manifest.preflight_acl?.schema === "true-family-physical-probe-acl-plan-v2" && manifest.preflight_acl?.effective_policy?.schema === "true-family-physical-probe-acl-plan-v2", "manifest_preflight_acl");
     gate(manifest.preflight_acl?.policy_digest === manifest.scope?.preflight_acl_digest, "manifest_preflight_acl");
     gate(manifest.artifact?.sha256 === "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1", "manifest_artifact");
+    exactKeys(manifest.timing, [
+        "private_file_poll_milliseconds", "quick_record_wait_seconds", "quick_record_wait_attempts",
+        "source_ready_wait_seconds", "source_ready_wait_attempts", "client_exit_inspect_interval_milliseconds",
+        "client_before_container_timeout_seconds", "client_before_timeout_reserve_seconds",
+        "client_failure_log_tail_lines", "client_failure_log_capture_timeout_seconds",
+    ], "manifest_timing_shape");
+    gate(
+        manifest.timing.private_file_poll_milliseconds === 500
+        && manifest.timing.quick_record_wait_seconds === 10
+        && manifest.timing.quick_record_wait_attempts === 20
+        && manifest.timing.source_ready_wait_seconds === 180
+        && manifest.timing.source_ready_wait_attempts === 360
+        && manifest.timing.client_exit_inspect_interval_milliseconds === 500
+        && manifest.timing.client_before_container_timeout_seconds === 240
+        && manifest.timing.client_before_timeout_reserve_seconds === 60
+        && manifest.timing.client_failure_log_tail_lines === 1
+        && manifest.timing.client_failure_log_capture_timeout_seconds === 30,
+        "manifest_timing",
+    );
+    gate(
+        manifest.timing.source_ready_wait_attempts * manifest.timing.private_file_poll_milliseconds === manifest.timing.source_ready_wait_seconds * 1000
+        && manifest.timing.client_before_container_timeout_seconds - manifest.timing.source_ready_wait_seconds === manifest.timing.client_before_timeout_reserve_seconds
+        && manifest.timing.client_before_timeout_reserve_seconds >= 30,
+        "manifest_timing_reserve",
+    );
 }
 
 function validatePrincipalCredential(item, expected) {
@@ -2390,12 +2444,12 @@ async function runAdminReadback(baseContext) {
 
 async function runClientBefore(baseContext) {
     const context = loadFrontendContext(baseContext, {artifact: true});
-    const network = await proveFrontendIsolation();
-    const authentication = await authenticationMatrix(context);
-    const publish = await publishMatrix(context);
-    const subscribe = await subscribeMatrix(context);
-    const source = await sourcePrivacyFrontend(context);
-    gate(await proveRequestTopicsNotRetained(context), "request_retained_final");
+    const network = await runClientBeforePhase("network", () => proveFrontendIsolation());
+    const authentication = await runClientBeforePhase("authentication", () => authenticationMatrix(context));
+    const publish = await runClientBeforePhase("publish_matrix", () => publishMatrix(context));
+    const subscribe = await runClientBeforePhase("subscribe_matrix", () => subscribeMatrix(context));
+    const source = await runClientBeforePhase("source_privacy", () => sourcePrivacyFrontend(context));
+    await runClientBeforePhase("retained_control", async () => gate(await proveRequestTopicsNotRetained(context), "request_retained_final"));
     return {
         schema: RUNTIME_SCHEMA,
         result: "pass",
@@ -2990,7 +3044,7 @@ async function registerTests() {
         assert.equal(sha256Bytes(source), "1d40f5a0d8b01ad7e7eb6c92b52319285f76bdbff8abbff0b6743046258645c1");
     });
 
-    test("reason and installer failure classes never expose private detail", () => {
+    test("reason, installer, and client-before failure classes never expose private detail", async () => {
         assert.equal(reasonClass(0), "success");
         assert.equal(reasonClass(0x86), "bad_username_or_password");
         assert.equal(reasonClass("closed"), "connection_closed");
@@ -3010,7 +3064,21 @@ async function registerTests() {
         assert.equal(runtimeFailureCategory("install", new Error("control_response_error")), "unknown");
         assert.equal(runtimeFailureCategory("client_before", new B1AFailure("control_response_error")), "unknown");
         assert.equal(runtimeFailureCategory("install", new B1AFailure("control_response_error")), "command_rejected");
+        for (const category of CLIENT_BEFORE_FAILURE_CATEGORIES.filter((value) => value !== "unknown")) {
+            await assert.rejects(
+                runClientBeforePhase(category, async () => { throw new B1AFailure("private/path\nunderlying"); }),
+                (error) => runtimeFailureCategory("client_before", error) === category
+                    && runtimeFailureRecord(runtimeFailureCategory("client_before", error)) === `${canonical({schema: FAILURE_SCHEMA, result: "fail", failure_category: category})}\n`
+                    && !runtimeFailureRecord(runtimeFailureCategory("client_before", error)).includes("underlying"),
+            );
+        }
+        await assert.rejects(
+            runClientBeforePhase("network", async () => { throw new Error("private generic detail"); }),
+            (error) => runtimeFailureCategory("client_before", error) === "unknown",
+        );
+        assert.equal(runtimeFailureCategory("client_before", {category: "network"}), "unknown");
         assert.equal(runtimeFailureRecord("command_rejected"), '{"failure_category":"command_rejected","result":"fail","schema":"true-family-pass-b1a-runtime-failure-v2"}\n');
+        assert.equal(runtimeFailureRecord("retained_control"), '{"failure_category":"retained_control","result":"fail","schema":"true-family-pass-b1a-runtime-failure-v2"}\n');
         assert.equal(runtimeFailureRecord("/private/path\ncontrol_response_error"), '{"failure_category":"unknown","result":"fail","schema":"true-family-pass-b1a-runtime-failure-v2"}\n');
         assert.equal(runtimeFailureRecord("command_rejected").includes("control_response_error"), false);
     });

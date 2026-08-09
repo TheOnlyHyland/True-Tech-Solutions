@@ -37,6 +37,10 @@ const INSTALL_FAILURE_CATEGORIES = [
     "context", "credentials", "broker_connect", "broker_subscribe",
     "command_transport", "command_rejected", "security", "unknown",
 ];
+const CLIENT_BEFORE_FAILURE_CATEGORIES = [
+    "network", "authentication", "publish_matrix", "subscribe_matrix",
+    "source_privacy", "retained_control", "unknown",
+];
 const CREDENTIAL_VERIFY_FAILURE_CATEGORIES = [
     "content", "uniqueness", "files", "root_mode", "file_mode", "unknown",
 ];
@@ -75,6 +79,7 @@ const LAUNCHER_FAILURE_STAGES = new Set([
     ...[1, 2].flatMap((ordinal) => LAUNCHER_REPLICA_FAILURE_PHASES.map((phase) => `replica_${ordinal}_${phase}`)),
     ...[1, 2].flatMap((ordinal) => INSTALL_FAILURE_CATEGORIES.map((category) => `replica_${ordinal}_install_${category}`)),
     ...[1, 2].flatMap((ordinal) => CREDENTIAL_VERIFY_FAILURE_CATEGORIES.map((category) => `replica_${ordinal}_install_verify_${category}`)),
+    ...[1, 2].flatMap((ordinal) => CLIENT_BEFORE_FAILURE_CATEGORIES.map((category) => `replica_${ordinal}_client_before_${category}`)),
 ]);
 const CLASSIFICATION = "ci-only-same-repository-non-authoritative-composite-policy-foundation";
 const RUNTIME_HARNESS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "test_physical_probe_broker_runtime.mjs");
@@ -532,7 +537,7 @@ function validatePreflightBinding(manifest) {
 export function validateManifest(manifest) {
     exactKeys(manifest, [
         "schema", "manifest_version", "pass", "classification", "authoritative", "pass_b1_complete", "authorization", "loose_spare_used",
-        "trust_boundary", "images", "broker", "gateway", "composite_policy", "containers", "credentials", "principals", "authentication", "scope", "preflight_acl", "topic_oracle", "topics", "policy", "matrix",
+        "trust_boundary", "images", "broker", "gateway", "composite_policy", "containers", "timing", "credentials", "principals", "authentication", "scope", "preflight_acl", "topic_oracle", "topics", "policy", "matrix",
         "source_privacy", "artifact", "evidence", "cleanup", "bindings",
     ], "manifest_shape");
     exactKeys(manifest.images, ["node", "mosquitto"], "manifest_images_shape");
@@ -546,6 +551,7 @@ export function validateManifest(manifest) {
     exactKeys(manifest.containers.client_limits, ["memory_bytes", "memory_swap_bytes", "nano_cpus", "pids", "nofile", "core", "tmpfs_bytes"], "manifest_limits_shape");
     exactKeys(manifest.containers.broker_limits, ["memory_bytes", "memory_swap_bytes", "nano_cpus", "pids", "nofile", "core", "tmpfs_bytes"], "manifest_limits_shape");
     exactKeys(manifest.containers.topology, ["broker_networks", "gateway_networks", "admin_networks", "observer_networks", "application_probe_networks", "client_networks", "setup_networks", "host_ports", "client_broker_dns", "client_broker_tcp", "same_runner_host_isolation_proven"], "manifest_topology_shape");
+    exactKeys(manifest.timing, ["private_file_poll_milliseconds", "quick_record_wait_seconds", "quick_record_wait_attempts", "source_ready_wait_seconds", "source_ready_wait_attempts", "client_exit_inspect_interval_milliseconds", "client_before_container_timeout_seconds", "client_before_timeout_reserve_seconds", "client_failure_log_tail_lines", "client_failure_log_capture_timeout_seconds"], "manifest_timing_shape");
     exactKeys(manifest.credentials, ["admin_schema", "frontend_schema", "observer_schema", "root_mode", "file_mode", "password_bytes", "password_encoding", "stdout", "evidence", "artifacts", "private_root_only", "deleted_before_pass"], "manifest_credentials_shape");
     exactKeys(manifest.authentication, ["wrong_client_id", "anonymous_client_id", "unknown_client_id", "unknown_username", "accepted_negative_reason_classes"], "manifest_auth_shape");
     exactKeys(manifest.scope, ["base_topic", "friendly_name", "candidate_ieee", "set_topic", "preflight_acl_digest"], "manifest_scope_shape");
@@ -553,8 +559,8 @@ export function validateManifest(manifest) {
     exactKeys(manifest.source_privacy, ["synthetic_publisher", "real_externaljs_path", "inventory_shape", "principals", "denied_filters", "source_canary", "raw_source_emitted", "retained_clear", "restart_old_replay_expected"], "manifest_source_shape");
     exactKeys(manifest.artifact, ["path", "filename", "byte_length", "sha256"], "manifest_artifact_shape");
     exactKeys(manifest.evidence, ["runtime_schema", "replica_schema", "gateway_startup_schema", "final_schema", "failure_schema", "failure_record", "runtime_failure_record", "replicas", "normalized_byte_identical", "uploaded_artifacts", "stdout_records", "raw_stderr", "max_runtime_bytes", "max_final_bytes", "claim_limits"], "manifest_evidence_shape");
-    exactKeys(manifest.evidence.failure_record, ["exact_keys", "failure_code", "top_level_stages", "replica_ordinals", "replica_phases", "install_failure_categories", "install_verify_failure_categories", "invalid_stage", "only_diagnostic_field", "max_bytes"], "manifest_failure_record_shape");
-    exactKeys(manifest.evidence.runtime_failure_record, ["schema", "exact_keys", "categories", "detailed_mode", "generic_error_category", "other_mode_category", "max_bytes"], "manifest_runtime_failure_record_shape");
+    exactKeys(manifest.evidence.failure_record, ["exact_keys", "failure_code", "top_level_stages", "replica_ordinals", "replica_phases", "install_failure_categories", "install_verify_failure_categories", "client_before_failure_categories", "invalid_stage", "only_diagnostic_field", "max_bytes"], "manifest_failure_record_shape");
+    exactKeys(manifest.evidence.runtime_failure_record, ["schema", "exact_keys", "categories", "detailed_mode", "client_before_categories", "client_before_mode", "generic_error_category", "other_mode_category", "max_bytes"], "manifest_runtime_failure_record_shape");
     exactKeys(manifest.cleanup, ["label", "root_pattern", "root_mode", "find_mode", "symlinks_followed", "files_chmodded", "zero_labeled_containers_before_delete", "zero_labeled_networks_before_delete", "run_watchdog_seconds", "workflow_timeout_seconds", "longest_bounded_command_seconds", "nominal_headroom_if_watchdog_started_at_job_start_seconds", "nominal_headroom_after_longest_command_seconds", "workflow_timeout_cleanup_guaranteed", "private_root_removal_attempted_after_cleanup_failure", "credentials_absent_before_pass", "root_absent_before_pass"], "manifest_cleanup_shape");
     exactKeys(manifest.bindings, ["launcher_normalization", "launcher_normalized_sha256", "runtime_harness_sha256", "verifier_sha256", "workflow_sha256", "preflight_source_sha256", "preflight_fixture_sha256", "preflight_test_sha256", "b0_preservation"], "manifest_bindings_shape");
     exactKeys(manifest.bindings.b0_preservation, ["launcher_sha256", "workflow_sha256", "manifest_sha256", "runtime_harness_sha256", "verifier_sha256", "preflight_fixture_sha256"], "manifest_b0_shape");
@@ -665,6 +671,22 @@ export function validateManifest(manifest) {
             host_ports: false, client_broker_dns: false, client_broker_tcp: false, same_runner_host_isolation_proven: false,
         },
     }), "manifest_container_policy");
+    gate(same(manifest.timing, {
+        private_file_poll_milliseconds: 500,
+        quick_record_wait_seconds: 10,
+        quick_record_wait_attempts: 20,
+        source_ready_wait_seconds: 180,
+        source_ready_wait_attempts: 360,
+        client_exit_inspect_interval_milliseconds: 500,
+        client_before_container_timeout_seconds: 240,
+        client_before_timeout_reserve_seconds: 60,
+        client_failure_log_tail_lines: 1,
+        client_failure_log_capture_timeout_seconds: 30,
+    }), "manifest_timing");
+    gate(manifest.timing.quick_record_wait_attempts * manifest.timing.private_file_poll_milliseconds === manifest.timing.quick_record_wait_seconds * 1000, "manifest_quick_wait_timing");
+    gate(manifest.timing.source_ready_wait_attempts * manifest.timing.private_file_poll_milliseconds === manifest.timing.source_ready_wait_seconds * 1000, "manifest_source_ready_timing");
+    gate(manifest.timing.client_exit_inspect_interval_milliseconds >= 500 && manifest.timing.client_exit_inspect_interval_milliseconds === manifest.timing.private_file_poll_milliseconds, "manifest_client_inspect_timing");
+    gate(manifest.timing.client_before_container_timeout_seconds - manifest.timing.source_ready_wait_seconds === manifest.timing.client_before_timeout_reserve_seconds && manifest.timing.client_before_timeout_reserve_seconds >= 30, "manifest_client_timeout_reserve");
     gate(same(manifest.credentials, {
         admin_schema: "true-family-pass-b1a-admin-credential-v1",
         frontend_schema: "true-family-pass-b1a-frontend-credentials-v1",
@@ -721,6 +743,7 @@ export function validateManifest(manifest) {
         replica_phases: LAUNCHER_REPLICA_FAILURE_PHASES,
         install_failure_categories: INSTALL_FAILURE_CATEGORIES,
         install_verify_failure_categories: CREDENTIAL_VERIFY_FAILURE_CATEGORIES,
+        client_before_failure_categories: CLIENT_BEFORE_FAILURE_CATEGORIES,
         invalid_stage: "unknown",
         only_diagnostic_field: "failure_stage",
         max_bytes: 256,
@@ -730,6 +753,8 @@ export function validateManifest(manifest) {
         exact_keys: ["failure_category", "result", "schema"],
         categories: INSTALL_FAILURE_CATEGORIES,
         detailed_mode: "install",
+        client_before_categories: CLIENT_BEFORE_FAILURE_CATEGORIES,
+        client_before_mode: "client_before",
         generic_error_category: "unknown",
         other_mode_category: "unknown",
         max_bytes: 256,
@@ -1314,7 +1339,12 @@ function scanRedaction(sourceText, manifest, credentialsRoot, dataRoot, stoppedB
 }
 
 function runtimeFailureCategoryFromBytes(bytes, runtimeMode, contract) {
-    gate(runtimeMode === contract.detailed_mode && Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.length <= contract.max_bytes, "runtime_failure_size");
+    const categories = runtimeMode === contract.detailed_mode
+        ? contract.categories
+        : runtimeMode === contract.client_before_mode
+            ? contract.client_before_categories
+            : undefined;
+    gate(Array.isArray(categories) && Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.length <= contract.max_bytes, "runtime_failure_size");
     const text = bytes.toString("utf8");
     gate(Buffer.from(text, "utf8").equals(bytes) && text.endsWith("\n"), "runtime_failure_utf8");
     let value;
@@ -1324,7 +1354,7 @@ function runtimeFailureCategoryFromBytes(bytes, runtimeMode, contract) {
         throw new VerifyFailure("runtime_failure_json");
     }
     exactKeys(value, contract.exact_keys, "runtime_failure_shape");
-    gate(value.schema === contract.schema && value.result === "fail" && contract.categories.includes(value.failure_category), "runtime_failure_identity");
+    gate(value.schema === contract.schema && value.result === "fail" && categories.includes(value.failure_category), "runtime_failure_identity");
     gate(text === `${canonical(value)}\n`, "runtime_failure_canonical");
     return value.failure_category;
 }
@@ -1851,6 +1881,13 @@ function staticSourceChecks(paths, manifest) {
     gate(launcher.includes('DOCKER_CONFIG="$DOCKER_CONFIG_DIR"') && launcher.includes('HOME="$DOCKER_HOME"') && launcher.includes('printf \'%s\\n\' \'{}\' >"$DOCKER_CONFIG_DIR/config.json"'), "launcher_docker_environment");
     gate(launcher.includes("prepare_root_for_removal") && launcher.includes("find -P") && launcher.includes("-xdev") && !launcher.includes("find -L") && !launcher.includes("chmod -R"), "launcher_cleanup");
     gate(launcher.includes("RUN_WATCHDOG_SECONDS=1920") && launcher.includes("WORKFLOW_TIMEOUT_SECONDS=2700") && launcher.includes("LONGEST_BOUNDED_COMMAND_SECONDS=270") && launcher.includes("start_watchdog") && launcher.includes("stop_watchdog"), "launcher_watchdog");
+    gate(launcher.includes('PRIVATE_FILE_POLL_SECONDS="0.5"') && launcher.includes("PRIVATE_FILE_POLL_MILLISECONDS=500") && launcher.includes("PRIVATE_FILE_QUICK_WAIT_SECONDS=10") && launcher.includes("PRIVATE_FILE_QUICK_WAIT_ATTEMPTS=20") && launcher.includes("SOURCE_READY_WAIT_SECONDS=180") && launcher.includes("SOURCE_READY_WAIT_ATTEMPTS=360") && launcher.includes("CLIENT_BEFORE_CONTAINER_TIMEOUT_SECONDS=240") && launcher.includes("CLIENT_BEFORE_TIMEOUT_RESERVE_SECONDS=60"), "launcher_client_timing_constants");
+    const privateWaitSource = launcher.slice(launcher.indexOf("wait_for_private_file()"), launcher.indexOf("project_client_before_failure()"));
+    gate(privateWaitSource.includes('local maximum_seconds="${2:-$PRIVATE_FILE_QUICK_WAIT_SECONDS}"') && privateWaitSource.includes('local maximum_attempts="${3:-$PRIVATE_FILE_QUICK_WAIT_ATTEMPTS}"') && privateWaitSource.includes('docker_for 1 inspect --format \'{{.State.Running}}\'') && privateWaitSource.includes('host_for 1 sleep "$PRIVATE_FILE_POLL_SECONDS"') && !privateWaitSource.includes("sleep 0.05"), "launcher_private_wait_bounds");
+    const firstMarkerCheck = privateWaitSource.indexOf('if private_file_ready "$file"');
+    const clientInspect = privateWaitSource.indexOf("docker_for 1 inspect");
+    const exitMarkerRecheck = privateWaitSource.indexOf('private_file_ready "$file" && return 0', clientInspect);
+    gate(firstMarkerCheck >= 0 && clientInspect > firstMarkerCheck && exitMarkerRecheck > clientInspect && (privateWaitSource.match(/docker_for 1 inspect/gu) ?? []).length === 1, "launcher_private_wait_marker_race");
     gate(launcher.includes("readiness_after") && launcher.includes("readiness_final") && launcher.includes("client_final"), "launcher_restart_readiness");
     gate(launcher.includes("host_for() (") && launcher.includes("docker_for() (") && (launcher.match(/exec 3>&-/gu) ?? []).length >= 3, "launcher_child_fd_closed");
     gate(launcher.includes('PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 PYTHONNOUSERSITE=1') && launcher.includes('python3 "$REPO_ROOT/tests/test_physical_probe_preflight.py"'), "launcher_python_oracle");
@@ -1882,7 +1919,7 @@ function staticSourceChecks(paths, manifest) {
     const stageProjectionSource = launcher.slice(launcher.indexOf("failure_stage_projection()"), launcher.indexOf("set_failure_stage()"));
     const failureRecordSource = launcher.slice(launcher.indexOf("failure_record()"), launcher.indexOf("shell_self_check()"));
     gate(launcher.indexOf('FAILURE_STAGE="startup"') >= 0 && launcher.indexOf('FAILURE_STAGE="startup"') < launcher.indexOf('if [[ "${1:-}" == "--shell-self-check" ]]'), "launcher_failure_stage_default");
-    gate(stageValidatorSource.includes('startup|environment|private_root|static_shell|static_verifier|static_python|pull_node|pull_mosquitto|inspect_node|inspect_mosquitto|compare|combine|final_scan_one|final_scan_two|cleanup|finalize') && stageValidatorSource.includes('install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)') && stageValidatorSource.includes('install_inspect|install_verify|install_verify_(content|uniqueness|files|root_mode|file_mode|unknown)') && stageValidatorSource.includes('^replica_[12]_'), "launcher_failure_stage_allowlist");
+    gate(stageValidatorSource.includes('startup|environment|private_root|static_shell|static_verifier|static_python|pull_node|pull_mosquitto|inspect_node|inspect_mosquitto|compare|combine|final_scan_one|final_scan_two|cleanup|finalize') && stageValidatorSource.includes('install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)') && stageValidatorSource.includes('install_inspect|install_verify|install_verify_(content|uniqueness|files|root_mode|file_mode|unknown)') && stageValidatorSource.includes('client_before_(network|authentication|publish_matrix|subscribe_matrix|source_privacy|retained_control|unknown)') && stageValidatorSource.includes('^replica_[12]_'), "launcher_failure_stage_allowlist");
     gate(stageProjectionSource.includes('printf \'%s\' "unknown"') && failureRecordSource.includes('{"failure_code":"%s","failure_stage":"%s","result":"fail","schema":"%s"}') && !failureRecordSource.includes("status") && (launcher.match(/failure_record "\$FAILURE_STAGE"/gu) ?? []).length === 2, "launcher_failure_projection");
     const topLevelStageAssignments = [...launcher.matchAll(/^set_failure_stage "([a-z0-9_]+)"$/gmu)].map((match) => match[1]);
     const replicaStageAssignments = [...launcher.matchAll(/^\s+set_failure_stage "replica_\$\{ordinal\}_([a-z0-9_]+)"$/gmu)].map((match) => match[1]);
@@ -1894,22 +1931,29 @@ function staticSourceChecks(paths, manifest) {
     const shellSelfCheck = launcher.slice(shellStart, verifierStart);
     const verifierSelfCheck = launcher.slice(verifierStart, normalStart);
     const shellSelfCheckFunction = launcher.slice(launcher.indexOf("shell_self_check()"), shellStart);
-    gate(shellSelfCheckFunction.includes("failure_stage_projection") && shellSelfCheckFunction.includes("replica_2_final_readback") && shellSelfCheckFunction.includes("replica_1_install_command_rejected") && shellSelfCheckFunction.includes("replica_2_install_inspect") && shellSelfCheckFunction.includes("replica_1_install_verify") && shellSelfCheckFunction.includes("replica_2_install_verify_file_mode") && shellSelfCheckFunction.includes("replica_1_install_control_response_error") && shellSelfCheckFunction.includes("replica_1_install_verify_private_path") && shellSelfCheckFunction.includes("arbitrary/path") && shellSelfCheckFunction.includes('"failure_stage":"unknown"'), "launcher_failure_shell_self_check");
+    gate(shellSelfCheckFunction.includes("failure_stage_projection") && shellSelfCheckFunction.includes("replica_2_final_readback") && shellSelfCheckFunction.includes("replica_1_install_command_rejected") && shellSelfCheckFunction.includes("replica_2_install_inspect") && shellSelfCheckFunction.includes("replica_1_install_verify") && shellSelfCheckFunction.includes("replica_2_install_verify_file_mode") && CLIENT_BEFORE_FAILURE_CATEGORIES.every((category) => shellSelfCheckFunction.includes(`client_before_${category}`)) && shellSelfCheckFunction.includes("replica_1_install_control_response_error") && shellSelfCheckFunction.includes("replica_1_install_verify_private_path") && shellSelfCheckFunction.includes("arbitrary/path") && shellSelfCheckFunction.includes('"failure_stage":"unknown"'), "launcher_failure_shell_self_check");
     for (const source of [shellSelfCheck, verifierSelfCheck]) {
         gate(source.length > 0 && !source.includes("docker") && !source.includes("mktemp") && !source.includes("RUNNER_TEMP"), "self_check_offline");
     }
     gate(runtime.includes("command_success_from_response_not_puback: true") && runtime.includes("correlationData"), "runtime_control_response");
     const installFailureMappingSource = runtime.slice(runtime.indexOf("const INSTALL_FAILURE_CATEGORY_BY_CODE"), runtime.indexOf("export function installFailureCategoryForCode"));
     gate(installFailureMappingSource.includes('control_response_error: "command_rejected"') && installFailureMappingSource.includes('control_connect: "broker_connect"') && installFailureMappingSource.includes('control_subscribe: "broker_subscribe"') && installFailureMappingSource.includes('mqtt_timeout: "command_transport"') && installFailureMappingSource.includes('container_security: "security"') && installFailureMappingSource.includes('admin_credentials_json: "credentials"') && installFailureMappingSource.includes('runtime_environment: "context"'), "runtime_install_failure_mapping");
-    gate(runtime.includes('mode === "install" && error instanceof B1AFailure') && runtime.includes('if (process.env.B1A_MODE !== "gateway") process.stdout.write(runtimeFailureRecord(runtimeFailureCategory(process.env.B1A_MODE, error)))') && !runtime.includes('failure_code: "runtime_failed"'), "runtime_failure_projection");
+    const clientPhaseSource = runtime.slice(runtime.indexOf("async function runClientBeforePhase"), runtime.indexOf("function gate"));
+    const runClientBeforeSource = runtime.slice(runtime.indexOf("async function runClientBefore(baseContext)"), runtime.indexOf("async function runClientAfter(baseContext)"));
+    gate(CLIENT_BEFORE_FAILURE_CATEGORIES.filter((category) => category !== "unknown").every((category) => runClientBeforeSource.includes(`runClientBeforePhase("${category}"`)) && clientPhaseSource.includes("error instanceof B1AFailure") && clientPhaseSource.includes("throw new B1AClientBeforeFailure(category)") && !clientPhaseSource.includes("error.message") && !clientPhaseSource.includes("error.stack"), "runtime_client_before_failure_mapping");
+    gate(runtime.includes('mode === "install" && error instanceof B1AFailure') && runtime.includes('mode === "client_before"') && runtime.includes("error instanceof B1AClientBeforeFailure") && runtime.includes('if (process.env.B1A_MODE !== "gateway") process.stdout.write(runtimeFailureRecord(runtimeFailureCategory(process.env.B1A_MODE, error)))') && !runtime.includes('failure_code: "runtime_failed"'), "runtime_failure_projection");
     const installLauncherSource = launcher.slice(launcher.indexOf('set_failure_stage "replica_${ordinal}_install"'), launcher.indexOf('set_failure_stage "replica_${ordinal}_gateway"'));
     gate(installLauncherSource.includes('if docker_for 270 start -a "$install_name"') && installLauncherSource.includes('--classify-runtime-failure install "$evidence/install.json" "$MANIFEST"') && installLauncherSource.includes('set_failure_stage "replica_${ordinal}_install_${install_failure_category}"') && installLauncherSource.includes('return "$install_status"') && !installLauncherSource.includes("printf") && !installLauncherSource.includes("cat "), "launcher_install_failure_projection");
     gate(installLauncherSource.includes('context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown'), "launcher_install_failure_allowlist");
+    const clientBeforeLauncherSource = launcher.slice(launcher.indexOf('set_failure_stage "replica_${ordinal}_client_before"'), launcher.indexOf('set_failure_stage "replica_${ordinal}_readback_before"'));
+    const clientFailureProjectionSource = launcher.slice(launcher.indexOf("project_client_before_failure()"), launcher.indexOf("run_replica()"));
+    gate(clientBeforeLauncherSource.includes('wait_for_private_file "$coord/source-ready.json" "$SOURCE_READY_WAIT_SECONDS" "$SOURCE_READY_WAIT_ATTEMPTS" "$client_before_name"') && clientBeforeLauncherSource.includes('create_node_container "$client_before_name" client "$frontend" - client_before gateway "$CLIENT_BEFORE_CONTAINER_TIMEOUT_SECONDS"') && (clientBeforeLauncherSource.match(/project_client_before_failure/gu) ?? []).length === 2, "launcher_client_before_wait_projection");
+    gate(clientFailureProjectionSource.includes('docker_for 30 logs --tail 1 "$container_name" >"$record_file" 2>"$docker_stderr_file"') && clientFailureProjectionSource.includes('--classify-runtime-failure client_before "$record_file" "$MANIFEST"') && clientFailureProjectionSource.includes('network|authentication|publish_matrix|subscribe_matrix|source_privacy|retained_control|unknown') && clientFailureProjectionSource.includes('set_failure_stage "replica_${ordinal}_client_before_${category}"') && !clientFailureProjectionSource.includes("printf") && !clientFailureProjectionSource.includes("cat ") && !clientFailureProjectionSource.includes(">&3"), "launcher_client_before_private_classification");
     gate(installLauncherSource.includes('set_failure_stage "replica_${ordinal}_install_inspect"\n    docker_for 30 inspect "$install_name"') && installLauncherSource.includes('set_failure_stage "replica_${ordinal}_install_verify"\n    if credential_verify_category="$(host_for 60 node "$VERIFIER" --verify-credential-set-diagnostic "$MANIFEST" "$credentials" "$generated")"') && installLauncherSource.includes('content|uniqueness|files|root_mode|file_mode|unknown') && installLauncherSource.includes('set_failure_stage "replica_${ordinal}_install_verify_${credential_verify_category}"') && installLauncherSource.includes('return "$credential_verify_status"'), "launcher_credential_verify_projection");
     const credentialDiagnosticSource = verifier.slice(verifier.indexOf("const CREDENTIAL_VERIFY_FAILURE_CATEGORY_BY_CODE"), verifier.indexOf("const LAUNCHER_TOP_LEVEL_FAILURE_STAGES"));
     gate(CREDENTIAL_VERIFY_FAILURE_CATEGORIES.every((category) => credentialDiagnosticSource.includes(`: "${category}"`) || category === "unknown") && credentialDiagnosticSource.includes('admin_credentials_json: "content"') && credentialDiagnosticSource.includes('credential_duplicate: "uniqueness"') && credentialDiagnosticSource.includes('admin_credentials_files: "files"') && credentialDiagnosticSource.includes('credentials_root: "root_mode"') && credentialDiagnosticSource.includes('credential_mode: "file_mode"') && !credentialDiagnosticSource.includes("error.message") && !credentialDiagnosticSource.includes("error.stack"), "verifier_credential_diagnostic_mapping");
     const runtimeClassifierSource = verifier.slice(verifier.indexOf("function runtimeFailureCategoryFromBytes"), verifier.indexOf("function readCanonicalRuntime"));
-    gate(runtimeClassifierSource.includes("contract.max_bytes") && runtimeClassifierSource.includes("runtime_failure_canonical") && runtimeClassifierSource.includes("contract.categories.includes(value.failure_category)") && verifier.includes('if (process.argv[2] !== "--classify-runtime-failure") process.stdout.write(failureToken())'), "verifier_runtime_failure_classifier");
+    gate(runtimeClassifierSource.includes("contract.max_bytes") && runtimeClassifierSource.includes("runtime_failure_canonical") && runtimeClassifierSource.includes("categories.includes(value.failure_category)") && runtimeClassifierSource.includes("contract.client_before_categories") && verifier.includes('if (process.argv[2] !== "--classify-runtime-failure") process.stdout.write(failureToken())'), "verifier_runtime_failure_classifier");
     gate(runtime.includes("sendAndExpectClose") && runtime.includes("gateway_close_denials") && runtime.includes(".noMessage("), "runtime_gateway_denial");
     gate(runtime.includes("gatewayPolicyDigest") && runtime.includes("MqttFrameStream") && runtime.includes("broker_ack_authority: true"), "runtime_gateway_policy");
     const gatewaySource = runtime.slice(runtime.indexOf("async function runGateway"), runtime.indexOf("function encodePuback"));
@@ -1950,12 +1994,16 @@ function staticSourceChecks(paths, manifest) {
 
 function selfTests(paths, manifest) {
     gate(canonical({b: 2, a: 1}) === '{"a":1,"b":2}', "canonical_self_test");
-    gate(launcherFailureStageProjection() === "startup" && launcherFailureStageProjection("replica_1_restart_two") === "replica_1_restart_two" && launcherFailureStageProjection("replica_2_install_security") === "replica_2_install_security" && launcherFailureStageProjection("replica_1_install_inspect") === "replica_1_install_inspect" && launcherFailureStageProjection("replica_2_install_verify") === "replica_2_install_verify" && launcherFailureStageProjection("replica_1_install_verify_content") === "replica_1_install_verify_content" && launcherFailureStageProjection("replica_2_install_control_response_error") === "unknown" && launcherFailureStageProjection("private/path\nvalue") === "unknown", "launcher_failure_projection_self_test");
+    gate(launcherFailureStageProjection() === "startup" && launcherFailureStageProjection("replica_1_restart_two") === "replica_1_restart_two" && launcherFailureStageProjection("replica_2_install_security") === "replica_2_install_security" && launcherFailureStageProjection("replica_1_install_inspect") === "replica_1_install_inspect" && launcherFailureStageProjection("replica_2_install_verify") === "replica_2_install_verify" && launcherFailureStageProjection("replica_1_install_verify_content") === "replica_1_install_verify_content" && launcherFailureStageProjection("replica_2_client_before_source_privacy") === "replica_2_client_before_source_privacy" && launcherFailureStageProjection("replica_2_install_control_response_error") === "unknown" && launcherFailureStageProjection("private/path\nvalue") === "unknown", "launcher_failure_projection_self_test");
     gate(launcherFailureRecord() === '{"failure_code":"verification_failed","failure_stage":"startup","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}\n' && launcherFailureRecord("private/path") === '{"failure_code":"verification_failed","failure_stage":"unknown","result":"fail","schema":"true-family-pass-b1a-launcher-failure-v2"}\n', "launcher_failure_record_self_test");
     const runtimeFailureContract = manifest.evidence.runtime_failure_record;
     for (const category of INSTALL_FAILURE_CATEGORIES) {
         const bytes = Buffer.from(`${canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_category: category})}\n`, "utf8");
         gate(runtimeFailureCategoryFromBytes(bytes, "install", runtimeFailureContract) === category, "runtime_failure_category_self_test");
+    }
+    for (const category of CLIENT_BEFORE_FAILURE_CATEGORIES) {
+        const bytes = Buffer.from(`${canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_category: category})}\n`, "utf8");
+        gate(runtimeFailureCategoryFromBytes(bytes, "client_before", runtimeFailureContract) === category, "runtime_client_before_failure_category_self_test");
     }
     for (const bytes of [
         Buffer.from(JSON.stringify({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_category: "context"}) + "\n", "utf8"),
@@ -1971,9 +2019,40 @@ function selfTests(paths, manifest) {
     }
     let wrongModeRejected = false;
     try {
-        runtimeFailureCategoryFromBytes(Buffer.from(`${canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_category: "unknown"})}\n`), "client_before", runtimeFailureContract);
+        runtimeFailureCategoryFromBytes(Buffer.from(`${canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_category: "unknown"})}\n`), "client_after", runtimeFailureContract);
     } catch { wrongModeRejected = true; }
     gate(wrongModeRejected, "runtime_failure_mode_self_test");
+    for (const [mode, category] of [["install", "network"], ["client_before", "context"]]) {
+        let crossCategoryRejected = false;
+        try {
+            runtimeFailureCategoryFromBytes(Buffer.from(`${canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_category: category})}\n`), mode, runtimeFailureContract);
+        } catch { crossCategoryRejected = true; }
+        gate(crossCategoryRejected, "runtime_failure_cross_category_self_test");
+    }
+    const runtimeFailureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "true-family-b1a-runtime-failure-"));
+    try {
+        fs.chmodSync(runtimeFailureRoot, 0o700);
+        const runtimeFailurePath = path.join(runtimeFailureRoot, "client-before.json");
+        const runtimeFailureBytes = Buffer.from(`${canonical({schema: RUNTIME_FAILURE_SCHEMA, result: "fail", failure_category: "source_privacy"})}\n`, "utf8");
+        fs.writeFileSync(runtimeFailurePath, runtimeFailureBytes, {mode: 0o600});
+        const runClassifier = () => spawnSync(process.execPath, [paths.verifier, "--classify-runtime-failure", "client_before", runtimeFailurePath, paths.manifest], {
+            encoding: "utf8",
+            env: {PATH: process.env.PATH ?? "/usr/bin:/bin"},
+            timeout: 5_000,
+            maxBuffer: 1_024,
+        });
+        const classified = runClassifier();
+        gate(classified.status === 0 && classified.signal === null && classified.stdout === "source_privacy\n" && classified.stderr === "", "runtime_failure_private_cli_self_test");
+        fs.chmodSync(runtimeFailurePath, 0o640);
+        const publicMode = runClassifier();
+        gate(publicMode.status === 1 && publicMode.signal === null && publicMode.stdout === "" && publicMode.stderr === "", "runtime_failure_private_mode_adversarial_self_test");
+        fs.chmodSync(runtimeFailurePath, 0o600);
+        fs.appendFileSync(runtimeFailurePath, "raw/private/log\n", "utf8");
+        const rawSuffix = runClassifier();
+        gate(rawSuffix.status === 1 && rawSuffix.signal === null && rawSuffix.stdout === "" && rawSuffix.stderr === "", "runtime_failure_raw_log_adversarial_self_test");
+    } finally {
+        fs.rmSync(runtimeFailureRoot, {recursive: true, force: true});
+    }
     const expectedBinaryPath = "/tmp/true-family-pass-b1a.Abcdef12/replica-1/data/mosquitto.db";
     gate(scanPathIsExpectedBinary(expectedBinaryPath, expectedBinaryPath), "binary_scan_branch_self_test");
     for (const invalid of [
@@ -2122,6 +2201,11 @@ function selfTests(paths, manifest) {
     }
     const mutations = [
         (value) => { value.gateway.generation = 2; },
+        (value) => { value.timing.source_ready_wait_seconds = 181; },
+        (value) => { value.timing.client_before_timeout_reserve_seconds = 20; },
+        (value) => { value.timing.client_exit_inspect_interval_milliseconds = 50; },
+        (value) => { value.evidence.failure_record.client_before_failure_categories.push("private_detail"); },
+        (value) => { value.evidence.runtime_failure_record.client_before_categories = ["unknown"]; },
         (value) => { value.composite_policy.preflight_acl_digest = "0".repeat(64); },
         (value) => { value.preflight_acl.schema = "true-family-physical-probe-acl-plan-v1"; },
         (value) => { value.preflight_acl.effective_policy.topic_contract.shared_subscriptions = true; },

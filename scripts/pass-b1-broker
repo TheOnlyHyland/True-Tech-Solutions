@@ -2,13 +2,21 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-EXPECTED_LAUNCHER_SHA256="499edb329a2272dab75f5b4160a6706f630d55d5b6c65cb9ff3d0663281616de"
+EXPECTED_LAUNCHER_SHA256="3dc5ee480e41a20e8a5f6978abd9b493f093bd765b27ba9b60f9a6ffcd6b8922"
 NODE_IMAGE="docker.io/library/node:20.19.2-bookworm-slim@sha256:ae5e29a169a6dbe7f45d552d73674001cc00913a0a8a5967c57a34f92e940ec8"
 MOSQUITTO_IMAGE="docker.io/library/eclipse-mosquitto@sha256:54c90ecc78645241b6aa272b2a5ac8fc20b0eaf02cc4dd431c0cc8d2fd4447dd"
 LABEL_KEY="true-family-pass-b1a"
 RUN_WATCHDOG_SECONDS=1920
 WORKFLOW_TIMEOUT_SECONDS=2700
 LONGEST_BOUNDED_COMMAND_SECONDS=270
+PRIVATE_FILE_POLL_SECONDS="0.5"
+PRIVATE_FILE_POLL_MILLISECONDS=500
+PRIVATE_FILE_QUICK_WAIT_SECONDS=10
+PRIVATE_FILE_QUICK_WAIT_ATTEMPTS=20
+SOURCE_READY_WAIT_SECONDS=180
+SOURCE_READY_WAIT_ATTEMPTS=360
+CLIENT_BEFORE_CONTAINER_TIMEOUT_SECONDS=240
+CLIENT_BEFORE_TIMEOUT_RESERVE_SECONDS=60
 FAILURE_SCHEMA="true-family-pass-b1a-launcher-failure-v2"
 FAILURE_CODE="verification_failed"
 FAILURE_STAGE="startup"
@@ -42,7 +50,7 @@ failure_stage_valid() {
             return 0
             ;;
     esac
-    [[ "$stage" =~ ^replica_[12]_(prepare|networks|setup|broker|install|install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)|install_inspect|install_verify|install_verify_(content|uniqueness|files|root_mode|file_mode|unknown)|gateway|client_before|observer_before|readback_before|backend_before|restart_one|after_restart|observer_after|client_after|restart_two|final_auth|final_backend|final_readback|inspect|verify|redaction|cleanup)$ ]]
+    [[ "$stage" =~ ^replica_[12]_(prepare|networks|setup|broker|install|install_(context|credentials|broker_connect|broker_subscribe|command_transport|command_rejected|security|unknown)|install_inspect|install_verify|install_verify_(content|uniqueness|files|root_mode|file_mode|unknown)|gateway|client_before|client_before_(network|authentication|publish_matrix|subscribe_matrix|source_privacy|retained_control|unknown)|observer_before|readback_before|backend_before|restart_one|after_restart|observer_after|client_after|restart_two|final_auth|final_backend|final_readback|inspect|verify|redaction|cleanup)$ ]]
 }
 
 failure_stage_projection() {
@@ -78,6 +86,11 @@ shell_self_check() {
     [[ "$LABEL_KEY" == "true-family-pass-b1a" ]]
     [[ "$RUN_WATCHDOG_SECONDS" -eq 1920 && "$WORKFLOW_TIMEOUT_SECONDS" -eq 2700 ]]
     [[ "$LONGEST_BOUNDED_COMMAND_SECONDS" -eq 270 ]]
+    [[ "$PRIVATE_FILE_POLL_SECONDS" == "0.5" && "$PRIVATE_FILE_POLL_MILLISECONDS" -eq 500 ]]
+    [[ $((PRIVATE_FILE_QUICK_WAIT_ATTEMPTS * PRIVATE_FILE_POLL_MILLISECONDS)) -eq $((PRIVATE_FILE_QUICK_WAIT_SECONDS * 1000)) ]]
+    [[ $((SOURCE_READY_WAIT_ATTEMPTS * PRIVATE_FILE_POLL_MILLISECONDS)) -eq $((SOURCE_READY_WAIT_SECONDS * 1000)) ]]
+    [[ $((CLIENT_BEFORE_CONTAINER_TIMEOUT_SECONDS - SOURCE_READY_WAIT_SECONDS)) -eq "$CLIENT_BEFORE_TIMEOUT_RESERVE_SECONDS" ]]
+    [[ "$CLIENT_BEFORE_TIMEOUT_RESERVE_SECONDS" -ge 30 ]]
     [[ $((WORKFLOW_TIMEOUT_SECONDS - RUN_WATCHDOG_SECONDS)) -eq 780 ]]
     [[ $((WORKFLOW_TIMEOUT_SECONDS - RUN_WATCHDOG_SECONDS - LONGEST_BOUNDED_COMMAND_SECONDS)) -eq 510 ]]
     [[ "$FAILURE_SCHEMA" == "true-family-pass-b1a-launcher-failure-v2" && "$FAILURE_CODE" == "verification_failed" ]]
@@ -87,6 +100,13 @@ shell_self_check() {
     [[ "$(failure_stage_projection "replica_2_install_inspect")" == "replica_2_install_inspect" ]]
     [[ "$(failure_stage_projection "replica_1_install_verify")" == "replica_1_install_verify" ]]
     [[ "$(failure_stage_projection "replica_2_install_verify_file_mode")" == "replica_2_install_verify_file_mode" ]]
+    [[ "$(failure_stage_projection "replica_1_client_before_network")" == "replica_1_client_before_network" ]]
+    [[ "$(failure_stage_projection "replica_2_client_before_authentication")" == "replica_2_client_before_authentication" ]]
+    [[ "$(failure_stage_projection "replica_1_client_before_publish_matrix")" == "replica_1_client_before_publish_matrix" ]]
+    [[ "$(failure_stage_projection "replica_2_client_before_subscribe_matrix")" == "replica_2_client_before_subscribe_matrix" ]]
+    [[ "$(failure_stage_projection "replica_1_client_before_source_privacy")" == "replica_1_client_before_source_privacy" ]]
+    [[ "$(failure_stage_projection "replica_2_client_before_retained_control")" == "replica_2_client_before_retained_control" ]]
+    [[ "$(failure_stage_projection "replica_1_client_before_unknown")" == "replica_1_client_before_unknown" ]]
     [[ "$(failure_stage_projection $'arbitrary/path\nvalue')" == "unknown" ]]
     [[ "$(failure_stage_projection "replica_1_install_control_response_error")" == "unknown" ]]
     [[ "$(failure_stage_projection "replica_1_install_verify_private_path")" == "unknown" ]]
@@ -376,20 +396,69 @@ create_node_container() {
         /usr/local/bin/node /harness/test_physical_probe_broker_runtime.mjs --runtime >/dev/null
 }
 
+private_file_ready() {
+    local file="$1"
+    local metadata
+    [[ -f "$file" && ! -L "$file" ]] || return 1
+    metadata="$(host_for 10 stat -c '%F:%u:%a:%h:%s' -- "$file")" || return 1
+    [[ "$metadata" =~ ^regular\ file:$HOST_UID:600:1:([1-9][0-9]{0,6})$ ]]
+}
+
 wait_for_private_file() {
     local file="$1"
+    local maximum_seconds="${2:-$PRIVATE_FILE_QUICK_WAIT_SECONDS}"
+    local maximum_attempts="${3:-$PRIVATE_FILE_QUICK_WAIT_ATTEMPTS}"
+    local container_name="${4:-}"
     local attempts=0
-    local metadata
-    while [[ "$attempts" -lt 200 ]]; do
-        if [[ -f "$file" && ! -L "$file" ]]; then
-            metadata="$(host_for 10 stat -c '%F:%u:%a:%h:%s' -- "$file")"
-            [[ "$metadata" =~ ^regular\ file:$HOST_UID:600:1:([1-9][0-9]{0,6})$ ]]
+    local deadline
+    local running
+    [[ "$maximum_seconds" =~ ^[1-9][0-9]{0,2}$ && "$maximum_seconds" -le "$SOURCE_READY_WAIT_SECONDS" ]]
+    [[ "$maximum_attempts" =~ ^[1-9][0-9]{0,3}$ && "$maximum_attempts" -le "$SOURCE_READY_WAIT_ATTEMPTS" ]]
+    deadline=$((SECONDS + maximum_seconds))
+    while [[ "$attempts" -lt "$maximum_attempts" && "$SECONDS" -lt "$deadline" ]]; do
+        if private_file_ready "$file"; then
             return 0
         fi
+        if [[ -n "$container_name" ]]; then
+            if running="$(docker_for 1 inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null)"; then
+                if [[ "$running" != "true" ]]; then
+                    # A completed marker wins over a clean client exit observed in the same poll.
+                    private_file_ready "$file" && return 0
+                    return 2
+                fi
+            else
+                private_file_ready "$file" && return 0
+                return 1
+            fi
+        fi
         attempts=$((attempts + 1))
-        host_for 1 sleep 0.05
+        host_for 1 sleep "$PRIVATE_FILE_POLL_SECONDS"
     done
-    return 1
+    private_file_ready "$file"
+}
+
+project_client_before_failure() {
+    local ordinal="$1"
+    local container_name="$2"
+    local record_file="$3"
+    local docker_stderr_file="$4"
+    local category="unknown"
+    if docker_for 30 logs --tail 1 "$container_name" >"$record_file" 2>"$docker_stderr_file"; then
+        :
+    fi
+    if category="$(host_for 30 node "$VERIFIER" --classify-runtime-failure client_before "$record_file" "$MANIFEST")"; then
+        :
+    else
+        category="unknown"
+    fi
+    case "$category" in
+        network|authentication|publish_matrix|subscribe_matrix|source_privacy|retained_control|unknown)
+            ;;
+        *)
+            category="unknown"
+            ;;
+    esac
+    set_failure_stage "replica_${ordinal}_client_before_${category}"
 }
 
 run_replica() {
@@ -434,7 +503,7 @@ run_replica() {
     local client_final_name="$prefix-client-final"
     local backend_final_name="$prefix-backend-final"
     local readback_final_name="$prefix-readback-final"
-    local client_options broker_options install_status install_failure_category
+    local client_options broker_options install_status install_failure_category client_before_exit_status
     local credential_verify_status credential_verify_category
 
     host_for 10 mkdir -m 0700 "$replica" "$credentials" "$generated" "$observer_after_output" "$config" "$data" "$logs" "$inspect" "$evidence" "$coord" "$status"
@@ -555,12 +624,17 @@ run_replica() {
     wait_for_private_file "$status/gateway-startup.json"
 
     set_failure_stage "replica_${ordinal}_client_before"
-    create_node_container "$client_before_name" client "$frontend" - client_before gateway 240 "$ordinal" \
+    create_node_container "$client_before_name" client "$frontend" - client_before gateway "$CLIENT_BEFORE_CONTAINER_TIMEOUT_SECONDS" "$ordinal" \
         --mount "type=bind,src=$generated/frontend.json,dst=/input/frontend.json,readonly" \
         --mount "type=bind,src=$ARTIFACT,dst=/input/true_family_brt_probe.mjs,readonly" \
         --mount "type=bind,src=$coord,dst=/coord"
     docker_for 30 start "$client_before_name" >/dev/null
-    wait_for_private_file "$coord/source-ready.json"
+    if wait_for_private_file "$coord/source-ready.json" "$SOURCE_READY_WAIT_SECONDS" "$SOURCE_READY_WAIT_ATTEMPTS" "$client_before_name"; then
+        :
+    else
+        project_client_before_failure "$ordinal" "$client_before_name" "$logs/client-before-failure.json" "$logs/client-before-failure.stderr"
+        return 1
+    fi
 
     set_failure_stage "replica_${ordinal}_observer_before"
     create_node_container "$observer_before_name" observer "$backend" - observer_before broker 120 "$ordinal" \
@@ -568,7 +642,12 @@ run_replica() {
         --mount "type=bind,src=$ARTIFACT,dst=/input/true_family_brt_probe.mjs,readonly" \
         --mount "type=bind,src=$coord,dst=/coord"
     docker_for 150 start -a "$observer_before_name" >"$evidence/observer-before.json" 2>"$logs/observer-before.stderr"
-    [[ "$(docker_for 270 wait "$client_before_name")" == "0" ]]
+    if client_before_exit_status="$(docker_for 270 wait "$client_before_name")" && [[ "$client_before_exit_status" == "0" ]]; then
+        :
+    else
+        project_client_before_failure "$ordinal" "$client_before_name" "$logs/client-before-failure.json" "$logs/client-before-failure.stderr"
+        return 1
+    fi
     docker_for 30 logs "$client_before_name" >"$evidence/client-before.json" 2>"$logs/client-before.stderr"
     docker_for 30 inspect "$client_before_name" >"$inspect/client-before.json"
     docker_for 30 inspect "$observer_before_name" >"$inspect/observer-before.json"
